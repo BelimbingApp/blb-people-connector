@@ -3,7 +3,6 @@
 namespace App\Domains\PeopleConnector\Connector\Data;
 
 use App\Domains\PeopleConnector\Connector\Enums\WorkforceHistoryEventType;
-use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
 
 final readonly class WorkforceHistoryEvent
 {
@@ -12,7 +11,11 @@ final readonly class WorkforceHistoryEvent
      */
     private function __construct(
         public WorkforceHistoryEventType $type,
-        public WorkforceResourceType $resourceType,
+        public ExternalReference $subjectReference,
+        public ?int $subjectEntityId,
+        public ?ExternalReference $relatedReference,
+        public ?int $relatedIdentityId,
+        public ?int $relatedEntityId,
         private array $payload,
     ) {}
 
@@ -20,7 +23,11 @@ final readonly class WorkforceHistoryEvent
     {
         return new self(
             WorkforceHistoryEventType::IdentityAttached,
-            $reference->resourceType,
+            $reference,
+            null,
+            null,
+            null,
+            null,
             ['external_id' => $reference->externalId],
         );
     }
@@ -29,10 +36,15 @@ final readonly class WorkforceHistoryEvent
         ExternalReference $supersededReference,
         ExternalReference $replacementReference,
         int $replacementIdentityId,
+        int $replacementEntityId,
     ): self {
         return new self(
             WorkforceHistoryEventType::IdentityRemapped,
-            $supersededReference->resourceType,
+            $supersededReference,
+            null,
+            $replacementReference,
+            $replacementIdentityId,
+            $replacementEntityId,
             [
                 'superseded_external_id' => $supersededReference->externalId,
                 'replacement_external_id' => $replacementReference->externalId,
@@ -42,18 +54,23 @@ final readonly class WorkforceHistoryEvent
     }
 
     public static function entityMerged(
-        WorkforceResourceType $resourceType,
+        ExternalReference $supersededReference,
+        ExternalReference $survivingReference,
+        int $survivingIdentityId,
         int $supersededEntityId,
         int $survivingEntityId,
-        string $survivingExternalId,
     ): self {
         return new self(
             WorkforceHistoryEventType::EntityMerged,
-            $resourceType,
+            $supersededReference,
+            $supersededEntityId,
+            $survivingReference,
+            $survivingIdentityId,
+            $survivingEntityId,
             [
                 'superseded_entity_id' => $supersededEntityId,
                 'surviving_entity_id' => $survivingEntityId,
-                'surviving_external_id' => $survivingExternalId,
+                'surviving_external_id' => $survivingReference->externalId,
             ],
         );
     }
@@ -62,7 +79,11 @@ final readonly class WorkforceHistoryEvent
     {
         return new self(
             WorkforceHistoryEventType::IdentityDeactivated,
-            $reference->resourceType,
+            $reference,
+            null,
+            null,
+            null,
+            null,
             ['external_id' => $reference->externalId],
         );
     }
@@ -114,7 +135,11 @@ final readonly class WorkforceHistoryEvent
 
         return new self(
             WorkforceHistoryEventType::ProjectionUpserted,
-            $record->reference->resourceType,
+            $record->reference,
+            null,
+            null,
+            null,
+            null,
             $payload,
         );
     }

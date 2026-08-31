@@ -45,9 +45,50 @@ final class WorkforceHistory
             );
         }
 
-        if ($event->resourceType->value !== $entity->resource_type) {
+        if ($identity === null
+            || $event->subjectReference->providerId !== $connection->provider_id
+            || $event->subjectReference->providerId !== $identity->provider_id
+            || $event->subjectReference->resourceType->value !== $entity->resource_type
+            || $event->subjectReference->resourceType->value !== $identity->resource_type
+            || $event->subjectReference->externalId !== $identity->external_id) {
             throw new WorkforceHistoryConflictException(
-                'Workforce history events must match the canonical entity resource type.',
+                'Workforce history events must match the supplied connection, identity, and entity.',
+            );
+        }
+
+        if ($event->subjectEntityId !== null && $event->subjectEntityId !== (int) $entity->id) {
+            throw new WorkforceHistoryConflictException(
+                'Workforce history subject entity facts must match the supplied canonical entity.',
+            );
+        }
+
+        if ($event->relatedReference !== null) {
+            if ($event->relatedReference->providerId !== $connection->provider_id
+                || $event->relatedReference->resourceType !== $event->subjectReference->resourceType) {
+                throw new WorkforceHistoryConflictException(
+                    'Workforce history related facts must belong to the supplied provider and resource type.',
+                );
+            }
+
+            $relatedIdentity = ExternalIdentity::query()
+                ->forTenant($tenantId)
+                ->whereKey($event->relatedIdentityId)
+                ->where('connection_id', $connection->id)
+                ->where('provider_id', $event->relatedReference->providerId)
+                ->where('resource_type', $event->relatedReference->resourceType->value)
+                ->where('external_id_hash', hash('sha256', $event->relatedReference->externalId))
+                ->first();
+
+            if ($relatedIdentity === null
+                || $relatedIdentity->external_id !== $event->relatedReference->externalId
+                || (int) $relatedIdentity->workforce_entity_id !== $event->relatedEntityId) {
+                throw new WorkforceHistoryConflictException(
+                    'Workforce history related facts must match a tenant-scoped provider identity and entity.',
+                );
+            }
+        } elseif ($event->relatedIdentityId !== null || $event->relatedEntityId !== null) {
+            throw new WorkforceHistoryConflictException(
+                'Workforce history related identity facts require a typed external reference.',
             );
         }
 
