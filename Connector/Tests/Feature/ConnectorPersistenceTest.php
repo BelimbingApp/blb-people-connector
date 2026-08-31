@@ -9,6 +9,7 @@ use App\Domains\PeopleConnector\Connector\Data\ReconciliationIssueDetails;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceChangePage;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceCompany;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceEmployee;
+use App\Domains\PeopleConnector\Connector\Data\WorkforceHistoryEvent;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceOrganizationUnit;
 use App\Domains\PeopleConnector\Connector\Data\WorkforcePosition;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceProvenance;
@@ -29,6 +30,7 @@ use App\Domains\PeopleConnector\Connector\Models\ReconciliationIssue;
 use App\Domains\PeopleConnector\Connector\Models\SyncCheckpointEvent;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceEmployeeProjection;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceEntity;
+use App\Domains\PeopleConnector\Connector\Models\WorkforcePositionProjection;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceSnapshot;
 use App\Domains\PeopleConnector\Connector\Services\ProviderConnectionStore;
 use App\Domains\PeopleConnector\Connector\Services\ReconciliationIssueStore;
@@ -60,8 +62,8 @@ function connectorPersistenceConnection(int $tenantId, ?int $companyId = null): 
         new ProviderConnectionMetadata(
             ProviderConnectionMode::RemoteHttp,
             'https://people.example.test',
-            'tenant-fixture',
-            'base-integration:test-people',
+            1001,
+            2001,
         ),
         'Test People',
         '1.2.0',
@@ -95,6 +97,23 @@ test('connection persistence fails closed and permits only one active provider p
         ProviderConnectionMode::RemoteHttp,
         'https://clientSecret@people.example.test',
     ))->toThrow(InvalidProviderConfigurationException::class, 'credential-free HTTPS');
+
+    expect(fn () => new ProviderConnectionMetadata(
+        ProviderConnectionMode::RemoteHttp,
+        'https://people.example.test/bearer-token-value',
+    ))->toThrow(InvalidProviderConfigurationException::class, 'origins without paths');
+
+    expect(fn () => new ProviderConnectionMetadata(
+        ProviderConnectionMode::RemoteHttp,
+        'https://people.example.test',
+        integrationAccountId: -1,
+    ))->toThrow(InvalidProviderConfigurationException::class, 'positive integers');
+
+    expect(fn () => new ProviderConnectionMetadata(
+        ProviderConnectionMode::RemoteHttp,
+        'https://people.example.test',
+        integrationAccountId: 'clientSecretExample',
+    ))->toThrow(TypeError::class);
 
     expect(fn () => new WorkforceProvenance('provider_sync', reviewReference: 'medical record payload'))
         ->toThrow(InvalidWorkforceProvenanceException::class, 'opaque non-secret identifiers');
@@ -136,12 +155,20 @@ test('identity resolution is idempotent tenant isolated and fails closed on coll
         $connection,
         WorkforceEntity::query()->findOrFail($first->workforce_entity_id),
         $second,
-        'invalid_provenance',
+        WorkforceHistoryEvent::identityAttached($firstReference),
         $observedAt,
         $observedAt,
-        [],
         new WorkforceProvenance('negative_test'),
     ))->toThrow(WorkforceHistoryConflictException::class, 'one tenant, connection, identity, and entity');
+
+    expect(fn () => app(WorkforceHistory::class)->record(
+        connection: $connection,
+        entity: WorkforceEntity::query()->findOrFail($first->workforce_entity_id),
+        identity: $first,
+        event: ['medical_record' => 'must-not-be-persisted'],
+        effectiveAt: $observedAt,
+        observedAt: $observedAt,
+    ))->toThrow(TypeError::class);
 
     $secondConnection = app(ProviderConnectionStore::class)->configure(ProviderScope::tenant(), 'provider.two');
     app(ProviderConnectionStore::class)->activate((int) $secondConnection->id);
@@ -320,6 +347,188 @@ test('remap merge and deactivate preserve identity and provenance history', func
         ->and(WorkforceEmployeeProjection::query()->where('workforce_entity_id', $survivingIdentity->workforce_entity_id)->value('active'))->toBeFalse()
         ->and(WorkforceSnapshot::query()->forTenant((int) $tenant->id)->pluck('event_type')->all())
         ->toContain('identity_remapped', 'entity_merged', 'identity_deactivated');
+});
+
+test('merge cannot regress a linked provider identity or the current projection watermark', function (): void {
+    [$tenant] = createTenantWithCompany(['name' => 'Merge Watermark Tenant']);
+    $connection = connectorPersistenceConnection((int) $tenant->id);
+    $identities = app(WorkforceIdentityStore::class);
+    $projections = app(WorkforceProjectionStore::class);
+    $observedAt = new DateTimeImmutable('2026-08-30T09:00:00+00:00');
+    $companyReference = connectorPersistenceReference(WorkforceResourceType::Company, 'COMPANY-MERGE-WATERMARK');
+    $supersededReference = connectorPersistenceReference(WorkforceResourceType::Employee, 'EMP-MERGE-OLD');
+    $survivingReference = connectorPersistenceReference(WorkforceResourceType::Employee, 'EMP-MERGE-NEW');
+
+    $projections->upsert((int) $connection->id, new WorkforceCompany(
+        $companyReference,
+        'Merge Watermark Company',
+        true,
+        $observedAt,
+    ));
+    $supersededProjection = $projections->upsert((int) $connection->id, new WorkforceEmployee(
+        $supersededReference,
+        $companyReference,
+        'Superseded Employee',
+        true,
+        $observedAt,
+        $observedAt->modify('+4 hours'),
+    ));
+    $survivingIdentity = $identities->resolveOrCreateIdentity(
+        (int) $connection->id,
+        $survivingReference,
+        $observedAt,
+    );
+
+    $replacementConnection = app(ProviderConnectionStore::class)->configure(
+        ProviderScope::tenant(),
+        'provider.two',
+    );
+    $linkedIdentity = $identities->resolveOrCreateIdentity(
+        (int) $replacementConnection->id,
+        connectorPersistenceReference(WorkforceResourceType::Employee, 'PROVIDER-TWO-EMP', 'provider.two'),
+        $observedAt->modify('+5 hours'),
+        preferredEntityId: (int) $supersededProjection->workforce_entity_id,
+        provenance: new WorkforceProvenance('provider_replacement', 'replacement-approved'),
+    );
+
+    expect(fn () => $identities->merge(
+        (int) $connection->id,
+        $supersededReference,
+        $survivingReference,
+        $observedAt->modify('+3 hours'),
+        new WorkforceProvenance('identity_merge', 'merge-approved'),
+    ))->toThrow(ExternalIdentityCollisionException::class, 'cannot predate')
+        ->and($linkedIdentity->refresh()->state)->toBe(ExternalIdentity::STATE_ACTIVE)
+        ->and($linkedIdentity->last_observed_at->toIso8601String())->toBe('2026-08-30T14:00:00+00:00')
+        ->and($supersededProjection->refresh()->active)->toBeTrue();
+
+    $merged = $identities->merge(
+        (int) $connection->id,
+        $supersededReference,
+        $survivingReference,
+        $observedAt->modify('+6 hours'),
+        new WorkforceProvenance('identity_merge', 'merge-approved'),
+    );
+
+    expect($merged->id)->toBe($survivingIdentity->workforce_entity_id)
+        ->and($linkedIdentity->refresh()->state)->toBe(ExternalIdentity::STATE_MERGED)
+        ->and($linkedIdentity->last_observed_at->toIso8601String())->toBe('2026-08-30T15:00:00+00:00')
+        ->and($supersededProjection->refresh()->active)->toBeFalse();
+});
+
+test('merge rewrites every inbound current workforce relationship to its canonical entity', function (): void {
+    [$tenant] = createTenantWithCompany(['name' => 'Canonical Relationship Tenant']);
+    $connection = connectorPersistenceConnection((int) $tenant->id);
+    $identities = app(WorkforceIdentityStore::class);
+    $projections = app(WorkforceProjectionStore::class);
+    $observedAt = new DateTimeImmutable('2026-08-30T09:00:00+00:00');
+    $companyOld = connectorPersistenceReference(WorkforceResourceType::Company, 'COMPANY-OLD');
+    $companyNew = connectorPersistenceReference(WorkforceResourceType::Company, 'COMPANY-NEW');
+    $organizationOld = connectorPersistenceReference(WorkforceResourceType::OrganizationUnit, 'ORG-OLD');
+    $organizationNew = connectorPersistenceReference(WorkforceResourceType::OrganizationUnit, 'ORG-NEW');
+    $organizationChild = connectorPersistenceReference(WorkforceResourceType::OrganizationUnit, 'ORG-CHILD');
+    $positionOld = connectorPersistenceReference(WorkforceResourceType::Position, 'POSITION-OLD');
+    $positionNew = connectorPersistenceReference(WorkforceResourceType::Position, 'POSITION-NEW');
+    $employeeOld = connectorPersistenceReference(WorkforceResourceType::Employee, 'EMPLOYEE-OLD');
+    $employeeNew = connectorPersistenceReference(WorkforceResourceType::Employee, 'EMPLOYEE-NEW');
+    $employeeDependent = connectorPersistenceReference(WorkforceResourceType::Employee, 'EMPLOYEE-DEPENDENT');
+    $userOld = connectorPersistenceReference(WorkforceResourceType::User, 'USER-OLD');
+    $userNew = connectorPersistenceReference(WorkforceResourceType::User, 'USER-NEW');
+
+    foreach ([[$companyOld, 'Old Company'], [$companyNew, 'New Company']] as [$reference, $name]) {
+        $projections->upsert((int) $connection->id, new WorkforceCompany(
+            $reference,
+            $name,
+            true,
+            $observedAt,
+        ));
+    }
+
+    foreach ([[$organizationOld, 'Old Organization'], [$organizationNew, 'New Organization']] as [$reference, $name]) {
+        $projections->upsert((int) $connection->id, new WorkforceOrganizationUnit(
+            $reference,
+            $companyOld,
+            $name,
+            true,
+            $observedAt,
+            $observedAt,
+        ));
+    }
+    $childProjection = $projections->upsert((int) $connection->id, new WorkforceOrganizationUnit(
+        $organizationChild,
+        $companyOld,
+        'Child Organization',
+        true,
+        $observedAt,
+        $observedAt,
+        parentReference: $organizationOld,
+    ));
+
+    foreach ([[$positionOld, 'Old Position'], [$positionNew, 'New Position']] as [$reference, $name]) {
+        $projections->upsert((int) $connection->id, new WorkforcePosition(
+            $reference,
+            $companyOld,
+            $name,
+            true,
+            $observedAt,
+            $observedAt,
+            organizationReference: $organizationOld,
+        ));
+    }
+
+    $dependentProjection = $projections->upsert((int) $connection->id, new WorkforceEmployee(
+        $employeeDependent,
+        $companyOld,
+        'Dependent Employee',
+        true,
+        $observedAt,
+        $observedAt,
+        userReference: $userOld,
+        organizationReference: $organizationOld,
+        positionReference: $positionOld,
+        managerReference: $employeeOld,
+        departmentHeadReference: $employeeOld,
+    ));
+    $identities->resolveOrCreateIdentity((int) $connection->id, $employeeNew, $observedAt);
+    $identities->resolveOrCreateIdentity((int) $connection->id, $userNew, $observedAt);
+
+    $companyNewId = $identities->resolve((int) $connection->id, $companyNew)->id;
+    $organizationNewId = $identities->resolve((int) $connection->id, $organizationNew)->id;
+    $positionNewId = $identities->resolve((int) $connection->id, $positionNew)->id;
+    $employeeNewId = $identities->resolve((int) $connection->id, $employeeNew)->id;
+    $userNewId = $identities->resolve((int) $connection->id, $userNew)->id;
+
+    foreach ([
+        [$companyOld, $companyNew, '+1 hour'],
+        [$organizationOld, $organizationNew, '+2 hours'],
+        [$positionOld, $positionNew, '+3 hours'],
+        [$employeeOld, $employeeNew, '+4 hours'],
+        [$userOld, $userNew, '+5 hours'],
+    ] as [$superseded, $survivor, $offset]) {
+        $identities->merge(
+            (int) $connection->id,
+            $superseded,
+            $survivor,
+            $observedAt->modify($offset),
+            new WorkforceProvenance('identity_merge', 'canonical-relationship-review'),
+        );
+    }
+
+    $oldPositionProjection = WorkforcePositionProjection::query()
+        ->forTenant((int) $tenant->id)
+        ->where('workforce_entity_id', $identities->resolve((int) $connection->id, $positionOld)->id)
+        ->firstOrFail();
+
+    expect($childProjection->refresh()->company_entity_id)->toBe($companyNewId)
+        ->and($childProjection->parent_entity_id)->toBe($organizationNewId)
+        ->and($oldPositionProjection->company_entity_id)->toBe($companyNewId)
+        ->and($oldPositionProjection->organization_entity_id)->toBe($organizationNewId)
+        ->and($dependentProjection->refresh()->company_entity_id)->toBe($companyNewId)
+        ->and($dependentProjection->organization_entity_id)->toBe($organizationNewId)
+        ->and($dependentProjection->position_entity_id)->toBe($positionNewId)
+        ->and($dependentProjection->manager_entity_id)->toBe($employeeNewId)
+        ->and($dependentProjection->department_head_entity_id)->toBe($employeeNewId)
+        ->and($dependentProjection->user_entity_id)->toBe($userNewId);
 });
 
 test('typed workforce projections retain effective and observed facts without regressing on late input', function (): void {

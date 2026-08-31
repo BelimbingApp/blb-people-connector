@@ -9,45 +9,48 @@ final readonly class ProviderConnectionMetadata
 {
     public function __construct(
         public ProviderConnectionMode $mode,
-        public ?string $endpoint = null,
-        public ?string $accountReference = null,
-        public ?string $integrationConnectionReference = null,
+        public ?string $endpointOrigin = null,
+        public ?int $integrationAccountId = null,
+        public ?int $integrationConnectionId = null,
     ) {
-        if ($endpoint !== null) {
-            $parts = parse_url($endpoint);
+        if ($endpointOrigin !== null) {
+            $parts = parse_url($endpointOrigin);
 
             if (! is_array($parts)
                 || ($parts['scheme'] ?? null) !== 'https'
                 || ! isset($parts['host'])
                 || isset($parts['user'])
                 || isset($parts['pass'])
+                || (isset($parts['path']) && $parts['path'] !== '' && $parts['path'] !== '/')
                 || isset($parts['query'])
                 || isset($parts['fragment'])) {
                 throw new InvalidProviderConfigurationException(
-                    'Provider endpoints must be credential-free HTTPS origins or paths without query parameters.',
+                    'Provider endpoints must be credential-free HTTPS origins without paths or query parameters.',
                 );
             }
         }
 
-        foreach ([$accountReference, $integrationConnectionReference] as $reference) {
-            if ($reference !== null && (trim($reference) === '' || strlen($reference) > 191)) {
-                throw new InvalidProviderConfigurationException('Provider public references must contain 1 to 191 bytes.');
+        foreach ([$integrationAccountId, $integrationConnectionId] as $integrationRecordId) {
+            if ($integrationRecordId !== null && $integrationRecordId < 1) {
+                throw new InvalidProviderConfigurationException(
+                    'Provider Integration record IDs must be positive integers.',
+                );
             }
         }
 
-        if ($mode === ProviderConnectionMode::RemoteHttp && $endpoint === null) {
+        if ($mode === ProviderConnectionMode::RemoteHttp && $endpointOrigin === null) {
             throw new InvalidProviderConfigurationException('Remote HTTP provider connections require a public endpoint.');
         }
     }
 
-    /** @return array<string, string> */
+    /** @return array<string, int|string> */
     public function toArray(): array
     {
         return array_filter([
             'mode' => $this->mode->value,
-            'endpoint' => $this->endpoint,
-            'account_reference' => $this->accountReference,
-            'integration_connection_reference' => $this->integrationConnectionReference,
-        ], static fn (?string $value): bool => $value !== null);
+            'endpoint_origin' => $this->endpointOrigin,
+            'integration_account_id' => $this->integrationAccountId,
+            'integration_connection_id' => $this->integrationConnectionId,
+        ], static fn (int|string|null $value): bool => $value !== null);
     }
 }

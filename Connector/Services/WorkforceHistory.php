@@ -3,6 +3,7 @@
 namespace App\Domains\PeopleConnector\Connector\Services;
 
 use App\Base\Tenancy\Contracts\TenantContext;
+use App\Domains\PeopleConnector\Connector\Data\WorkforceHistoryEvent;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceProvenance;
 use App\Domains\PeopleConnector\Connector\Exceptions\WorkforceHistoryConflictException;
 use App\Domains\PeopleConnector\Connector\Models\ExternalIdentity;
@@ -14,25 +15,18 @@ final class WorkforceHistory
 {
     public function __construct(private TenantContext $tenantContext) {}
 
-    /**
-     * @param  array<string, mixed>  $payload
-     */
     public function record(
         ProviderConnection $connection,
         WorkforceEntity $entity,
         ?ExternalIdentity $identity,
-        string $eventType,
+        WorkforceHistoryEvent $event,
         \DateTimeInterface $effectiveAt,
         \DateTimeInterface $observedAt,
-        array $payload,
         ?WorkforceProvenance $provenance = null,
         ?string $sourceVersion = null,
     ): WorkforceSnapshot {
         $tenantId = $this->tenantContext->requireTenantId();
-
-        if (preg_match('/^[a-z0-9]+(?:_[a-z0-9]+)*$/', $eventType) !== 1 || strlen($eventType) > 40) {
-            throw new WorkforceHistoryConflictException('Workforce history event types require a stable lowercase identifier.');
-        }
+        $payload = $event->payload();
 
         if ($sourceVersion !== null && strlen($sourceVersion) > 100) {
             throw new WorkforceHistoryConflictException('Workforce history source versions cannot exceed 100 bytes.');
@@ -51,11 +45,17 @@ final class WorkforceHistory
             );
         }
 
+        if ($event->resourceType->value !== $entity->resource_type) {
+            throw new WorkforceHistoryConflictException(
+                'Workforce history events must match the canonical entity resource type.',
+            );
+        }
+
         $keyMaterial = [
             'connection' => (int) $connection->id,
             'entity' => (int) $entity->id,
             'identity' => $identity?->id,
-            'event' => $eventType,
+            'event' => $event->type->value,
             'effective_at' => $this->timestampKey($effectiveAt),
             'observed_at' => $this->timestampKey($observedAt),
             'source_version' => $sourceVersion,
@@ -73,7 +73,7 @@ final class WorkforceHistory
                 'connection_id' => $connection->id,
                 'workforce_entity_id' => $entity->id,
                 'external_identity_id' => $identity?->id,
-                'event_type' => $eventType,
+                'event_type' => $event->type->value,
                 'resource_type' => $entity->resource_type,
                 'effective_at' => $effectiveAt,
                 'observed_at' => $observedAt,

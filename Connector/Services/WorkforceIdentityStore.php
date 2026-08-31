@@ -4,11 +4,14 @@ namespace App\Domains\PeopleConnector\Connector\Services;
 
 use App\Base\Tenancy\Contracts\TenantContext;
 use App\Domains\PeopleConnector\Connector\Data\ExternalReference;
+use App\Domains\PeopleConnector\Connector\Data\WorkforceHistoryEvent;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceProvenance;
+use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
 use App\Domains\PeopleConnector\Connector\Exceptions\ConnectorRecordNotFoundException;
 use App\Domains\PeopleConnector\Connector\Exceptions\ExternalIdentityCollisionException;
 use App\Domains\PeopleConnector\Connector\Models\ExternalIdentity;
 use App\Domains\PeopleConnector\Connector\Models\ProviderConnection;
+use App\Domains\PeopleConnector\Connector\Models\TenantOwnedModel;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceCompanyProjection;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceEmployeeProjection;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceEntity;
@@ -100,10 +103,9 @@ final class WorkforceIdentityStore
                 $connection,
                 $entity,
                 $identity,
-                'identity_attached',
+                WorkforceHistoryEvent::identityAttached($reference),
                 $observedAt,
                 $observedAt,
-                ['external_id' => $reference->externalId],
                 $provenance,
                 $sourceVersion,
             );
@@ -197,14 +199,13 @@ final class WorkforceIdentityStore
                 $connection,
                 $entity,
                 $oldIdentity,
-                'identity_remapped',
+                WorkforceHistoryEvent::identityRemapped(
+                    $oldReference,
+                    $newReference,
+                    (int) $newIdentity->id,
+                ),
                 $occurredAt,
                 $occurredAt,
-                [
-                    'superseded_external_id' => $oldReference->externalId,
-                    'replacement_external_id' => $newReference->externalId,
-                    'replacement_identity_id' => $newIdentity->id,
-                ],
                 $provenance,
             );
 
@@ -243,11 +244,29 @@ final class WorkforceIdentityStore
                 throw new ExternalIdentityCollisionException('A workforce merge cannot cross resource types.');
             }
 
-            $this->assertTransitionChronology(
-                $occurredAt,
-                $supersededIdentity->last_observed_at,
-                $survivingIdentity->last_observed_at,
-            );
+            if ($supersededIdentity->state !== ExternalIdentity::STATE_ACTIVE
+                || $survivingIdentity->state !== ExternalIdentity::STATE_ACTIVE) {
+                throw new ExternalIdentityCollisionException('Only active external identities can merge workforce entities.');
+            }
+
+            $affectedIdentities = ExternalIdentity::query()
+                ->forTenant($this->tenantContext->requireTenantId())
+                ->where('workforce_entity_id', $superseded->id)
+                ->where('state', ExternalIdentity::STATE_ACTIVE)
+                ->lockForUpdate()
+                ->get();
+            $currentProjection = $this->currentProjection($superseded, lock: true);
+            $previousObservations = [$survivingIdentity->last_observed_at];
+
+            foreach ($affectedIdentities as $affectedIdentity) {
+                $previousObservations[] = $affectedIdentity->last_observed_at;
+            }
+
+            if ($currentProjection !== null) {
+                $previousObservations[] = $currentProjection->observed_at;
+            }
+
+            $this->assertTransitionChronology($occurredAt, ...$previousObservations);
 
             $superseded->fill([
                 'state' => WorkforceEntity::STATE_MERGED,
@@ -255,11 +274,7 @@ final class WorkforceIdentityStore
                 'merged_at' => $occurredAt,
             ])->save();
 
-            ExternalIdentity::query()
-                ->forTenant($this->tenantContext->requireTenantId())
-                ->where('workforce_entity_id', $superseded->id)
-                ->where('state', ExternalIdentity::STATE_ACTIVE)
-                ->get()
+            $affectedIdentities
                 ->each(function (ExternalIdentity $identity) use ($occurredAt): void {
                     $identity->fill([
                         'state' => ExternalIdentity::STATE_MERGED,
@@ -268,20 +283,21 @@ final class WorkforceIdentityStore
                     ])->save();
                 });
 
-            $this->retireCurrentProjection((int) $superseded->id, $occurredAt);
+            $this->rewriteInboundCurrentReferences($superseded, $survivor);
+            $this->retireCurrentProjection($superseded, $occurredAt);
 
             $this->history->record(
                 $connection,
                 $superseded,
                 $supersededIdentity,
-                'entity_merged',
+                WorkforceHistoryEvent::entityMerged(
+                    WorkforceResourceType::from($superseded->resource_type),
+                    (int) $superseded->id,
+                    (int) $survivor->id,
+                    $survivingReference->externalId,
+                ),
                 $occurredAt,
                 $occurredAt,
-                [
-                    'superseded_entity_id' => $superseded->id,
-                    'surviving_entity_id' => $survivor->id,
-                    'surviving_external_id' => $survivingReference->externalId,
-                ],
                 $provenance,
             );
 
@@ -333,17 +349,16 @@ final class WorkforceIdentityStore
                     'state' => WorkforceEntity::STATE_INACTIVE,
                     'deactivated_at' => $occurredAt,
                 ])->save();
-                $this->retireCurrentProjection((int) $rawEntity->id, $occurredAt);
+                $this->retireCurrentProjection($rawEntity, $occurredAt);
             }
 
             $this->history->record(
                 $connection,
                 $rawEntity,
                 $identity,
-                'identity_deactivated',
+                WorkforceHistoryEvent::identityDeactivated($reference),
                 $occurredAt,
                 $occurredAt,
-                ['external_id' => $reference->externalId],
                 $provenance,
             );
 
@@ -464,29 +479,90 @@ final class WorkforceIdentityStore
         }
     }
 
-    private function retireCurrentProjection(int $entityId, \DateTimeInterface $occurredAt): void
+    private function currentProjection(WorkforceEntity $entity, bool $lock = false): ?TenantOwnedModel
     {
-        foreach ([
-            WorkforceCompanyProjection::class,
-            WorkforceOrganizationUnitProjection::class,
-            WorkforcePositionProjection::class,
-            WorkforceEmployeeProjection::class,
-        ] as $projectionModel) {
-            $projection = $projectionModel::query()
+        $projectionModel = match (WorkforceResourceType::from($entity->resource_type)) {
+            WorkforceResourceType::Company => WorkforceCompanyProjection::class,
+            WorkforceResourceType::OrganizationUnit => WorkforceOrganizationUnitProjection::class,
+            WorkforceResourceType::Position => WorkforcePositionProjection::class,
+            WorkforceResourceType::Employee => WorkforceEmployeeProjection::class,
+            WorkforceResourceType::User => null,
+        };
+
+        if ($projectionModel === null) {
+            return null;
+        }
+
+        $query = $projectionModel::query()
+            ->forTenant($this->tenantContext->requireTenantId())
+            ->where('workforce_entity_id', $entity->id);
+
+        if ($lock) {
+            $query->lockForUpdate();
+        }
+
+        return $query->first();
+    }
+
+    private function retireCurrentProjection(WorkforceEntity $entity, \DateTimeInterface $occurredAt): void
+    {
+        $projection = $this->currentProjection($entity, lock: true);
+
+        if ($projection === null) {
+            return;
+        }
+
+        $projection->fill([
+            'active' => false,
+            'effective_at' => $occurredAt,
+            'observed_at' => $occurredAt,
+        ])->save();
+    }
+
+    private function rewriteInboundCurrentReferences(
+        WorkforceEntity $superseded,
+        WorkforceEntity $survivor,
+    ): void {
+        $references = match (WorkforceResourceType::from($superseded->resource_type)) {
+            WorkforceResourceType::Company => [
+                [WorkforceOrganizationUnitProjection::class, 'company_entity_id'],
+                [WorkforcePositionProjection::class, 'company_entity_id'],
+                [WorkforceEmployeeProjection::class, 'company_entity_id'],
+            ],
+            WorkforceResourceType::OrganizationUnit => [
+                [WorkforceOrganizationUnitProjection::class, 'parent_entity_id'],
+                [WorkforcePositionProjection::class, 'organization_entity_id'],
+                [WorkforceEmployeeProjection::class, 'organization_entity_id'],
+            ],
+            WorkforceResourceType::Position => [
+                [WorkforceEmployeeProjection::class, 'position_entity_id'],
+            ],
+            WorkforceResourceType::Employee => [
+                [WorkforceEmployeeProjection::class, 'manager_entity_id'],
+                [WorkforceEmployeeProjection::class, 'department_head_entity_id'],
+            ],
+            WorkforceResourceType::User => [
+                [WorkforceEmployeeProjection::class, 'user_entity_id'],
+            ],
+        };
+
+        foreach ($references as [$projectionModel, $column]) {
+            $projections = $projectionModel::query()
                 ->forTenant($this->tenantContext->requireTenantId())
-                ->where('workforce_entity_id', $entityId)
+                ->where($column, $superseded->id)
                 ->lockForUpdate()
-                ->first();
+                ->get();
 
-            if ($projection === null) {
-                continue;
+            foreach ($projections as $projection) {
+                $selfReferentialHierarchy = in_array(
+                    $column,
+                    ['parent_entity_id', 'manager_entity_id', 'department_head_entity_id'],
+                    strict: true,
+                ) && (int) $projection->workforce_entity_id === (int) $survivor->id;
+
+                $projection->setAttribute($column, $selfReferentialHierarchy ? null : $survivor->id);
+                $projection->save();
             }
-
-            $projection->fill([
-                'active' => false,
-                'effective_at' => $occurredAt,
-                'observed_at' => $occurredAt,
-            ])->save();
         }
     }
 }
