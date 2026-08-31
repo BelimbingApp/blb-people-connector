@@ -6,6 +6,7 @@ use App\Base\Tenancy\Contracts\TenantContext;
 use App\Domains\PeopleConnector\Connector\Data\ExternalReference;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceCompany;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceEmployee;
+use App\Domains\PeopleConnector\Connector\Data\WorkforceHistoryEvent;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceOrganizationUnit;
 use App\Domains\PeopleConnector\Connector\Data\WorkforcePosition;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceProvenance;
@@ -47,16 +48,13 @@ final class WorkforceProjectionStore
             $this->identities->assertActive($identity);
             $entity = $this->identities->resolve($connectionId, $record->reference);
             $effectiveAt = $record instanceof WorkforceCompany ? $record->observedAt : $record->effectiveAt;
-            $payload = $this->payload($record);
-
             $this->history->record(
                 $connection,
                 $entity,
                 $identity,
-                'projection_upserted',
+                WorkforceHistoryEvent::projectionUpserted($record),
                 $effectiveAt,
                 $observedAt,
-                $payload,
                 $provenance,
                 $sourceVersion,
             );
@@ -218,66 +216,5 @@ final class WorkforceProjectionStore
         );
 
         return (int) $this->identities->resolve((int) $connection->id, $reference)->id;
-    }
-
-    /** @return array<string, mixed> */
-    private function payload(
-        WorkforceCompany|WorkforceOrganizationUnit|WorkforcePosition|WorkforceEmployee $record,
-    ): array {
-        $base = [
-            'reference' => $this->referencePayload($record->reference),
-            'active' => $record->active,
-            'observed_at' => $record->observedAt->format(DATE_ATOM),
-            'source_version' => $record->sourceVersion,
-        ];
-
-        return match (true) {
-            $record instanceof WorkforceCompany => $base + [
-                'name' => $record->name,
-                'code' => $record->code,
-            ],
-            $record instanceof WorkforceOrganizationUnit => $base + [
-                'company_reference' => $this->referencePayload($record->companyReference),
-                'parent_reference' => $this->referencePayload($record->parentReference),
-                'name' => $record->name,
-                'code' => $record->code,
-                'kind' => $record->kind,
-                'effective_at' => $record->effectiveAt->format(DATE_ATOM),
-            ],
-            $record instanceof WorkforcePosition => $base + [
-                'company_reference' => $this->referencePayload($record->companyReference),
-                'organization_reference' => $this->referencePayload($record->organizationReference),
-                'name' => $record->name,
-                'code' => $record->code,
-                'tier' => $record->tier,
-                'effective_at' => $record->effectiveAt->format(DATE_ATOM),
-            ],
-            default => $base + [
-                'company_reference' => $this->referencePayload($record->companyReference),
-                'user_reference' => $this->referencePayload($record->userReference),
-                'organization_reference' => $this->referencePayload($record->organizationReference),
-                'position_reference' => $this->referencePayload($record->positionReference),
-                'manager_reference' => $this->referencePayload($record->managerReference),
-                'department_head_reference' => $this->referencePayload($record->departmentHeadReference),
-                'display_name' => $record->displayName,
-                'employee_number' => $record->employeeNumber,
-                'email' => $record->email,
-                'effective_at' => $record->effectiveAt->format(DATE_ATOM),
-            ],
-        };
-    }
-
-    /** @return array<string, string>|null */
-    private function referencePayload(?ExternalReference $reference): ?array
-    {
-        if ($reference === null) {
-            return null;
-        }
-
-        return [
-            'provider_id' => $reference->providerId,
-            'resource_type' => $reference->resourceType->value,
-            'external_id' => $reference->externalId,
-        ];
     }
 }
