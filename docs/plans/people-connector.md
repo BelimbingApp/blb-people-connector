@@ -2,8 +2,8 @@
 
 **Status:** In progress
 **Last Updated:** 2026-08-31
-**Sources:** BelimbingApp/blb-people#20–#38; `SBTG_Skill_Management_System.xlsx`; Belimbing module, tenancy, database, authz, integration, and UI contracts
-**Agents:** codex/gpt-5
+**Sources:** BelimbingApp/blb-people#20–#38; BelimbingApp/belimbing#457; `SBTG_Skill_Management_System.xlsx`; Belimbing module, tenancy, database, authz, integration, and UI contracts
+**Agents:** codex/gpt-5, codex/gpt-5.6-sol
 
 ## Problem Essence
 
@@ -37,10 +37,14 @@ Adapters publish stable identity, contract and adapter versions, independently c
 ### Foundation and providers
 
 - [x] Publish provider-neutral DTOs, capability/error vocabulary, registry, conformance helper, disconnected UI, and CI. {codex/gpt-5}
-- [ ] Approve connector ownership/privacy boundary and allocate migration prefixes in the platform architecture.
-- [ ] Persist tenant-owned provider configuration, provenance, workforce projections, sync cursors, and reconciliation state.
+- [ ] Merge the connector ownership/privacy boundary and `0330` migration allocation proposed in BelimbingApp/belimbing#457.
+- [x] Persist non-secret tenant/company-scoped connections, canonical workforce identities, typed projections, append-only provenance, durable sync checkpoints, and reconciliation issues. {codex/gpt-5.6-sol}
+- [ ] Add the provider-neutral user projection, explicit freshness/stale decisions, and adapter-driven bootstrap/incremental execution over the persistence foundation.
+- [ ] Prove governed export, backup/restore, privacy-aware deletion/tombstones, and full synchronization recovery for connector-owned records.
 - [ ] Add authentication/SSO and privileged-access controls without exposing secrets.
 - [ ] Implement and certify `blb-people` and HR2000 adapters.
+
+This persistence foundation is only a partial delivery of [1004]/[1006]. It does not yet provide a typed user projection, provider sync execution, freshness policy, export/backup/restore, privacy deletion, or any Skill/Training aggregate; those remain explicit work below.
 
 ### Skill core
 
