@@ -62,6 +62,9 @@ test('connections page refreshes and preserves provider health evidence on deman
         new ProviderHealth(ProviderHealthState::Healthy, $checkedAt, $lastSyncAt, 'Connection is current.'),
     );
     $provider->shouldReceive('health')->once()->ordered()->andThrow(new RuntimeException('provider unavailable'));
+    $provider->shouldReceive('health')->once()->ordered()->andReturn(
+        new ProviderHealth(ProviderHealthState::Healthy, $checkedAt, message: 'No synchronization has completed.'),
+    );
 
     $registry = new ProviderRegistry;
     $registry->register($provider);
@@ -77,7 +80,11 @@ test('connections page refreshes and preserves provider health evidence on deman
         ->call('refreshHealth', 'refresh.provider')
         ->assertSee('unavailable')
         ->assertSee('Last successful sync')
-        ->assertSee('The provider health check failed.');
+        ->assertSee('The provider health check failed.')
+        ->call('refreshHealth', 'refresh.provider')
+        ->assertSee('healthy')
+        ->assertDontSee('Last successful sync')
+        ->assertSee('No synchronization has completed.');
 });
 
 test('connections page warns about a missing configured adapter even when another adapter is installed', function (): void {

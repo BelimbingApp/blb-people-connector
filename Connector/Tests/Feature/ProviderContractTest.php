@@ -2,15 +2,17 @@
 
 use App\Domains\PeopleConnector\Connector\Contracts\BootstrapsWorkforce;
 use App\Domains\PeopleConnector\Connector\Contracts\ProviderAdapter;
-use App\Domains\PeopleConnector\Connector\Contracts\ProviderPort;
 use App\Domains\PeopleConnector\Connector\Contracts\ReadsWorkforceChanges;
 use App\Domains\PeopleConnector\Connector\Contracts\ReconcilesWorkforce;
 use App\Domains\PeopleConnector\Connector\Contracts\WorkforceSource;
+use App\Domains\PeopleConnector\Connector\Contracts\WritableProviderPort;
 use App\Domains\PeopleConnector\Connector\Data\CapabilityChannel;
 use App\Domains\PeopleConnector\Connector\Data\CapabilityDeclaration;
 use App\Domains\PeopleConnector\Connector\Data\CapabilitySet;
 use App\Domains\PeopleConnector\Connector\Data\ExternalReference;
 use App\Domains\PeopleConnector\Connector\Data\ProviderDescriptor;
+use App\Domains\PeopleConnector\Connector\Data\ProviderFile;
+use App\Domains\PeopleConnector\Connector\Data\ProviderFileImportResult;
 use App\Domains\PeopleConnector\Connector\Data\ProviderFileInspection;
 use App\Domains\PeopleConnector\Connector\Data\ProviderHealth;
 use App\Domains\PeopleConnector\Connector\Data\ReconciliationReport;
@@ -34,7 +36,7 @@ use App\Domains\PeopleConnector\Connector\Exceptions\ProviderCompatibilityExcept
 use App\Domains\PeopleConnector\Connector\Services\ProviderRegistry;
 use App\Domains\PeopleConnector\Connector\Testing\ProviderConformance;
 
-interface TestEmployeeCommandPort extends ProviderPort {}
+interface TestEmployeeCommandPort extends WritableProviderPort {}
 
 function conformingPeopleProvider(string $id = 'test.provider', string $contract = '1.0.0'): ProviderAdapter
 {
@@ -82,11 +84,10 @@ function conformingPeopleProvider(string $id = 'test.provider', string $contract
         {
             return new CapabilitySet([
                 new CapabilityDeclaration(PeopleCapability::EmployeeDirectory, [
-                    new CapabilityChannel(CapabilityDirection::Read, CapabilityDelivery::Synchronous, BootstrapsWorkforce::class),
-                    new CapabilityChannel(CapabilityDirection::Read, CapabilityDelivery::Synchronous, ReadsWorkforceChanges::class),
-                    new CapabilityChannel(CapabilityDirection::Read, CapabilityDelivery::Synchronous, ReconcilesWorkforce::class),
+                    new CapabilityChannel(CapabilityDelivery::Synchronous, BootstrapsWorkforce::class),
+                    new CapabilityChannel(CapabilityDelivery::Synchronous, ReadsWorkforceChanges::class),
+                    new CapabilityChannel(CapabilityDelivery::Synchronous, ReconcilesWorkforce::class),
                     new CapabilityChannel(
-                        CapabilityDirection::None,
                         CapabilityDelivery::ProviderUi,
                         providerUiUrl: 'https://provider.example/employees',
                     ),
@@ -153,9 +154,8 @@ test('capabilities default to unsupported and aggregate independent delivery cha
 test('a capability can combine file reads with a provider UI handoff', function (): void {
     $capabilities = new CapabilitySet([
         new CapabilityDeclaration(PeopleCapability::EmployeeDirectory, [
-            new CapabilityChannel(CapabilityDirection::Read, CapabilityDelivery::FileExchange, BootstrapsWorkforce::class),
+            new CapabilityChannel(CapabilityDelivery::FileExchange, BootstrapsWorkforce::class),
             new CapabilityChannel(
-                CapabilityDirection::None,
                 CapabilityDelivery::ProviderUi,
                 providerUiUrl: '/provider/employees',
             ),
@@ -171,7 +171,7 @@ test('a capability can combine file reads with a provider UI handoff', function 
 test('write capability names the narrow executable port instead of a generic command claim', function (): void {
     $capabilities = new CapabilitySet([
         new CapabilityDeclaration(PeopleCapability::EmployeeDirectory, [
-            new CapabilityChannel(CapabilityDirection::Write, CapabilityDelivery::Synchronous, TestEmployeeCommandPort::class),
+            new CapabilityChannel(CapabilityDelivery::Synchronous, TestEmployeeCommandPort::class),
         ]),
     ]);
 
@@ -181,28 +181,26 @@ test('write capability names the narrow executable port instead of a generic com
 });
 
 test('provider UI channels require a safe handoff URL and carry no data direction', function (): void {
-    expect(fn () => new CapabilityChannel(CapabilityDirection::None, CapabilityDelivery::ProviderUi))
+    expect(fn () => new CapabilityChannel(CapabilityDelivery::ProviderUi))
         ->toThrow(InvalidArgumentException::class, 'require an HTTPS URL');
 
     expect(fn () => new CapabilityChannel(
-        CapabilityDirection::None,
         CapabilityDelivery::ProviderUi,
         providerUiUrl: 'http://provider.example/payroll',
     ))->toThrow(InvalidArgumentException::class, 'require an HTTPS URL');
 
     expect(fn () => new CapabilityChannel(
-        CapabilityDirection::None,
         CapabilityDelivery::ProviderUi,
         providerUiUrl: 'https://user:secret@provider.example/payroll',
     ))->toThrow(InvalidArgumentException::class, 'require an HTTPS URL');
 
     expect(fn () => new CapabilityChannel(
-        CapabilityDirection::Read,
         CapabilityDelivery::ProviderUi,
+        BootstrapsWorkforce::class,
         providerUiUrl: '/provider/payroll',
-    ))->toThrow(InvalidArgumentException::class, 'cannot imply');
+    ))->toThrow(InvalidArgumentException::class, 'cannot expose');
 
-    expect(fn () => new CapabilityChannel(CapabilityDirection::Read, CapabilityDelivery::Synchronous))
+    expect(fn () => new CapabilityChannel(CapabilityDelivery::Synchronous))
         ->toThrow(InvalidArgumentException::class, 'port interface');
 });
 
@@ -236,9 +234,9 @@ test('provider conformance exercises only the narrow ports an adapter declares',
     $provider->shouldReceive('capabilities')->andReturn(
         new CapabilitySet([
             new CapabilityDeclaration(PeopleCapability::CompanyDirectory, [
-                new CapabilityChannel(CapabilityDirection::Read, CapabilityDelivery::Synchronous, BootstrapsWorkforce::class),
-                new CapabilityChannel(CapabilityDirection::Read, CapabilityDelivery::Synchronous, ReadsWorkforceChanges::class),
-                new CapabilityChannel(CapabilityDirection::Read, CapabilityDelivery::Synchronous, ReconcilesWorkforce::class),
+                new CapabilityChannel(CapabilityDelivery::Synchronous, BootstrapsWorkforce::class),
+                new CapabilityChannel(CapabilityDelivery::Synchronous, ReadsWorkforceChanges::class),
+                new CapabilityChannel(CapabilityDelivery::Synchronous, ReconcilesWorkforce::class),
             ]),
         ]),
     );
@@ -269,7 +267,7 @@ test('snapshot-only adapters are not forced to provide incremental or reconcilia
     $provider->shouldReceive('capabilities')->andReturn(
         new CapabilitySet([
             new CapabilityDeclaration(PeopleCapability::EmployeeDirectory, [
-                new CapabilityChannel(CapabilityDirection::Read, CapabilityDelivery::FileExchange, BootstrapsWorkforce::class),
+                new CapabilityChannel(CapabilityDelivery::FileExchange, BootstrapsWorkforce::class),
             ]),
         ]),
     );
@@ -312,11 +310,25 @@ test('workforce records enforce exhaustive reference types', function (): void {
 });
 
 test('provider file inspection states are unambiguous', function (): void {
-    expect(new ProviderFileInspection(true, 'hr2000-export-v1'))->accepted->toBeTrue();
-    expect(new ProviderFileInspection(false, 'hr2000-export-v1', ['Missing employee number.'])->accepted)->toBeFalse();
+    $hash = str_repeat('a', 64);
+    $file = new ProviderFile('employees.csv', $hash, '/imports/employees.csv');
+    $accepted = new ProviderFileInspection(true, $hash, 'hr2000-export-v1');
+    $rejected = new ProviderFileInspection(false, $hash, 'hr2000-export-v1', ['Missing employee number.']);
 
-    expect(fn () => new ProviderFileInspection(true, 'hr2000-export-v1', ['Contradiction']))
+    expect($accepted->accepted)->toBeTrue()
+        ->and($rejected->accepted)->toBeFalse();
+
+    expect(fn () => new ProviderFileInspection(true, $hash, 'hr2000-export-v1', ['Contradiction']))
         ->toThrow(InvalidArgumentException::class, 'cannot have errors');
-    expect(fn () => new ProviderFileInspection(false, 'hr2000-export-v1'))
+    expect(fn () => new ProviderFileInspection(false, $hash, 'hr2000-export-v1'))
         ->toThrow(InvalidArgumentException::class, 'require an explanation');
+
+    expect(new ProviderFileImportResult($file, $accepted, 1, 0)->accepted)->toBe(1);
+
+    $changedFile = new ProviderFile('employees.csv', str_repeat('b', 64), '/imports/employees.csv');
+    expect(fn () => new ProviderFileImportResult($changedFile, $accepted, 1, 0))
+        ->toThrow(InvalidArgumentException::class, 'exact file hash');
+    expect(fn () => new ProviderFileImportResult($file, $rejected, 0, 1, [
+        ['row' => 1, 'code' => 'invalid', 'detail' => 'Rejected.'],
+    ]))->toThrow(InvalidArgumentException::class, 'accepted inspection');
 });

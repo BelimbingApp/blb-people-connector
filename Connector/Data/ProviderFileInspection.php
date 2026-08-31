@@ -7,9 +7,14 @@ final readonly class ProviderFileInspection
     /** @param list<string> $errors */
     public function __construct(
         public bool $accepted,
+        public string $sha256,
         public string $schemaVersion,
         public array $errors = [],
     ) {
+        if (preg_match('/^[a-f0-9]{64}$/', $sha256) !== 1) {
+            throw new \InvalidArgumentException('Provider file inspections require the inspected file SHA-256.');
+        }
+
         if (trim($schemaVersion) === '') {
             throw new \InvalidArgumentException('Provider file inspections require a schema version.');
         }

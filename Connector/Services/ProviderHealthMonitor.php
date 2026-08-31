@@ -26,7 +26,9 @@ final class ProviderHealthMonitor
             );
         }
 
-        if ($health->lastSuccessfulSyncAt === null && $previous->lastSuccessfulSyncAt !== null) {
+        if ($health->state === ProviderHealthState::Unknown
+            && $health->lastSuccessfulSyncAt === null
+            && $previous->lastSuccessfulSyncAt !== null) {
             $health = new ProviderHealth(
                 state: $health->state,
                 checkedAt: $health->checkedAt,

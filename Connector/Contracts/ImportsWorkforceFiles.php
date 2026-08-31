@@ -6,9 +6,10 @@ use App\Domains\PeopleConnector\Connector\Data\ProviderFile;
 use App\Domains\PeopleConnector\Connector\Data\ProviderFileImportResult;
 use App\Domains\PeopleConnector\Connector\Data\ProviderFileInspection;
 
-interface ImportsWorkforceFiles extends ProviderPort
+interface ImportsWorkforceFiles extends ReadableProviderPort
 {
     public function inspect(ProviderFile $file): ProviderFileInspection;
 
-    public function import(ProviderFile $file): ProviderFileImportResult;
+    /** Atomically re-inspect the exact file and import only when it is accepted. */
+    public function inspectAndImport(ProviderFile $file): ProviderFileImportResult;
 }
