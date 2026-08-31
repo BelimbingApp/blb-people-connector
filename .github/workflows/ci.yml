@@ -1,0 +1,20 @@
+name: ci
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  ci:
+    uses: BelimbingApp/belimbing/.github/workflows/domain-ci.yml@main
+    with:
+      domain-path: app/Domains/PeopleConnector
+      sonar-project-key: BelimbingApp_blb-people-connector
+      sonar-organization: belimbingapp
+    secrets:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
