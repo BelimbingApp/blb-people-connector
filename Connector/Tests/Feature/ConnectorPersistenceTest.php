@@ -170,6 +170,46 @@ test('identity resolution is idempotent tenant isolated and fails closed on coll
         observedAt: $observedAt,
     ))->toThrow(TypeError::class);
 
+    expect(fn () => app(WorkforceHistory::class)->record(
+        $connection,
+        WorkforceEntity::query()->findOrFail($first->workforce_entity_id),
+        $first,
+        WorkforceHistoryEvent::identityAttached(
+            connectorPersistenceReference(WorkforceResourceType::Employee, 'medical-record-payload', 'other.provider'),
+        ),
+        $observedAt,
+        $observedAt,
+    ))->toThrow(WorkforceHistoryConflictException::class, 'match the supplied connection, identity, and entity');
+
+    expect(fn () => app(WorkforceHistory::class)->record(
+        $connection,
+        WorkforceEntity::query()->findOrFail($first->workforce_entity_id),
+        $first,
+        WorkforceHistoryEvent::identityRemapped(
+            $firstReference,
+            $secondReference,
+            (int) $first->id,
+            (int) $first->workforce_entity_id,
+        ),
+        $observedAt,
+        $observedAt,
+    ))->toThrow(WorkforceHistoryConflictException::class, 'related facts must match');
+
+    expect(fn () => app(WorkforceHistory::class)->record(
+        $connection,
+        WorkforceEntity::query()->findOrFail($first->workforce_entity_id),
+        $first,
+        WorkforceHistoryEvent::entityMerged(
+            $firstReference,
+            $secondReference,
+            (int) $second->id,
+            (int) $first->workforce_entity_id + 1000,
+            (int) $second->workforce_entity_id,
+        ),
+        $observedAt,
+        $observedAt,
+    ))->toThrow(WorkforceHistoryConflictException::class, 'subject entity facts must match');
+
     $secondConnection = app(ProviderConnectionStore::class)->configure(ProviderScope::tenant(), 'provider.two');
     app(ProviderConnectionStore::class)->activate((int) $secondConnection->id);
     expect(fn () => $identities->resolveOrCreateIdentity(
