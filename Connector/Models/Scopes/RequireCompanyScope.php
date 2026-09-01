@@ -12,10 +12,11 @@ use Illuminate\Database\Eloquent\Scope;
  * the company axis.
  *
  * Laravel applies global scopes immediately before a query executes, so by the
- * time this runs every predicate the caller added is visible. Reads, updates
- * and deletes all pass through here. Inserts do not — see
- * docs/contracts/company-ownership.md for what the guard covers and what the
- * database constraints cover instead.
+ * time this runs every predicate the caller added is visible. Reads, updates,
+ * deletes and mass inserts all pass through here. Creating a row through
+ * Model::create() or $model->save() does not — Eloquent builds those without
+ * scopes — so the database's NOT NULL and composite foreign key are the
+ * backstop there. See docs/contracts/company-ownership.md.
  */
 final class RequireCompanyScope implements Scope
 {
