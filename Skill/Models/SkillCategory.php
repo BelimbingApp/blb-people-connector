@@ -23,11 +23,22 @@ class SkillCategory extends TenantOwnedModel
         ];
     }
 
-    /** @return HasMany<Skill, $this> */
+    /**
+     * The escape is needed because this constrains `category_id`, which is not
+     * Skill's company column. It is safe for the relation as written: the
+     * category was resolved for its company, and the store refuses a skill
+     * whose category belongs to another one — though the database does not.
+     *     *
+     * The escape covers whatever a caller appends to this relation, including
+     * an unbracketed orWhere. Do not append one. Pin the company explicitly
+     * instead: Skill::query()->forCompany(...)->where('category_id', ...).
+     *
+     * @return HasMany<Skill, $this>
+     */
     public function skills(): HasMany
     {
         return $this->hasMany(Skill::class, 'category_id')
-            ->withoutCompanyScope('Reached only from a category already resolved for its company; the store refuses a skill whose category belongs to another one.');
+            ->withoutCompanyScope('Constrains category_id, which is not the skill company column; the category was resolved for its company and the store refuses a cross-company link.');
     }
 
     public function getAuditSubject(): ?array

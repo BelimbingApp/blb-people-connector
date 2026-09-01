@@ -56,11 +56,21 @@ class ProficiencyScaleLevel extends TenantOwnedModel
         static::deleting($guard);
     }
 
-    /** @return BelongsTo<ProficiencyScale, $this> */
+    /**
+     * The escape is needed because a belongsTo constrains the parent's primary
+     * key, which is not ProficiencyScale's company column. It is safe for the
+     * relation as written: the level came from a query pinned to one scale,
+     * and this walks back to that same scale.
+     *     *
+     * The escape covers whatever a caller appends to this relation, including
+     * an unbracketed orWhere. Do not append one.
+     *
+     * @return BelongsTo<ProficiencyScale, $this>
+     */
     public function scale(): BelongsTo
     {
         return $this->belongsTo(ProficiencyScale::class, 'scale_id')
-            ->withoutCompanyScope('A level is reached only through its own scale, whose company already governed the query that produced the level.');
+            ->withoutCompanyScope('Constrains the scale primary key, which is not its company column; the level came from a query already pinned to that scale.');
     }
 
     public function getAuditSubject(): ?array

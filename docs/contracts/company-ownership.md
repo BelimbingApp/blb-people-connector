@@ -176,6 +176,13 @@ connector sync run writing a whole provider payload. Those call
 Model::query()->withoutCompanyScope('why this query may span companies')->…
 ```
 
+One thing to know before using it: **the escape covers the whole query, not
+just the clause that needed it** — including anything a later caller appends. An
+escape on a relation is therefore an escape on every query built from that
+relation, and an unbracketed `orWhere` appended to one will read and write past
+the company. Prefer pinning explicitly over reaching for the escape, and put it
+as close to the query that needs it as you can.
+
 The reason string is required and is not decorative. `grep -rn
 withoutCompanyScope` lists every place in the repository where the company
 boundary is deliberately not applied, together with the author's stated
@@ -245,18 +252,30 @@ When a relationship must traverse into a company-owned model by primary key (a
 skill reaching its category, a level reaching its scale), the relationship says
 so explicitly with `withoutCompanyScope()` and states why it is safe.
 
-**Relations that a guarded query correlates to also carry the escape, and this
-one is about usability, not convenience.** `has()`, `whereHas()`, `withCount()`
-and `doesntHave()` build a subquery whose only link to the parent is a
-column-to-column predicate, which the guard cannot read as a pin. So they threw
-even from a correctly pinned parent. That is fail-closed and leaks nothing, but
-it left an author who merely wanted to count a scale's levels with no legitimate
-way to satisfy the guard — and the thing they would reach for next is
-`withoutCompanyScope()` at their own call site, unexamined. A guard that pushes
-good-faith authors into the escape hatch will be routed around, and then it
-protects nothing. The escape therefore sits on `ProficiencyScale::levels()`,
-stated once, where the reason it is safe is actually true: the subquery is
-always correlated to a parent row the outer query already resolved.
+**A correlation to an enclosing query also counts as a pin**, and getting that
+right removed an escape rather than adding one. `has()`, `whereHas()`,
+`withCount()` and `doesntHave()` link their subquery to the parent with a
+column-to-column predicate and nothing else, so the guard used to refuse them
+even from a correctly pinned parent. That was fail-closed and leaked nothing —
+but it left an author who merely wanted to count a scale's levels with no
+legitimate way to satisfy the guard, and the next thing they reach for is
+`withoutCompanyScope()` at their own call site. **A guard that has to be
+switched off to do ordinary work gets switched off**, and the escape they write
+under mild frustration is wide enough to cover whatever else they append. The
+first attempt at this did exactly that, on `ProficiencyScale::levels()`, and a
+reviewer read *and wrote* a sibling company's level through an appended
+`orWhere` before it was replaced by the rule below.
+
+The rule: a `Column` predicate pins the query when one side is an owning column
+on the base table and the other side can be resolved **only** by an enclosing
+query — not the base table, not a joined table, not unqualified. That is the
+same strength as pinning to one literal parent id, because it binds each row to
+exactly one row of the outer query.
+
+The exclusion is load-bearing, not decoration. A column-to-column predicate
+against a table this query *can* see is a join condition, not a pin: it
+constrains the company to whatever the joined row happens to carry, which is how
+a join read a sibling company's rows in the first place.
 
 `whereIn('company_entity_id', [$a, $b])` is accepted, by design. The guard
 proves the column is constrained to *named* companies. It does not prove there
@@ -361,7 +380,8 @@ table and an aliased `from` pinned on its alias both still run. One test that
 no file in the domain calls Laravel's unreasoned scope-removal methods. And one
 that counting a scale's levels works from a pinned parent, because a guard that
 forces good-faith authors into the escape hatch is a guard that gets routed
-around.
+around — with its companion asserting that an `orWhere` appended to that same
+relation is still refused, for both reads and writes.
 
 The same class provides `twoCompaniesInOneTenant()` — the fixture the
 repository never had, provisioned the way an adapter will: workforce entity,

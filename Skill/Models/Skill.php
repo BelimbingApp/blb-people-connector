@@ -44,11 +44,22 @@ class Skill extends TenantOwnedModel
         ];
     }
 
-    /** @return BelongsTo<SkillCategory, $this> */
+    /**
+     * The escape is needed because a belongsTo constrains the parent's primary
+     * key, which is not SkillCategory's company column. It is safe for the
+     * relation as written: the skill was resolved for its company, and the
+     * store refuses a category_id from any other one — though the database
+     * does not, since the key is (category_id, tenant_id).
+     *     *
+     * The escape covers whatever a caller appends to this relation, including
+     * an unbracketed orWhere. Do not append one.
+     *
+     * @return BelongsTo<SkillCategory, $this>
+     */
     public function category(): BelongsTo
     {
         return $this->belongsTo(SkillCategory::class, 'category_id')
-            ->withoutCompanyScope('The skill was already resolved for its company, and the store refuses a category from any other one.');
+            ->withoutCompanyScope('Constrains the category primary key, which is not its company column; the skill was resolved for its company and the store refuses a category from another one.');
     }
 
     public function isCritical(): bool
