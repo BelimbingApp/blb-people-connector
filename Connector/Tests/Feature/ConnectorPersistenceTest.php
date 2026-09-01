@@ -997,3 +997,121 @@ test('reactivation cannot resurrect an identity that was superseded rather than 
     expect(fn () => $identities->reactivate((int) $connection->id, $missing, $occurredAt->modify('+2 hours'), $review))
         ->toThrow(ConnectorRecordNotFoundException::class);
 });
+
+test('reactivation is refused when the entity was merged away underneath the identity', function (): void {
+    [$tenant] = createTenantWithCompany(['name' => 'Merged Away Tenant']);
+    $connection = connectorPersistenceConnection((int) $tenant->id);
+    $identities = app(WorkforceIdentityStore::class);
+    $projections = app(WorkforceProjectionStore::class);
+    $t0 = new DateTimeImmutable('2026-08-30T09:00:00+00:00');
+    $review = new WorkforceProvenance('identity_merge', 'duplicate-confirmed');
+    $company = connectorPersistenceReference(WorkforceResourceType::Company, 'COMPANY-MERGED-AWAY');
+    $active = connectorPersistenceReference(WorkforceResourceType::Employee, 'EMP-MERGED-ACTIVE');
+    $dormant = connectorPersistenceReference(WorkforceResourceType::Employee, 'EMP-MERGED-DORMANT');
+    $survivor = connectorPersistenceReference(WorkforceResourceType::Employee, 'EMP-MERGED-SURVIVOR');
+
+    // Two identities on one entity, then one of them is deactivated before
+    // the merge. merge() only retires the identities that were active at the
+    // time, so the dormant one is left pointing at an entity that is about to
+    // be superseded.
+    $activeIdentity = $identities->resolveOrCreateIdentity((int) $connection->id, $active, $t0);
+    $dormantIdentity = $identities->resolveOrCreateIdentity(
+        (int) $connection->id,
+        $dormant,
+        $t0,
+        preferredEntityId: (int) $activeIdentity->workforce_entity_id,
+        provenance: $review,
+    );
+
+    expect((int) $dormantIdentity->workforce_entity_id)->toBe((int) $activeIdentity->workforce_entity_id);
+
+    $identities->deactivate((int) $connection->id, $dormant, $t0->modify('+1 hour'), $review);
+    $identities->resolveOrCreateIdentity((int) $connection->id, $survivor, $t0->modify('+2 hours'));
+    $identities->merge((int) $connection->id, $active, $survivor, $t0->modify('+3 hours'), $review);
+
+    expect(WorkforceEntity::query()->findOrFail($dormantIdentity->workforce_entity_id)->state)
+        ->toBe(WorkforceEntity::STATE_MERGED);
+
+    expect(fn () => $identities->reactivate((int) $connection->id, $dormant, $t0->modify('+4 hours'), $review))
+        ->toThrow(ExternalIdentityCollisionException::class, 'merged away and cannot be reactivated');
+
+    // The refusal has to leave the identity exactly as it was, and the upsert
+    // has to keep giving the clear lifecycle error rather than failing later
+    // and deeper on an unrelated history-validation message.
+    expect($dormantIdentity->refresh()->state)->toBe(ExternalIdentity::STATE_INACTIVE);
+
+    $projections->upsert((int) $connection->id, new WorkforceCompany($company, 'Merged Away Co', true, $t0));
+
+    expect(fn () => $projections->upsert((int) $connection->id, new WorkforceEmployee(
+        $dormant,
+        $company,
+        'Dormant Employee',
+        true,
+        $t0->modify('+5 hours'),
+        $t0->modify('+5 hours'),
+    )))->toThrow(ExternalIdentityCollisionException::class, 'Only an active current identity');
+});
+
+test('the projection rejection only advises reactivation for an identity that reactivate accepts', function (): void {
+    [$tenantA] = createTenantWithCompany(['name' => 'Advice Tenant A']);
+    $connection = connectorPersistenceConnection((int) $tenantA->id);
+    $identities = app(WorkforceIdentityStore::class);
+    $projections = app(WorkforceProjectionStore::class);
+    $t0 = new DateTimeImmutable('2026-08-30T09:00:00+00:00');
+    $base = 'Only an active current identity may update a workforce projection.';
+    $feed = new WorkforceProvenance('provider_change_feed', correlationReference: 'advice-1');
+    $review = new WorkforceProvenance('identity_remap', 'migration-team');
+    $company = connectorPersistenceReference(WorkforceResourceType::Company, 'COMPANY-ADVICE');
+    $employee = connectorPersistenceReference(WorkforceResourceType::Employee, 'EMP-ADVICE');
+    $replacement = connectorPersistenceReference(WorkforceResourceType::Employee, 'EMP-ADVICE-NEW');
+
+    $projections->upsert((int) $connection->id, new WorkforceCompany($company, 'Advice Co', true, $t0));
+    $projections->upsert((int) $connection->id, new WorkforceEmployee(
+        $employee, $company, 'Advice Employee', true, $t0, $t0,
+    ));
+
+    $identity = ExternalIdentity::query()
+        ->forTenant((int) $tenantA->id)
+        ->where('external_id', 'EMP-ADVICE')
+        ->sole();
+
+    $upsertAt = function (DateTimeImmutable $at) use ($projections, $connection, $employee, $company): ?string {
+        try {
+            $projections->upsert((int) $connection->id, new WorkforceEmployee(
+                $employee, $company, 'Advice Employee', true, $at, $at,
+            ));
+        } catch (ExternalIdentityCollisionException $exception) {
+            return $exception->getMessage();
+        }
+
+        return null;
+    };
+
+    // Deactivated: reactivate() will accept it, so the advice is correct.
+    $identities->deactivate((int) $connection->id, $employee, $t0->modify('+1 hour'), $feed);
+
+    // Wording is not the point; that this state is the one told to recover is.
+    expect($upsertAt($t0->modify('+2 hours')))
+        ->toStartWith($base)
+        ->toContain('reactivate');
+
+    // Remapped: reactivate() would refuse, so no advice may be offered.
+    $identities->reactivate((int) $connection->id, $employee, $t0->modify('+2 hours'), $feed);
+    $identities->remap((int) $connection->id, $employee, $replacement, $t0->modify('+3 hours'), $review);
+
+    expect($upsertAt($t0->modify('+4 hours')))->toBe($base);
+
+    // Cross-tenant: not ours to touch, so no advice either.
+    [$tenantB] = createTenantWithCompany(['name' => 'Advice Tenant B']);
+    connectorPersistenceConnection((int) $tenantB->id);
+
+    $crossTenantMessage = null;
+
+    try {
+        $identities->assertActive($identity);
+    } catch (ExternalIdentityCollisionException $exception) {
+        $crossTenantMessage = $exception->getMessage();
+    }
+
+    expect($crossTenantMessage)->toBe($base);
+});
