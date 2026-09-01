@@ -3,6 +3,7 @@
 namespace App\Domains\PeopleConnector\Skill\Models;
 
 use App\Domains\PeopleConnector\Connector\Models\TenantOwnedModel;
+use App\Domains\PeopleConnector\Skill\Models\Concerns\CompanyOwned;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
 /**
@@ -11,6 +12,8 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
  */
 class SkillCategory extends TenantOwnedModel
 {
+    use CompanyOwned;
+
     protected $table = 'people_connector_skill_categories';
 
     protected function casts(): array

@@ -8,10 +8,13 @@ use App\Domains\PeopleConnector\Skill\Enums\CriticalClassification;
 use App\Domains\PeopleConnector\Skill\Enums\SkillScope;
 use App\Domains\PeopleConnector\Skill\Events\SkillDeactivated;
 use App\Domains\PeopleConnector\Skill\Events\SkillDefined;
+use App\Domains\PeopleConnector\Skill\Events\SkillReactivated;
 use App\Domains\PeopleConnector\Skill\Exceptions\InvalidSkillCatalogException;
+use App\Domains\PeopleConnector\Skill\Exceptions\SkillCatalogRecordNotFoundException;
 use App\Domains\PeopleConnector\Skill\Models\Skill;
 use App\Domains\PeopleConnector\Skill\Models\SkillCategory;
 use App\Domains\PeopleConnector\Skill\Services\SkillCatalogStore;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\Event;
 
 afterEach(function (): void {
@@ -84,7 +87,7 @@ test('skill codes are stable: duplicates are refused and revision cannot rename'
     expect(fn () => $store->defineSkill($companyEntityId, skillCatalogDraft($category)))
         ->toThrow(InvalidSkillCatalogException::class, 'already exists');
 
-    expect(fn () => $store->reviseSkill((int) $skill->id, skillCatalogDraft($category, ['code' => 'forklift.renamed'])))
+    expect(fn () => $store->reviseSkill($companyEntityId, (int) $skill->id, skillCatalogDraft($category, ['code' => 'forklift.renamed'])))
         ->toThrow(InvalidSkillCatalogException::class, 'stable');
 });
 
@@ -142,7 +145,7 @@ test('tenancy: another tenant cannot see, revise, or reference this catalog', fu
         ->and(Skill::query()->forTenant($tenantIdA)->count())->toBe(1);
 
     // Tenant B cannot revise tenant A's skill…
-    expect(fn () => $store->reviseSkill((int) $skillA->id, skillCatalogDraft($categoryA)))
+    expect(fn () => $store->reviseSkill($companyEntityIdA, (int) $skillA->id, skillCatalogDraft($categoryA)))
         ->toThrow(Exception::class);
 
     // …cannot hang a skill on tenant A's category…
@@ -161,19 +164,74 @@ test('deactivation keeps history and category deactivation refuses while skills 
 
     $skill = $store->defineSkill($companyEntityId, skillCatalogDraft($category));
 
-    expect(fn () => $store->deactivateCategory((int) $category->id))
+    expect(fn () => $store->deactivateCategory($companyEntityId, (int) $category->id))
         ->toThrow(InvalidSkillCatalogException::class, 'active skills');
 
-    $store->deactivateSkill((int) $skill->id);
+    $store->deactivateSkill($companyEntityId, (int) $skill->id);
 
     expect($skill->refresh()->active)->toBeFalse()
         ->and(Skill::query()->count())->toBe(1);
     Event::assertDispatched(SkillDeactivated::class);
 
-    $store->deactivateCategory((int) $category->id);
+    $store->deactivateCategory($companyEntityId, (int) $category->id);
     expect($category->refresh()->active)->toBeFalse();
 
     // A skill cannot reactivate under an inactive category.
-    expect(fn () => $store->reactivateSkill((int) $skill->id))
+    expect(fn () => $store->reactivateSkill($companyEntityId, (int) $skill->id))
         ->toThrow(InvalidSkillCatalogException::class, 'category');
+});
+
+test('company axis: a sibling company in the same tenant cannot address this catalog', function (): void {
+    [$tenantId, $companyEntityIdA, $categoryA] = skillCatalogFixture('Company Axis Tenant');
+    $store = app(SkillCatalogStore::class);
+    $skillA = $store->defineSkill($companyEntityIdA, skillCatalogDraft($categoryA));
+
+    $companyB = skillCatalogEntity($tenantId, 'company');
+
+    expect(fn () => $store->reviseSkill((int) $companyB->id, (int) $skillA->id, skillCatalogDraft($categoryA)))
+        ->toThrow(SkillCatalogRecordNotFoundException::class);
+    expect(fn () => $store->deactivateSkill((int) $companyB->id, (int) $skillA->id))
+        ->toThrow(SkillCatalogRecordNotFoundException::class);
+    expect(fn () => $store->deactivateCategory((int) $companyB->id, (int) $categoryA->id))
+        ->toThrow(SkillCatalogRecordNotFoundException::class);
+    expect(fn () => $store->defineSkill((int) $companyB->id, skillCatalogDraft($categoryA)))
+        ->toThrow(InvalidSkillCatalogException::class, 'same company');
+
+    expect($skillA->refresh()->name)->toBe('Forklift Operation')
+        ->and($skillA->active)->toBeTrue();
+});
+
+test('skill codes are immutable at the model and database layers, not only in the store', function (): void {
+    [, $companyEntityId, $category] = skillCatalogFixture('Code Guard Tenant');
+    $skill = app(SkillCatalogStore::class)->defineSkill($companyEntityId, skillCatalogDraft($category));
+
+    expect(fn () => $skill->update(['code' => 'renamed.by.mass.assignment']))
+        ->toThrow(InvalidSkillCatalogException::class, 'stable');
+
+    expect(fn () => Skill::query()->whereKey($skill->id)->update(['code' => 'renamed.by.builder']))
+        ->toThrow(QueryException::class);
+
+    expect($skill->refresh()->code)->toBe('forklift.operation');
+});
+
+test('categories can be edited and reactivated, releasing their skills', function (): void {
+    Event::fake([SkillReactivated::class]);
+    [, $companyEntityId, $category] = skillCatalogFixture('Category Lifecycle Tenant');
+    $store = app(SkillCatalogStore::class);
+    $skill = $store->defineSkill($companyEntityId, skillCatalogDraft($category));
+
+    $store->editCategory($companyEntityId, (int) $category->id, 'Workplace Safety', 'Renamed by HR.');
+    expect($category->refresh()->name)->toBe('Workplace Safety')
+        ->and($category->code)->toBe('safety');
+
+    $store->deactivateSkill($companyEntityId, (int) $skill->id);
+    $store->deactivateCategory($companyEntityId, (int) $category->id);
+
+    // The door swings back: category first, then its skills.
+    $store->reactivateCategory($companyEntityId, (int) $category->id);
+    $store->reactivateSkill($companyEntityId, (int) $skill->id);
+
+    expect($category->refresh()->active)->toBeTrue()
+        ->and($skill->refresh()->active)->toBeTrue();
+    Event::assertDispatched(SkillReactivated::class);
 });

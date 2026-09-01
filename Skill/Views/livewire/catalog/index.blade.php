@@ -206,7 +206,19 @@
                     @foreach ($categories as $category)
                         <tr wire:key="category-{{ $category->id }}">
                             <td class="px-table-cell-x py-table-cell-y font-mono text-sm">{{ $category->code }}</td>
-                            <td class="px-table-cell-x py-table-cell-y text-sm font-medium text-ink">{{ $category->name }}</td>
+                            <td class="px-table-cell-x py-table-cell-y text-sm font-medium text-ink">
+                                @if ($canManage)
+                                    <input
+                                        type="text"
+                                        value="{{ $category->name }}"
+                                        wire:change="renameCategory({{ $category->id }}, $event.target.value)"
+                                        class="w-full bg-transparent text-sm font-medium text-ink"
+                                        aria-label="{{ __('Rename category :name', ['name' => $category->name]) }}"
+                                    />
+                                @else
+                                    {{ $category->name }}
+                                @endif
+                            </td>
                             <td class="px-table-cell-x py-table-cell-y text-sm tabular-nums">{{ $category->skills()->count() }}</td>
                             <td class="px-table-cell-x py-table-cell-y text-sm">
                                 <x-ui.badge :variant="$category->active ? 'success' : 'neutral'">
@@ -215,11 +227,9 @@
                             </td>
                             @if ($canManage)
                                 <td class="px-table-cell-x py-table-cell-y text-sm">
-                                    @if ($category->active)
-                                        <button type="button" class="text-muted" wire:click="deactivateCategory({{ $category->id }})">
-                                            {{ __('Deactivate') }}
-                                        </button>
-                                    @endif
+                                    <button type="button" class="text-muted" wire:click="toggleCategoryActive({{ $category->id }})">
+                                        {{ $category->active ? __('Deactivate') : __('Reactivate') }}
+                                    </button>
                                 </td>
                             @endif
                         </tr>

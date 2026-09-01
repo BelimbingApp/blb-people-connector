@@ -8,9 +8,13 @@ use App\Domains\PeopleConnector\Skill\Events\ProficiencyScalePublished;
 use App\Domains\PeopleConnector\Skill\Exceptions\InvalidSkillCatalogException;
 use App\Domains\PeopleConnector\Skill\Exceptions\ProficiencyScaleStateException;
 use App\Domains\PeopleConnector\Skill\Exceptions\PublishedScaleImmutableException;
+use App\Domains\PeopleConnector\Skill\Exceptions\SkillCatalogRecordNotFoundException;
 use App\Domains\PeopleConnector\Skill\Models\ProficiencyScale;
+use App\Domains\PeopleConnector\Skill\Models\ProficiencyScaleLevel;
 use App\Domains\PeopleConnector\Skill\Services\ProficiencyScaleStore;
 use App\Domains\PeopleConnector\Skill\Services\SkillCatalogDefaults;
+use Illuminate\Database\QueryException;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 
 afterEach(function (): void {
@@ -78,7 +82,7 @@ test('a published scale refuses mutation of itself and its levels', function ():
     $store = app(ProficiencyScaleStore::class);
 
     $scale = $store->draft($companyEntityId, 'standard', 'Standard', proficiencyScaleLevels());
-    $store->publish((int) $scale->id);
+    $store->publish($companyEntityId, (int) $scale->id);
     $scale->refresh();
 
     expect(fn () => $scale->update(['name' => 'Renamed']))
@@ -106,9 +110,9 @@ test('changing a published scale means drafting and publishing a new version', f
     $store = app(ProficiencyScaleStore::class);
 
     $v1 = $store->draft($companyEntityId, 'standard', 'Standard', proficiencyScaleLevels());
-    $store->publish((int) $v1->id);
+    $store->publish($companyEntityId, (int) $v1->id);
 
-    $v2 = $store->newDraftFrom((int) $v1->id);
+    $v2 = $store->newDraftFrom($companyEntityId, (int) $v1->id);
 
     expect($v2->version)->toBe(2)
         ->and($v2->status)->toBe(ProficiencyScaleStatus::Draft)
@@ -117,7 +121,7 @@ test('changing a published scale means drafting and publishing a new version', f
     // Draft levels stay editable until publish.
     $v2->levels()->firstWhere('level', 2)->update(['name' => 'Independent']);
 
-    $store->publish((int) $v2->id);
+    $store->publish($companyEntityId, (int) $v2->id);
 
     expect($v1->refresh()->status)->toBe(ProficiencyScaleStatus::Retired)
         ->and($v1->retired_at)->not->toBeNull()
@@ -157,17 +161,71 @@ test('drafts can be discarded but published scales cannot; tenancy bounds every 
     $store = app(ProficiencyScaleStore::class);
 
     $draft = $store->draft($companyEntityId, 'temp', 'Temp', proficiencyScaleLevels());
-    $store->discardDraft((int) $draft->id);
+    $store->discardDraft($companyEntityId, (int) $draft->id);
     expect(ProficiencyScale::query()->count())->toBe(0);
 
     $published = $store->draft($companyEntityId, 'standard', 'Standard', proficiencyScaleLevels());
-    $store->publish((int) $published->id);
-    expect(fn () => $store->discardDraft((int) $published->id))
+    $store->publish($companyEntityId, (int) $published->id);
+    expect(fn () => $store->discardDraft($companyEntityId, (int) $published->id))
         ->toThrow(ProficiencyScaleStateException::class);
 
     // Another tenant cannot even find this scale, let alone retire it.
     $tenantB = createTenant(['name' => 'Scale Tenant B']);
     app(TenantContext::class)->set((int) $tenantB->id);
-    expect(fn () => $store->retire((int) $published->id))
+    expect(fn () => $store->retire($companyEntityId, (int) $published->id))
         ->toThrow(Exception::class, 'not found');
+});
+
+test('published-scale immutability holds at the database layer against builder and raw writes', function (): void {
+    [, $companyEntityId] = proficiencyScaleFixture('DB Guard Tenant');
+    $store = app(ProficiencyScaleStore::class);
+
+    $scale = $store->draft($companyEntityId, 'standard', 'Standard', proficiencyScaleLevels());
+    $store->publish($companyEntityId, (int) $scale->id);
+    $scaleId = (int) $scale->id;
+
+    // None of these touch Eloquent model events; only the DB triggers stand.
+    expect(fn () => ProficiencyScale::query()->whereKey($scaleId)->update(['name' => 'SILENTLY RENAMED']))
+        ->toThrow(QueryException::class);
+    expect(fn () => ProficiencyScaleLevel::query()->where('scale_id', $scaleId)->where('level', 2)->update(['name' => 'Rewritten']))
+        ->toThrow(QueryException::class);
+    expect(fn () => DB::table('people_connector_skill_proficiency_scale_levels')
+        ->where('scale_id', $scaleId)->where('level', 0)->update(['name' => 'Not assessed']))
+        ->toThrow(QueryException::class);
+    expect(fn () => ProficiencyScaleLevel::query()->insert([
+        'tenant_id' => $scale->tenant_id, 'scale_id' => $scaleId, 'level' => 3,
+        'name' => 'Injected', 'anchor' => 'x', 'authority' => 'y',
+        'created_at' => now(), 'updated_at' => now(),
+    ]))->toThrow(QueryException::class);
+    expect(fn () => ProficiencyScaleLevel::query()->where('scale_id', $scaleId)->where('level', 1)->delete())
+        ->toThrow(QueryException::class);
+    expect(fn () => DB::table('people_connector_skill_proficiency_scales')->where('id', $scaleId)->delete())
+        ->toThrow(QueryException::class);
+
+    $scale->refresh();
+    expect($scale->name)->toBe('Standard')
+        ->and($scale->levels()->count())->toBe(3)
+        ->and($scale->levels()->firstWhere('level', 0)->name)->toBe('Not trained');
+});
+
+test('company axis: a sibling company cannot publish, draft from, or retire this scale', function (): void {
+    [$tenantId, $companyEntityIdA] = proficiencyScaleFixture('Scale Company Axis Tenant');
+    $store = app(ProficiencyScaleStore::class);
+    $draft = $store->draft($companyEntityIdA, 'standard', 'Standard', proficiencyScaleLevels());
+
+    $companyB = WorkforceEntity::query()->create([
+        'tenant_id' => $tenantId,
+        'resource_type' => 'company',
+        'state' => WorkforceEntity::STATE_ACTIVE,
+        'first_seen_at' => now(),
+    ]);
+
+    expect(fn () => $store->publish((int) $companyB->id, (int) $draft->id))
+        ->toThrow(SkillCatalogRecordNotFoundException::class);
+    expect(fn () => $store->newDraftFrom((int) $companyB->id, (int) $draft->id))
+        ->toThrow(SkillCatalogRecordNotFoundException::class);
+    expect(fn () => $store->discardDraft((int) $companyB->id, (int) $draft->id))
+        ->toThrow(SkillCatalogRecordNotFoundException::class);
+
+    expect($draft->refresh()->status)->toBe(ProficiencyScaleStatus::Draft);
 });

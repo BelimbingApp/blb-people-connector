@@ -4,6 +4,7 @@ use App\Base\Database\Concerns\IncubatingSchema;
 use App\Base\Database\Concerns\RegistersTables;
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
@@ -26,6 +27,8 @@ return new class extends Migration
         $this->createProficiencyScales();
         $this->createProficiencyScaleLevels();
 
+        $this->createImmutabilityGuards();
+
         foreach ($this->tables as $table) {
             $this->registerTable($table);
         }
@@ -33,9 +36,168 @@ return new class extends Migration
 
     public function down(): void
     {
+        $this->dropImmutabilityGuards();
+
         foreach (array_reverse($this->tables) as $table) {
             $this->unregisterTable($table);
             Schema::dropIfExists($table);
+        }
+    }
+
+    /**
+     * Database-level enforcement of the published-scale and stable-skill-code
+     * invariants (precedent: 0200_01_07_001007_scope_custom_authz_roles).
+     * Model events alone do not fire for builder or raw writes; #10 requires
+     * that a published scale "cannot be silently mutated", so the database
+     * itself refuses: any UPDATE/DELETE of a non-draft scale (except the pure
+     * published → retired transition), any level write under a non-draft
+     * scale, and any change to a skill's code.
+     */
+    private function createImmutabilityGuards(): void
+    {
+        $driver = DB::connection()->getDriverName();
+
+        if ($driver === 'pgsql') {
+            $this->createPostgresGuards();
+        } elseif ($driver === 'sqlite') {
+            $this->createSqliteGuards();
+        }
+    }
+
+    private function createPostgresGuards(): void
+    {
+        DB::unprepared(<<<'SQL'
+            CREATE OR REPLACE FUNCTION pcs_scale_guard() RETURNS trigger AS $$
+            BEGIN
+                IF TG_OP = 'DELETE' THEN
+                    IF OLD.published_at IS NOT NULL THEN
+                        RAISE EXCEPTION 'proficiency scale % has been published and cannot be deleted', OLD.id;
+                    END IF;
+                    RETURN OLD;
+                END IF;
+                IF OLD.status = 'draft' THEN
+                    RETURN NEW;
+                END IF;
+                IF OLD.status = 'published' AND NEW.status = 'retired'
+                    AND NEW.tenant_id = OLD.tenant_id
+                    AND NEW.company_entity_id = OLD.company_entity_id
+                    AND NEW.code = OLD.code
+                    AND NEW.name = OLD.name
+                    AND NEW.version = OLD.version
+                    AND NEW.published_at IS NOT DISTINCT FROM OLD.published_at THEN
+                    RETURN NEW;
+                END IF;
+                RAISE EXCEPTION 'proficiency scale % is % and immutable; draft a new version instead', OLD.id, OLD.status;
+            END;
+            $$ LANGUAGE plpgsql;
+
+            CREATE TRIGGER pcs_scale_guard_trigger
+                BEFORE UPDATE OR DELETE ON people_connector_skill_proficiency_scales
+                FOR EACH ROW EXECUTE FUNCTION pcs_scale_guard();
+
+            CREATE OR REPLACE FUNCTION pcs_level_guard() RETURNS trigger AS $$
+            DECLARE
+                scale_ids bigint[];
+                bad_scale bigint;
+            BEGIN
+                IF TG_OP = 'INSERT' THEN
+                    scale_ids := ARRAY[NEW.scale_id];
+                ELSIF TG_OP = 'DELETE' THEN
+                    scale_ids := ARRAY[OLD.scale_id];
+                ELSE
+                    scale_ids := ARRAY[OLD.scale_id, NEW.scale_id];
+                END IF;
+                SELECT id INTO bad_scale
+                    FROM people_connector_skill_proficiency_scales
+                    WHERE id = ANY(scale_ids) AND status IS DISTINCT FROM 'draft'
+                    LIMIT 1;
+                IF bad_scale IS NOT NULL THEN
+                    RAISE EXCEPTION 'proficiency scale % is not draft; its levels are immutable', bad_scale;
+                END IF;
+                IF TG_OP = 'DELETE' THEN
+                    RETURN OLD;
+                END IF;
+                RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql;
+
+            CREATE TRIGGER pcs_level_guard_trigger
+                BEFORE INSERT OR UPDATE OR DELETE ON people_connector_skill_proficiency_scale_levels
+                FOR EACH ROW EXECUTE FUNCTION pcs_level_guard();
+
+            CREATE OR REPLACE FUNCTION pcs_skill_code_guard() RETURNS trigger AS $$
+            BEGIN
+                IF NEW.code IS DISTINCT FROM OLD.code THEN
+                    RAISE EXCEPTION 'skill code % is stable and cannot be changed', OLD.code;
+                END IF;
+                RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql;
+
+            CREATE TRIGGER pcs_skill_code_guard_trigger
+                BEFORE UPDATE ON people_connector_skill_skills
+                FOR EACH ROW EXECUTE FUNCTION pcs_skill_code_guard();
+        SQL);
+    }
+
+    private function createSqliteGuards(): void
+    {
+        DB::statement(
+            'CREATE TRIGGER pcs_scale_update_guard BEFORE UPDATE ON people_connector_skill_proficiency_scales'
+            ." WHEN NOT (OLD.status = 'draft' OR (OLD.status = 'published' AND NEW.status = 'retired'"
+            .' AND NEW.tenant_id = OLD.tenant_id AND NEW.company_entity_id = OLD.company_entity_id'
+            .' AND NEW.code = OLD.code AND NEW.name = OLD.name AND NEW.version = OLD.version'
+            .' AND NEW.published_at IS OLD.published_at))'
+            ." BEGIN SELECT RAISE(ABORT, 'proficiency scale is published and immutable; draft a new version instead'); END",
+        );
+        DB::statement(
+            'CREATE TRIGGER pcs_scale_delete_guard BEFORE DELETE ON people_connector_skill_proficiency_scales'
+            .' WHEN OLD.published_at IS NOT NULL'
+            ." BEGIN SELECT RAISE(ABORT, 'proficiency scale has been published and cannot be deleted'); END",
+        );
+
+        $notDraft = static fn (string $row): string => "(SELECT status FROM people_connector_skill_proficiency_scales WHERE id = $row.scale_id) != 'draft'";
+        foreach ([
+            'INSERT' => $notDraft('NEW'),
+            'UPDATE' => $notDraft('NEW').' OR '.$notDraft('OLD'),
+            'DELETE' => $notDraft('OLD'),
+        ] as $operation => $condition) {
+            DB::statement(
+                'CREATE TRIGGER pcs_level_'.strtolower($operation).'_guard'
+                ." BEFORE $operation ON people_connector_skill_proficiency_scale_levels"
+                ." WHEN $condition"
+                ." BEGIN SELECT RAISE(ABORT, 'proficiency scale is not draft; its levels are immutable'); END",
+            );
+        }
+
+        DB::statement(
+            'CREATE TRIGGER pcs_skill_code_guard BEFORE UPDATE ON people_connector_skill_skills'
+            .' WHEN NEW.code != OLD.code'
+            ." BEGIN SELECT RAISE(ABORT, 'skill code is stable and cannot be changed'); END",
+        );
+    }
+
+    private function dropImmutabilityGuards(): void
+    {
+        $driver = DB::connection()->getDriverName();
+
+        if ($driver === 'pgsql') {
+            DB::unprepared(<<<'SQL'
+                DROP TRIGGER IF EXISTS pcs_scale_guard_trigger ON people_connector_skill_proficiency_scales;
+                DROP TRIGGER IF EXISTS pcs_level_guard_trigger ON people_connector_skill_proficiency_scale_levels;
+                DROP TRIGGER IF EXISTS pcs_skill_code_guard_trigger ON people_connector_skill_skills;
+                DROP FUNCTION IF EXISTS pcs_scale_guard();
+                DROP FUNCTION IF EXISTS pcs_level_guard();
+                DROP FUNCTION IF EXISTS pcs_skill_code_guard();
+            SQL);
+        } elseif ($driver === 'sqlite') {
+            foreach ([
+                'pcs_scale_update_guard', 'pcs_scale_delete_guard',
+                'pcs_level_insert_guard', 'pcs_level_update_guard', 'pcs_level_delete_guard',
+                'pcs_skill_code_guard',
+            ] as $trigger) {
+                DB::statement('DROP TRIGGER IF EXISTS '.$trigger);
+            }
         }
     }
 

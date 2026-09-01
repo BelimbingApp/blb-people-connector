@@ -71,7 +71,7 @@ class SkillCatalogDefaults
                     'Standard Proficiency Scale',
                     $this->standardLevels(),
                 );
-                $scale = $this->scales->publish((int) $draft->getKey());
+                $scale = $this->scales->publish($companyEntityId, (int) $draft->getKey());
             }
 
             return ['categories' => $created, 'scale' => $scale];

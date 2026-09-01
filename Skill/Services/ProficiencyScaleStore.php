@@ -78,10 +78,10 @@ class ProficiencyScaleStore
      * Copy a scale's levels into a new draft version of the same code, ready
      * for revision. This is the only way to change a published scale.
      */
-    public function newDraftFrom(int $scaleId): ProficiencyScale
+    public function newDraftFrom(int $companyEntityId, int $scaleId): ProficiencyScale
     {
         $tenantId = $this->tenantContext->requireTenantId();
-        $source = $this->requireScale($tenantId, $scaleId);
+        $source = $this->requireScale($tenantId, $companyEntityId, $scaleId);
 
         $levels = $source->levels()->get()
             ->map(fn (ProficiencyScaleLevel $level): ProficiencyLevelDraft => new ProficiencyLevelDraft(
@@ -92,15 +92,15 @@ class ProficiencyScaleStore
             ))
             ->all();
 
-        return $this->draft((int) $source->company_entity_id, (string) $source->code, (string) $source->name, $levels);
+        return $this->draft($companyEntityId, (string) $source->code, (string) $source->name, $levels);
     }
 
-    public function publish(int $scaleId): ProficiencyScale
+    public function publish(int $companyEntityId, int $scaleId): ProficiencyScale
     {
         $tenantId = $this->tenantContext->requireTenantId();
 
-        return DB::transaction(function () use ($tenantId, $scaleId): ProficiencyScale {
-            $scale = $this->requireScale($tenantId, $scaleId);
+        return DB::transaction(function () use ($tenantId, $companyEntityId, $scaleId): ProficiencyScale {
+            $scale = $this->requireScale($tenantId, $companyEntityId, $scaleId);
 
             if ($scale->status !== ProficiencyScaleStatus::Draft) {
                 throw new ProficiencyScaleStateException(
@@ -142,10 +142,10 @@ class ProficiencyScaleStore
         });
     }
 
-    public function retire(int $scaleId): ProficiencyScale
+    public function retire(int $companyEntityId, int $scaleId): ProficiencyScale
     {
         $tenantId = $this->tenantContext->requireTenantId();
-        $scale = $this->requireScale($tenantId, $scaleId);
+        $scale = $this->requireScale($tenantId, $companyEntityId, $scaleId);
 
         if ($scale->status !== ProficiencyScaleStatus::Published) {
             throw new ProficiencyScaleStateException(
@@ -165,12 +165,12 @@ class ProficiencyScaleStore
      * Delete an unpublished draft and its levels. Anything ever published is
      * immutable and refuses deletion at the model layer.
      */
-    public function discardDraft(int $scaleId): void
+    public function discardDraft(int $companyEntityId, int $scaleId): void
     {
         $tenantId = $this->tenantContext->requireTenantId();
 
-        DB::transaction(function () use ($tenantId, $scaleId): void {
-            $scale = $this->requireScale($tenantId, $scaleId);
+        DB::transaction(function () use ($tenantId, $companyEntityId, $scaleId): void {
+            $scale = $this->requireScale($tenantId, $companyEntityId, $scaleId);
 
             if ($scale->status !== ProficiencyScaleStatus::Draft) {
                 throw new ProficiencyScaleStateException(
@@ -188,9 +188,9 @@ class ProficiencyScaleStore
         return $this->publishedOf($this->tenantContext->requireTenantId(), $companyEntityId, $code);
     }
 
-    private function requireScale(int $tenantId, int $scaleId): ProficiencyScale
+    private function requireScale(int $tenantId, int $companyEntityId, int $scaleId): ProficiencyScale
     {
-        return ProficiencyScale::query()->forTenant($tenantId)->find($scaleId)
+        return ProficiencyScale::query()->forOwner($tenantId, $companyEntityId)->find($scaleId)
             ?? throw new SkillCatalogRecordNotFoundException("Proficiency scale [$scaleId] was not found.");
     }
 

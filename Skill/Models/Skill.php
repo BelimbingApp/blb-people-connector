@@ -6,6 +6,8 @@ use App\Domains\PeopleConnector\Connector\Models\TenantOwnedModel;
 use App\Domains\PeopleConnector\Skill\Enums\AssessmentMethod;
 use App\Domains\PeopleConnector\Skill\Enums\CriticalClassification;
 use App\Domains\PeopleConnector\Skill\Enums\SkillScope;
+use App\Domains\PeopleConnector\Skill\Exceptions\InvalidSkillCatalogException;
+use App\Domains\PeopleConnector\Skill\Models\Concerns\CompanyOwned;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 /**
@@ -16,7 +18,20 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  */
 class Skill extends TenantOwnedModel
 {
+    use CompanyOwned;
+
     protected $table = 'people_connector_skill_skills';
+
+    protected static function booted(): void
+    {
+        static::updating(function (Skill $skill): void {
+            if ($skill->isDirty('code')) {
+                throw new InvalidSkillCatalogException(
+                    "Skill code [{$skill->getOriginal('code')}] is stable and cannot be changed.",
+                );
+            }
+        });
+    }
 
     protected function casts(): array
     {

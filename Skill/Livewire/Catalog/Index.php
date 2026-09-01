@@ -5,7 +5,6 @@ namespace App\Domains\PeopleConnector\Skill\Livewire\Catalog;
 use App\Base\Authz\Contracts\AuthorizationService;
 use App\Base\Authz\DTO\Actor;
 use App\Base\Tenancy\Contracts\TenantContext;
-use App\Domains\PeopleConnector\Connector\Models\WorkforceCompanyProjection;
 use App\Domains\PeopleConnector\Skill\Data\SkillDraft;
 use App\Domains\PeopleConnector\Skill\Enums\AssessmentMethod;
 use App\Domains\PeopleConnector\Skill\Enums\CriticalClassification;
@@ -17,15 +16,19 @@ use App\Domains\PeopleConnector\Skill\Models\SkillCategory;
 use App\Domains\PeopleConnector\Skill\Services\ProficiencyScaleStore;
 use App\Domains\PeopleConnector\Skill\Services\SkillCatalogDefaults;
 use App\Domains\PeopleConnector\Skill\Services\SkillCatalogStore;
+use App\Domains\PeopleConnector\Skill\Services\SkillCompanyAccess;
 use Illuminate\Contracts\View\View;
 use Illuminate\Support\Facades\Auth;
 use Livewire\Component;
 
 /**
  * Catalog administration for HR (manage capability) with a read-only view for
- * HODs and evaluators (view capability). Operates on the company's connector
- * workforce entity; with no synchronized company the page states that honestly
- * instead of pretending a catalog exists.
+ * HODs and evaluators (view capability). Every query and store call is bound
+ * to one company workforce entity the acting user may act for, resolved by
+ * SkillCompanyAccess — companyEntityId is a client-writable Livewire property,
+ * so it is re-checked on every action, never trusted. With no accessible
+ * company the page states that honestly instead of pretending a catalog
+ * exists.
  */
 class Index extends Component
 {
@@ -53,14 +56,16 @@ class Index extends Component
 
     public function mount(): void
     {
-        $companies = $this->companyEntities();
+        $this->authorizeView();
+
+        $companies = $this->allowedCompanies();
         $this->companyEntityId = count($companies) > 0 ? (int) array_key_first($companies) : null;
     }
 
     public function selectCompany(int $companyEntityId): void
     {
-        $companies = $this->companyEntities();
-        abort_unless(array_key_exists($companyEntityId, $companies), 404);
+        $this->authorizeView();
+        abort_unless(array_key_exists($companyEntityId, $this->allowedCompanies()), 404);
 
         $this->companyEntityId = $companyEntityId;
         $this->reset('editingSkillId', 'skillForm', 'filterCategoryId');
@@ -68,23 +73,22 @@ class Index extends Component
 
     public function installStarterPack(SkillCatalogDefaults $defaults): void
     {
-        $this->authorizeManage();
-        abort_if($this->companyEntityId === null, 404);
+        $companyEntityId = $this->authorizedCompanyForManage();
 
-        $defaults->install($this->companyEntityId);
+        $defaults->install($companyEntityId);
     }
 
     public function startSkill(?int $skillId = null): void
     {
-        $this->authorizeManage();
+        $companyEntityId = $this->authorizedCompanyForManage();
 
-        $skill = $skillId === null ? null : $this->skills()->firstWhere('id', $skillId);
+        $skill = $skillId === null ? null : $this->skills($companyEntityId)->firstWhere('id', $skillId);
         $this->editingSkillId = $skill?->id;
         $this->skillForm = [
             'code' => $skill->code ?? '',
             'name' => $skill->name ?? '',
             'definition' => $skill->definition ?? '',
-            'category_id' => $skill->category_id ?? $this->categories()->first()?->id,
+            'category_id' => $skill->category_id ?? $this->categories($companyEntityId)->first()?->id,
             'scope' => ($skill->scope ?? SkillScope::Shared)->value,
             'critical_classification' => $skill?->critical_classification?->value,
             'evidence_guide' => $skill->evidence_guide ?? '',
@@ -100,8 +104,7 @@ class Index extends Component
 
     public function saveSkill(SkillCatalogStore $store): void
     {
-        $this->authorizeManage();
-        abort_if($this->companyEntityId === null, 404);
+        $companyEntityId = $this->authorizedCompanyForManage();
 
         $months = $this->skillForm['default_reassessment_months'] ?? null;
         $classification = $this->skillForm['critical_classification'] ?? null;
@@ -124,9 +127,9 @@ class Index extends Component
             );
 
             if ($this->editingSkillId === null) {
-                $store->defineSkill($this->companyEntityId, $draft);
+                $store->defineSkill($companyEntityId, $draft);
             } else {
-                $store->reviseSkill($this->editingSkillId, $draft);
+                $store->reviseSkill($companyEntityId, $this->editingSkillId, $draft);
             }
         } catch (InvalidSkillCatalogException $exception) {
             $this->addError('skillForm', $exception->getMessage());
@@ -139,13 +142,15 @@ class Index extends Component
 
     public function toggleSkillActive(int $skillId, SkillCatalogStore $store): void
     {
-        $this->authorizeManage();
+        $companyEntityId = $this->authorizedCompanyForManage();
 
-        $skill = $this->skills()->firstWhere('id', $skillId);
+        $skill = $this->skills($companyEntityId)->firstWhere('id', $skillId);
         abort_if($skill === null, 404);
 
         try {
-            $skill->active ? $store->deactivateSkill($skillId) : $store->reactivateSkill($skillId);
+            $skill->active
+                ? $store->deactivateSkill($companyEntityId, $skillId)
+                : $store->reactivateSkill($companyEntityId, $skillId);
         } catch (InvalidSkillCatalogException $exception) {
             $this->addError('skills', $exception->getMessage());
         }
@@ -153,12 +158,11 @@ class Index extends Component
 
     public function saveCategory(SkillCatalogStore $store): void
     {
-        $this->authorizeManage();
-        abort_if($this->companyEntityId === null, 404);
+        $companyEntityId = $this->authorizedCompanyForManage();
 
         try {
             $store->defineCategory(
-                $this->companyEntityId,
+                $companyEntityId,
                 trim((string) $this->newCategoryCode),
                 trim((string) $this->newCategoryName),
             );
@@ -171,12 +175,28 @@ class Index extends Component
         $this->reset('newCategoryCode', 'newCategoryName');
     }
 
-    public function deactivateCategory(int $categoryId, SkillCatalogStore $store): void
+    public function renameCategory(int $categoryId, string $name, SkillCatalogStore $store): void
     {
-        $this->authorizeManage();
+        $companyEntityId = $this->authorizedCompanyForManage();
 
         try {
-            $store->deactivateCategory($categoryId);
+            $store->editCategory($companyEntityId, $categoryId, trim($name));
+        } catch (InvalidSkillCatalogException $exception) {
+            $this->addError('categoryForm', $exception->getMessage());
+        }
+    }
+
+    public function toggleCategoryActive(int $categoryId, SkillCatalogStore $store): void
+    {
+        $companyEntityId = $this->authorizedCompanyForManage();
+
+        $category = $this->categories($companyEntityId)->firstWhere('id', $categoryId);
+        abort_if($category === null, 404);
+
+        try {
+            $category->active
+                ? $store->deactivateCategory($companyEntityId, $categoryId)
+                : $store->reactivateCategory($companyEntityId, $categoryId);
         } catch (InvalidSkillCatalogException $exception) {
             $this->addError('categoryForm', $exception->getMessage());
         }
@@ -184,27 +204,29 @@ class Index extends Component
 
     public function publishScale(int $scaleId, ProficiencyScaleStore $store): void
     {
-        $this->authorizeManage();
-        $store->publish($scaleId);
+        $companyEntityId = $this->authorizedCompanyForManage();
+        $store->publish($companyEntityId, $scaleId);
     }
 
     public function draftNewScaleVersion(int $scaleId, ProficiencyScaleStore $store): void
     {
-        $this->authorizeManage();
-        $store->newDraftFrom($scaleId);
+        $companyEntityId = $this->authorizedCompanyForManage();
+        $store->newDraftFrom($companyEntityId, $scaleId);
     }
 
     public function render(): View
     {
-        $canManage = $this->canManage();
-        $categories = $this->companyEntityId === null ? collect() : $this->categories();
+        $companies = $this->allowedCompanies();
+        $companyEntityId = $this->companyEntityId !== null && array_key_exists($this->companyEntityId, $companies)
+            ? $this->companyEntityId
+            : null;
 
         return view('people-connector-skill::livewire.catalog.index', [
-            'companies' => $this->companyEntities(),
-            'categories' => $categories,
-            'skills' => $this->companyEntityId === null ? collect() : $this->filteredSkills(),
-            'scales' => $this->companyEntityId === null ? collect() : $this->scales(),
-            'canManage' => $canManage,
+            'companies' => $companies,
+            'categories' => $companyEntityId === null ? collect() : $this->categories($companyEntityId),
+            'skills' => $companyEntityId === null ? collect() : $this->filteredSkills($companyEntityId),
+            'scales' => $companyEntityId === null ? collect() : $this->scales($companyEntityId),
+            'canManage' => $this->canManage(),
             'scopeOptions' => SkillScope::cases(),
             'methodOptions' => AssessmentMethod::cases(),
             'classificationOptions' => CriticalClassification::cases(),
@@ -212,43 +234,44 @@ class Index extends Component
     }
 
     /** @return array<int, string> company entity id => display name */
-    private function companyEntities(): array
+    private function allowedCompanies(): array
     {
-        $tenantId = app(TenantContext::class)->requireTenantId();
-
-        return WorkforceCompanyProjection::query()
-            ->forTenant($tenantId)
-            ->where('active', true)
-            ->orderBy('name')
-            ->get()
-            ->mapWithKeys(fn (WorkforceCompanyProjection $company): array => [
-                (int) $company->workforce_entity_id => (string) $company->name,
-            ])
-            ->all();
+        return app(SkillCompanyAccess::class)->allowedCompanyEntities(Auth::user());
     }
 
-    private function categories()
+    /**
+     * The single authorization funnel for every mutating action: manage
+     * capability plus proof the actor may act for the selected company.
+     */
+    private function authorizedCompanyForManage(): int
+    {
+        $this->authorizeManage();
+        abort_if($this->companyEntityId === null, 404);
+        abort_unless(array_key_exists($this->companyEntityId, $this->allowedCompanies()), 404);
+
+        return $this->companyEntityId;
+    }
+
+    private function categories(int $companyEntityId)
     {
         return SkillCategory::query()
-            ->forTenant(app(TenantContext::class)->requireTenantId())
-            ->where('company_entity_id', $this->companyEntityId)
+            ->forOwner(app(TenantContext::class)->requireTenantId(), $companyEntityId)
             ->orderBy('name')
             ->get();
     }
 
-    private function skills()
+    private function skills(int $companyEntityId)
     {
         return Skill::query()
-            ->forTenant(app(TenantContext::class)->requireTenantId())
-            ->where('company_entity_id', $this->companyEntityId)
+            ->forOwner(app(TenantContext::class)->requireTenantId(), $companyEntityId)
             ->with('category')
             ->orderBy('code')
             ->get();
     }
 
-    private function filteredSkills()
+    private function filteredSkills(int $companyEntityId)
     {
-        return $this->skills()
+        return $this->skills($companyEntityId)
             ->when(! $this->includeInactive, fn ($skills) => $skills->where('active', true))
             ->when($this->filterCategoryId !== null, fn ($skills) => $skills->where('category_id', $this->filterCategoryId))
             ->when($this->criticalOnly, fn ($skills) => $skills->filter->isCritical())
@@ -262,11 +285,10 @@ class Index extends Component
             ->values();
     }
 
-    private function scales()
+    private function scales(int $companyEntityId)
     {
         return ProficiencyScale::query()
-            ->forTenant(app(TenantContext::class)->requireTenantId())
-            ->where('company_entity_id', $this->companyEntityId)
+            ->forOwner(app(TenantContext::class)->requireTenantId(), $companyEntityId)
             ->with('levels')
             ->orderBy('code')
             ->orderByDesc('version')
@@ -279,6 +301,14 @@ class Index extends Component
             Actor::forUser(Auth::user()),
             'people-connector.skill.catalog.manage',
         )->allowed;
+    }
+
+    private function authorizeView(): void
+    {
+        app(AuthorizationService::class)->authorize(
+            Actor::forUser(Auth::user()),
+            'people-connector.skill.catalog.view',
+        );
     }
 
     private function authorizeManage(): void
