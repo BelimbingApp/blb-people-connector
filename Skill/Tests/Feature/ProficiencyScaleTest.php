@@ -185,21 +185,25 @@ test('published-scale immutability holds at the database layer against builder a
     $scaleId = (int) $scale->id;
 
     // None of these touch Eloquent model events; only the DB triggers stand.
-    expect(fn () => ProficiencyScale::query()->whereKey($scaleId)->update(['name' => 'SILENTLY RENAMED']))
+    // Each runs inside its own savepoint (nested transaction): on Postgres a
+    // trigger abort poisons the enclosing test transaction otherwise.
+    $bypass = fn (callable $write): callable => fn () => DB::transaction($write);
+
+    expect($bypass(fn () => ProficiencyScale::query()->whereKey($scaleId)->update(['name' => 'SILENTLY RENAMED'])))
         ->toThrow(QueryException::class);
-    expect(fn () => ProficiencyScaleLevel::query()->where('scale_id', $scaleId)->where('level', 2)->update(['name' => 'Rewritten']))
+    expect($bypass(fn () => ProficiencyScaleLevel::query()->where('scale_id', $scaleId)->where('level', 2)->update(['name' => 'Rewritten'])))
         ->toThrow(QueryException::class);
-    expect(fn () => DB::table('people_connector_skill_proficiency_scale_levels')
-        ->where('scale_id', $scaleId)->where('level', 0)->update(['name' => 'Not assessed']))
+    expect($bypass(fn () => DB::table('people_connector_skill_proficiency_scale_levels')
+        ->where('scale_id', $scaleId)->where('level', 0)->update(['name' => 'Not assessed'])))
         ->toThrow(QueryException::class);
-    expect(fn () => ProficiencyScaleLevel::query()->insert([
+    expect($bypass(fn () => ProficiencyScaleLevel::query()->insert([
         'tenant_id' => $scale->tenant_id, 'scale_id' => $scaleId, 'level' => 3,
         'name' => 'Injected', 'anchor' => 'x', 'authority' => 'y',
         'created_at' => now(), 'updated_at' => now(),
-    ]))->toThrow(QueryException::class);
-    expect(fn () => ProficiencyScaleLevel::query()->where('scale_id', $scaleId)->where('level', 1)->delete())
+    ])))->toThrow(QueryException::class);
+    expect($bypass(fn () => ProficiencyScaleLevel::query()->where('scale_id', $scaleId)->where('level', 1)->delete()))
         ->toThrow(QueryException::class);
-    expect(fn () => DB::table('people_connector_skill_proficiency_scales')->where('id', $scaleId)->delete())
+    expect($bypass(fn () => DB::table('people_connector_skill_proficiency_scales')->where('id', $scaleId)->delete()))
         ->toThrow(QueryException::class);
 
     $scale->refresh();

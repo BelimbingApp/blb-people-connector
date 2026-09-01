@@ -15,6 +15,7 @@ use App\Domains\PeopleConnector\Skill\Models\Skill;
 use App\Domains\PeopleConnector\Skill\Models\SkillCategory;
 use App\Domains\PeopleConnector\Skill\Services\SkillCatalogStore;
 use Illuminate\Database\QueryException;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 
 afterEach(function (): void {
@@ -208,7 +209,8 @@ test('skill codes are immutable at the model and database layers, not only in th
     expect(fn () => $skill->update(['code' => 'renamed.by.mass.assignment']))
         ->toThrow(InvalidSkillCatalogException::class, 'stable');
 
-    expect(fn () => Skill::query()->whereKey($skill->id)->update(['code' => 'renamed.by.builder']))
+    // Savepoint-wrapped: a trigger abort poisons the test transaction on Postgres.
+    expect(fn () => DB::transaction(fn () => Skill::query()->whereKey($skill->id)->update(['code' => 'renamed.by.builder'])))
         ->toThrow(QueryException::class);
 
     expect($skill->refresh()->code)->toBe('forklift.operation');
