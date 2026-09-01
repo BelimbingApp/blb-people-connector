@@ -8,5 +8,6 @@ enum WorkforceHistoryEventType: string
     case IdentityRemapped = 'identity_remapped';
     case EntityMerged = 'entity_merged';
     case IdentityDeactivated = 'identity_deactivated';
+    case IdentityReactivated = 'identity_reactivated';
     case ProjectionUpserted = 'projection_upserted';
 }
