@@ -254,3 +254,33 @@ test('a derived or raw from refuses rather than narrowing in silence', function 
         ->where('company_entity_id', $fixture->alphaCompanyEntityId)
         ->get())->toThrow(MissingCompanyScopeException::class, 'derived or raw table');
 });
+
+test('no join can read as a correlation, however its table is spelled', function (): void {
+    $fixture = CompanyIsolationContract::twoCompaniesInOneTenant();
+    app(TenantContext::class)->set($fixture->tenantId);
+
+    companyIsolationRivalSkills($fixture);
+    $skills = (new Skill)->getTable();
+    $categories = (new SkillCategory)->getTable();
+
+    // The rule this replaced asked whether the correlated side was *absent*
+    // from the tables the query can see. Every other rule in the guard is an
+    // inclusion test, which fails closed on a name mismatch; that one was an
+    // exclusion test, so the identical mismatch failed open. A schema-qualified
+    // join put `public.categories` in the list while a `whereColumn` against
+    // the bare name was not in it, so a join condition read as a correlation:
+    // on Postgres it returned both companies' skills, and the same query with
+    // ->update() wrote two rows across the boundary.
+    expect(fn () => Skill::query()
+        ->join('public.'.$categories, fn ($join) => $join->on($categories.'.tenant_id', '=', $skills.'.tenant_id'))
+        ->where($skills.'.tenant_id', $fixture->tenantId)
+        ->whereColumn($skills.'.company_entity_id', '=', $categories.'.company_entity_id')
+        ->get())->toThrow(MissingCompanyScopeException::class);
+
+    // The same mismatch, produced by nothing more exotic than a capital letter.
+    expect(fn () => Skill::query()
+        ->join($categories.' as C', fn ($join) => $join->on('C.tenant_id', '=', $skills.'.tenant_id'))
+        ->where($skills.'.tenant_id', $fixture->tenantId)
+        ->whereColumn($skills.'.company_entity_id', '=', 'c.company_entity_id')
+        ->get())->toThrow(MissingCompanyScopeException::class);
+});

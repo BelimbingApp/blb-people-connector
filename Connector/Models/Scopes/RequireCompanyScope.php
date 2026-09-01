@@ -79,7 +79,14 @@ final class RequireCompanyScope implements Scope
             }
         }
 
-        $localTables = $this->localTableNames($query, $baseTables);
+        // A correlation is only distinguishable from a join condition when
+        // there is no join. Naming the tables this query can see and asking
+        // whether the other side is absent from that list turned out to be an
+        // exclusion test, and an exclusion test fails OPEN on a name mismatch:
+        // a schema-qualified join put `public.categories` in the list while a
+        // whereColumn against the bare `categories` was not in it, so a join
+        // condition read as a correlation and wrote across the boundary.
+        $mayCorrelate = ($query->joins ?? []) === [];
 
         foreach ($wheres as $where) {
             if ($this->comparesToARealValue($where)
@@ -87,7 +94,7 @@ final class RequireCompanyScope implements Scope
                 return true;
             }
 
-            if ($localTables !== null && $this->correlatesToAnOuterQuery($where, $columns, $baseTables, $localTables)) {
+            if ($mayCorrelate && $this->correlatesToAnOuterQuery($where, $columns, $baseTables)) {
                 return true;
             }
         }
@@ -110,19 +117,18 @@ final class RequireCompanyScope implements Scope
      * cover whatever they append to it, reviewed by nobody. A guard that has to
      * be switched off to do ordinary work gets switched off.
      *
-     * The other side must be resolvable **only** by an enclosing query: not the
-     * base table, not a joined table, not unqualified. That distinction is
-     * load-bearing. A column-to-column predicate against a table this query can
-     * see is a join condition, not a pin — it constrains the company to
-     * whatever the joined row happens to carry, which is how a join read a
-     * sibling company's rows in the first place.
+     * The other side must be qualified and must not name the base table, and
+     * the caller must have established that the query has no joins at all.
+     * That last condition is the whole safety argument: a column-to-column
+     * predicate against a table this query can see is a join condition, not a
+     * pin — it constrains the company to whatever the joined row happens to
+     * carry, which is how a join read a sibling company's rows to begin with.
      *
      * @param  array<string, mixed>  $where
      * @param  list<string>  $columns
      * @param  list<string>  $baseTables
-     * @param  list<string>  $localTables
      */
-    private function correlatesToAnOuterQuery(array $where, array $columns, array $baseTables, array $localTables): bool
+    private function correlatesToAnOuterQuery(array $where, array $columns, array $baseTables): bool
     {
         if (($where['type'] ?? null) !== 'Column' || ($where['operator'] ?? '=') !== '=') {
             return false;
@@ -142,43 +148,12 @@ final class RequireCompanyScope implements Scope
 
             $qualifier = $this->qualifierOf($other);
 
-            if ($qualifier !== null && ! in_array($qualifier, $localTables, true)) {
+            if ($qualifier !== null && ! in_array($qualifier, $baseTables, true)) {
                 return true;
             }
         }
 
         return false;
-    }
-
-    /**
-     * Every table name this query can resolve on its own: the base table and
-     * everything it joins. Null when a join's table is an expression, because
-     * then the list cannot be trusted to be complete and a correlation cannot
-     * be told apart from a join condition.
-     *
-     * @param  list<string>  $baseTables
-     * @return list<string>|null
-     */
-    private function localTableNames(QueryBuilder $query, array $baseTables): ?array
-    {
-        $names = $baseTables;
-
-        foreach ($query->joins ?? [] as $join) {
-            $table = $join->table ?? null;
-
-            if (! is_string($table)) {
-                return null;
-            }
-
-            if (preg_match('/^(.+?)\s+as\s+(.+)$/i', trim($table), $aliased) === 1) {
-                $names[] = $this->unquote($aliased[1]);
-                $names[] = $this->unquote($aliased[2]);
-            } else {
-                $names[] = $this->unquote($table);
-            }
-        }
-
-        return array_values(array_unique($names));
     }
 
     private function qualifierOf(string $column): ?string

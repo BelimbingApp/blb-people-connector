@@ -61,7 +61,7 @@ class ProficiencyScaleLevel extends TenantOwnedModel
      * key, which is not ProficiencyScale's company column. It is safe for the
      * relation as written: the level came from a query pinned to one scale,
      * and this walks back to that same scale.
-     *     *
+     *
      * The escape covers whatever a caller appends to this relation, including
      * an unbracketed orWhere. Do not append one.
      *

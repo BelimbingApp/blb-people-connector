@@ -266,20 +266,59 @@ first attempt at this did exactly that, on `ProficiencyScale::levels()`, and a
 reviewer read *and wrote* a sibling company's level through an appended
 `orWhere` before it was replaced by the rule below.
 
-The rule: a `Column` predicate pins the query when one side is an owning column
-on the base table and the other side can be resolved **only** by an enclosing
-query — not the base table, not a joined table, not unqualified. That is the
-same strength as pinning to one literal parent id, because it binds each row to
-exactly one row of the outer query.
+The rule: a `Column` predicate pins the query when the query has **no joins at
+all**, one side is an owning column on the base table, and the other side is
+qualified with something that is not the base table. That is the same strength
+as pinning to one literal parent id, because it binds each row to exactly one
+row of the enclosing query.
 
-The exclusion is load-bearing, not decoration. A column-to-column predicate
-against a table this query *can* see is a join condition, not a pin: it
-constrains the company to whatever the joined row happens to carry, which is how
-a join read a sibling company's rows in the first place.
+The no-join condition is the whole safety argument, not a detail. A
+column-to-column predicate against a table this query can see is a join
+condition, not a pin: it constrains the company to whatever the joined row
+happens to carry, which is how a join read a sibling company's rows in the first
+place. Laravel's relation-existence subqueries carry no join, so nothing
+legitimate is lost by refusing to tell the two apart when one is present.
+
+An earlier version tried to tell them apart, by naming the tables the query
+could see and accepting the correlation when the other side was *absent* from
+that list. See the next section for why that was the wrong shape of rule.
 
 `whereIn('company_entity_id', [$a, $b])` is accepted, by design. The guard
 proves the column is constrained to *named* companies. It does not prove there
 is only one of them, and it does not prove the caller may act for any of them.
+
+### Prefer an inclusion test to an exclusion test
+
+Worth stating separately, because it generalizes past this file and past this
+guard.
+
+Every rule in `RequireCompanyScope` asks whether a name **is** in a list it
+trusts: is this qualifier the base table, is this column an owning column. A
+name it does not recognise fails those tests, and failing them means the query
+is refused. A spelling it has never seen makes the guard *stricter*.
+
+One rule was written the other way round. To tell a correlated subquery from a
+join condition, it asked whether the other side was **absent** from the list of
+tables the query can see. Same list, same comparison, same possibility of a name
+mismatch — and the mismatch now means the guard *accepts*. A schema-qualified
+join put `public.categories` in the list while a `whereColumn` against the bare
+`categories` was not in it, so a join condition read as a correlation. On
+Postgres that returned both companies' rows, and the same query with `->update()`
+wrote two rows across the boundary. A case-shifted alias did the same thing with
+nothing more exotic than a capital letter.
+
+The rule looked exactly like its neighbours and behaved as their mirror image
+under precisely the condition that matters. So:
+
+> **A guard should decide on what it recognises, never on what it fails to
+> recognise.** An inclusion test fails closed when a name does not match. An
+> exclusion test fails open on the identical mismatch, and every unfamiliar
+> spelling becomes an attack.
+
+When a question genuinely needs an exclusion — "is this name absent" — the
+answer is usually to find a condition that removes the question instead. Here
+that was: a correlation is only distinguishable from a join condition when there
+is no join, so require no joins and delete the list.
 
 ### The guard is scoping, not authorization
 
@@ -376,7 +415,9 @@ Alongside those, one test per reproduced bypass: a join whose company predicate
 sits on the joined table, a qualifier naming some other table, a join that
 claims the base table's name by aliasing `from`, a derived `from`, a `whereIn`
 subquery, and a raw tautology — each refused, while a join pinned on the base
-table and an aliased `from` pinned on its alias both still run. One test that
+table and an aliased `from` pinned on its alias both still run; and a join
+correlating on a schema-qualified or case-shifted table name, which is the
+exclusion-test failure above. One test that
 no file in the domain calls Laravel's unreasoned scope-removal methods. And one
 that counting a scale's levels works from a pinned parent, because a guard that
 forces good-faith authors into the escape hatch is a guard that gets routed

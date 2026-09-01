@@ -28,7 +28,7 @@ class SkillCategory extends TenantOwnedModel
      * Skill's company column. It is safe for the relation as written: the
      * category was resolved for its company, and the store refuses a skill
      * whose category belongs to another one — though the database does not.
-     *     *
+     *
      * The escape covers whatever a caller appends to this relation, including
      * an unbracketed orWhere. Do not append one. Pin the company explicitly
      * instead: Skill::query()->forCompany(...)->where('category_id', ...).

@@ -50,7 +50,7 @@ class Skill extends TenantOwnedModel
      * relation as written: the skill was resolved for its company, and the
      * store refuses a category_id from any other one — though the database
      * does not, since the key is (category_id, tenant_id).
-     *     *
+     *
      * The escape covers whatever a caller appends to this relation, including
      * an unbracketed orWhere. Do not append one.
      *
