@@ -35,13 +35,23 @@ final class CompanyIsolationContract
      */
     private const UNUSED_TENANT_ID = 999_999_999;
 
+    /** @var list<class-string<Model>>|null */
+    private static ?array $discovered = null;
+
     /**
      * Every model in this domain that declares itself company-owned.
+     *
+     * Resolved once per process, so the dataset a test is parameterized with
+     * and the list the test body sees can never disagree.
      *
      * @return list<class-string<Model>>
      */
     public static function companyOwnedModels(): array
     {
+        if (self::$discovered !== null) {
+            return self::$discovered;
+        }
+
         $models = [];
 
         foreach (self::modelFiles() as $file) {
@@ -58,7 +68,7 @@ final class CompanyIsolationContract
 
         sort($models);
 
-        return array_values(array_unique($models));
+        return self::$discovered = array_values(array_unique($models));
     }
 
     /**
