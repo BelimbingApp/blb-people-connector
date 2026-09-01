@@ -184,12 +184,20 @@ opposite of the situation this document was written to end, where the unscoped
 queries were invisible because they looked exactly like the scoped ones.
 
 That grep is only complete because something enforces it. Laravel's own
-`withoutGlobalScope()` and `withoutGlobalScopes()` remove this guard just as
-effectively, take no reason, and appear in no such grep. So
+`withoutGlobalScope()`, `withoutGlobalScopes()`, `newQueryWithoutScope()` and
+`newQueryWithoutScopes()` remove this guard just as effectively, take no
+reason, and appear in no such grep. So
 `CompanyIsolationContract::unreasonedGuardBypasses()` tokenizes every PHP file
-in the domain and fails the suite if either method is called anywhere except
-the trait's own sanctioned line. Use `withoutCompanyScope($reason)`; the
-alternative does not build.
+in the domain and fails the suite if any of them is called anywhere except the
+trait's own sanctioned line.
+
+**One gap is left open on purpose.** `->getQuery()` steps off the Eloquent
+builder onto the underlying query builder, which has no global scopes, so it
+opens the guard too — and it is not linted. It is an ordinary method with many
+honest uses on models that are not company-owned, and a check that flags those
+gets argued down until it means nothing. It belongs in the same category as
+`DB::table()`: you have left Eloquent, and the rule below about raw queries
+applies. Do not reach for it on a company-owned table.
 
 ### What the guard accepts
 
@@ -200,13 +208,20 @@ that was reproduced end to end against an earlier version of this guard.
    `orWhere` group does not count, and a top-level `orWhere` anywhere in the
    query fails the guard outright, because either can widen the result past
    the company.
-2. **On the base table.** An unqualified column is fine — it resolves to the
-   base table anyway — but a qualified one must name the base table or its
-   `as` alias. Accepting any qualifier let a join whose `ON` clause correlated
-   only on `tenant_id` satisfy the guard with a predicate on the *joined*
-   table, leaving the base table unconstrained. A reviewer read a sibling
-   company's skill through it, renamed it, and deleted it, with all three
-   steps reported as compliant.
+2. **On the base table, under a name the query itself binds to it.** An
+   unqualified column is fine — it resolves to the base table anyway. A
+   qualified one must name the query's `from`, or its alias when `from` has
+   one; once `from` is aliased the bare table name is *not* accepted, because
+   the query has rebound it and SQL no longer addresses the base table by it.
+
+   Both halves of that rule were reproduced as bypasses. Accepting any
+   qualifier let a join whose `ON` clause correlated only on `tenant_id`
+   satisfy the guard with a predicate on the *joined* table: a reviewer read a
+   sibling company's skill through it, renamed it, and deleted it, all three
+   reported as compliant. Fixing that by trusting the model's own table name
+   left the same hole one layer in — `->from("skills as s")->join("categories
+   as skills", …)` handed the freed name to the join, with no raw SQL
+   anywhere.
 3. **Compared to a real value, with `=` or `IN`.** A raw expression can be a
    tautology (`company_entity_id = company_entity_id`), and Laravel records a
    `whereIn` subquery as an ordinary `In` holding a single `Expression`, so an
@@ -229,6 +244,19 @@ scale. Who may name which scale is authorization, below.
 When a relationship must traverse into a company-owned model by primary key (a
 skill reaching its category, a level reaching its scale), the relationship says
 so explicitly with `withoutCompanyScope()` and states why it is safe.
+
+**Relations that a guarded query correlates to also carry the escape, and this
+one is about usability, not convenience.** `has()`, `whereHas()`, `withCount()`
+and `doesntHave()` build a subquery whose only link to the parent is a
+column-to-column predicate, which the guard cannot read as a pin. So they threw
+even from a correctly pinned parent. That is fail-closed and leaks nothing, but
+it left an author who merely wanted to count a scale's levels with no legitimate
+way to satisfy the guard — and the thing they would reach for next is
+`withoutCompanyScope()` at their own call site, unexamined. A guard that pushes
+good-faith authors into the escape hatch will be routed around, and then it
+protects nothing. The escape therefore sits on `ProficiencyScale::levels()`,
+stated once, where the reason it is safe is actually true: the subquery is
+always correlated to a parent row the outer query already resolved.
 
 `whereIn('company_entity_id', [$a, $b])` is accepted, by design. The guard
 proves the column is constrained to *named* companies. It does not prove there
@@ -275,8 +303,13 @@ Being honest about the edges:
 - **Saving or deleting a model you already hold.** Eloquent addresses those by
   primary key without scopes. That is correct: you obtained the instance
   through a guarded query.
-- **Raw `DB::table()` queries.** They bypass Eloquent entirely. Do not use them
-  on a company-owned table.
+- **Raw `DB::table()` queries, and `->getQuery()`.** Both leave Eloquent, and
+  global scopes with it. Do not use either on a company-owned table.
+- **A derived or raw `from`.** `fromSub()` and `fromRaw()` are *refused*, not
+  silently allowed: once the base relation is derived, the guard cannot tell
+  what an unqualified column refers to. That is a deliberate failure rather
+  than a gap, because `Skill::query()->fromSub(…)` reads to an author like it
+  is still inside the guarded model.
 - **Class D tables in the Connector module.** They are classified above but
   their models do not yet carry the trait, because adopting it there means
   changing the identity, checkpoint, and reconciliation stores while those are
@@ -321,10 +354,14 @@ remembering to copy a test. For each model it asserts that:
 - `withoutCompanyScope()` opens it, but never with an empty reason.
 
 Alongside those, one test per reproduced bypass: a join whose company predicate
-sits on the joined table, a qualifier naming some other table, a `whereIn`
+sits on the joined table, a qualifier naming some other table, a join that
+claims the base table's name by aliasing `from`, a derived `from`, a `whereIn`
 subquery, and a raw tautology — each refused, while a join pinned on the base
-table still runs. And one test that no file in the domain calls Laravel's
-unreasoned scope-removal methods.
+table and an aliased `from` pinned on its alias both still run. One test that
+no file in the domain calls Laravel's unreasoned scope-removal methods. And one
+that counting a scale's levels works from a pinned parent, because a guard that
+forces good-faith authors into the escape hatch is a guard that gets routed
+around.
 
 The same class provides `twoCompaniesInOneTenant()` — the fixture the
 repository never had, provisioned the way an adapter will: workforce entity,

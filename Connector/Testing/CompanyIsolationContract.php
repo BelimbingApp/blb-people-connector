@@ -232,10 +232,13 @@ final class CompanyIsolationContract
      *
      * `withoutCompanyScope($reason)` is the sanctioned escape, and the reason
      * is what makes the grep in docs/contracts/company-ownership.md a complete
-     * list. Laravel's own `withoutGlobalScope()` and `withoutGlobalScopes()`
-     * open the same guard silently and appear in no such grep, so this turns
-     * the document's completeness claim into something the suite enforces
-     * rather than something the reader has to trust.
+     * list. Laravel's own scope-removal methods open the same guard silently
+     * and appear in no such grep, so this turns the document's completeness
+     * claim into something the suite enforces rather than something the reader
+     * has to trust.
+     *
+     * It is not airtight, and the contract says which gap is left rather than
+     * implying there is none.
      *
      * The trait's own sanctioned call is the single exception.
      *
@@ -302,7 +305,20 @@ final class CompanyIsolationContract
      */
     private static function guardRemovalCalls(string $path): array
     {
-        $removers = ['withoutGlobalScope', 'withoutGlobalScopes'];
+        // Every Eloquent method whose purpose is removing a global scope.
+        // Deliberately not here: getQuery(), which steps out of Eloquent onto
+        // the underlying query builder. It opens the guard just as
+        // effectively, but it is an ordinary, benign method with many honest
+        // uses across models that are not company-owned, and a lint that
+        // flags those gets weakened until it means nothing. It sits in the
+        // same category as DB::table() — leaving Eloquent, covered by the
+        // contract's rule rather than by this check.
+        $removers = [
+            'withoutGlobalScope',
+            'withoutGlobalScopes',
+            'newQueryWithoutScope',
+            'newQueryWithoutScopes',
+        ];
         $lines = [];
 
         foreach (token_get_all((string) file_get_contents($path)) as $token) {
