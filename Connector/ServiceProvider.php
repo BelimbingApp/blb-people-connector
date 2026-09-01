@@ -15,8 +15,13 @@ class ServiceProvider extends BaseServiceProvider
      * that belongs to a single request, job, or command. Tenant-dependent
      * values are resolved at the point of use instead, because Octane keeps
      * singletons alive across request boundaries while discarding the scoped
-     * TenantContext. Anything registered here that needs to hold per-execution
-     * state must not be a singleton.
+     * TenantContext.
+     *
+     * The constraint is on lifetime, not on injection. An unbound service is
+     * built fresh on every resolution and may inject TenantContext freely, as
+     * the platform's own tenancy services and the sibling Connector stores do.
+     * It is registering something here that changes the calculation: anything
+     * bound as a singleton must not hold per-execution state.
      */
     public function register(): void
     {

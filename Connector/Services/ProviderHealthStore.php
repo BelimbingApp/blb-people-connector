@@ -12,17 +12,24 @@ use Illuminate\Contracts\Cache\Repository;
  *
  * The cache repository lives for the whole worker process, so it is injected.
  * The tenant context does not: the platform binds TenantContext as a scoped
- * instance (app/Base/Tenancy/ServiceProvider.php) and Octane's
+ * instance (app/Base/Tenancy/ServiceProvider.php:31) and Octane's
  * FlushTemporaryContainerInstances discards scoped instances at every request,
- * job, and command boundary. Anything that stores the context object outlives
- * it and goes on answering for whichever tenant happened to arrive first.
+ * job, and command boundary.
  *
- * So the tenant is resolved at the point of use, on every call, exactly as the
- * rest of the platform does it (App\Base\Media\Services\MediaAssetStore and
- * every tenant-aware Core model and Livewire component resolve
- * TenantContext through the container per call). That keeps this class correct
- * under any container lifetime rather than only under the one it happens to be
- * bound with today.
+ * The rule that follows from that is about lifetime, not about injection: no
+ * object that outlives one execution may hold the tenant context. Injecting it
+ * is perfectly safe for an object that does not outlive one, which is why the
+ * platform's three injectors — TenantStoragePath, PlatformOperatorTenantAccess
+ * and the ResolveTenantContext middleware — and the seven sibling Connector
+ * services on the persistence branch are all fine: none of them is bound, so
+ * every resolution builds a new one around a live context.
+ *
+ * This store is the case that does outlive an execution, because it is
+ * registered as a singleton. Rather than shorten its lifetime, it resolves the
+ * tenant at the point of use on every call, the way all 51 platform call sites
+ * do (Core/User, Core/Company, Base/Authz, Base/Audit and the rest). That
+ * keeps it correct under any container lifetime instead of only under the one
+ * it happens to be bound with today.
  */
 final class ProviderHealthStore
 {
