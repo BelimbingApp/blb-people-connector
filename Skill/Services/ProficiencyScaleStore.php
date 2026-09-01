@@ -48,8 +48,7 @@ class ProficiencyScaleStore
 
         return DB::transaction(function () use ($tenantId, $companyEntityId, $code, $name, $levels): ProficiencyScale {
             $currentMax = (int) ProficiencyScale::query()
-                ->forTenant($tenantId)
-                ->where('company_entity_id', $companyEntityId)
+                ->forCompany($tenantId, $companyEntityId)
                 ->where('code', $code)
                 ->max('version');
 
@@ -190,15 +189,14 @@ class ProficiencyScaleStore
 
     private function requireScale(int $tenantId, int $companyEntityId, int $scaleId): ProficiencyScale
     {
-        return ProficiencyScale::query()->forOwner($tenantId, $companyEntityId)->find($scaleId)
+        return ProficiencyScale::query()->forCompany($tenantId, $companyEntityId)->find($scaleId)
             ?? throw new SkillCatalogRecordNotFoundException("Proficiency scale [$scaleId] was not found.");
     }
 
     private function draftOf(int $tenantId, int $companyEntityId, string $code): ?ProficiencyScale
     {
         return ProficiencyScale::query()
-            ->forTenant($tenantId)
-            ->where('company_entity_id', $companyEntityId)
+            ->forCompany($tenantId, $companyEntityId)
             ->where('code', $code)
             ->where('status', ProficiencyScaleStatus::Draft->value)
             ->first();
@@ -207,8 +205,7 @@ class ProficiencyScaleStore
     private function publishedOf(int $tenantId, int $companyEntityId, string $code): ?ProficiencyScale
     {
         return ProficiencyScale::query()
-            ->forTenant($tenantId)
-            ->where('company_entity_id', $companyEntityId)
+            ->forCompany($tenantId, $companyEntityId)
             ->where('code', $code)
             ->where('status', ProficiencyScaleStatus::Published->value)
             ->first();

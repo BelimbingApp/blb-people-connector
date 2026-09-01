@@ -40,7 +40,7 @@ class SkillCatalogStore
         $this->assertCode($code, 'category');
         $this->assertEntity($tenantId, $companyEntityId, WorkforceResourceType::Company, 'company_entity_id');
 
-        if (SkillCategory::query()->forOwner($tenantId, $companyEntityId)->where('code', $code)->exists()) {
+        if (SkillCategory::query()->forCompany($tenantId, $companyEntityId)->where('code', $code)->exists()) {
             throw new InvalidSkillCatalogException("Skill category code [$code] already exists for this company.");
         }
 
@@ -75,7 +75,7 @@ class SkillCatalogStore
         $this->assertEntity($tenantId, $companyEntityId, WorkforceResourceType::Company, 'company_entity_id');
         $this->assertDraft($tenantId, $companyEntityId, $draft);
 
-        if (Skill::query()->forOwner($tenantId, $companyEntityId)->where('code', $draft->code)->exists()) {
+        if (Skill::query()->forCompany($tenantId, $companyEntityId)->where('code', $draft->code)->exists()) {
             throw new InvalidSkillCatalogException("Skill code [{$draft->code}] already exists for this company.");
         }
 
@@ -171,7 +171,7 @@ class SkillCatalogStore
     private function requireSkill(int $companyEntityId, int $skillId): Skill
     {
         return Skill::query()
-            ->forOwner($this->tenantContext->requireTenantId(), $companyEntityId)
+            ->forCompany($this->tenantContext->requireTenantId(), $companyEntityId)
             ->find($skillId)
             ?? throw new SkillCatalogRecordNotFoundException("Skill [$skillId] was not found.");
     }
@@ -179,7 +179,7 @@ class SkillCatalogStore
     private function requireCategory(int $companyEntityId, int $categoryId): SkillCategory
     {
         return SkillCategory::query()
-            ->forOwner($this->tenantContext->requireTenantId(), $companyEntityId)
+            ->forCompany($this->tenantContext->requireTenantId(), $companyEntityId)
             ->find($categoryId)
             ?? throw new SkillCatalogRecordNotFoundException("Skill category [$categoryId] was not found.");
     }
@@ -220,7 +220,7 @@ class SkillCatalogStore
             throw new InvalidSkillCatalogException('A shared skill cannot be pinned to a department.');
         }
 
-        $category = SkillCategory::query()->forOwner($tenantId, $companyEntityId)->find($draft->categoryId);
+        $category = SkillCategory::query()->forCompany($tenantId, $companyEntityId)->find($draft->categoryId);
         if ($category === null) {
             throw new InvalidSkillCatalogException('The skill category must belong to the same company catalog.');
         }

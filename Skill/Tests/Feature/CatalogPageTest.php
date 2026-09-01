@@ -110,7 +110,9 @@ test('HR can install the starter pack and administer the catalog end to end', fu
         ->assertHasNoErrors()
         ->assertSee('forklift.operation');
 
-    $skill = Skill::query()->sole();
+    $skill = Skill::query()
+        ->forCompany((int) app(TenantContext::class)->requireTenantId(), $companyEntityId)
+        ->sole();
     expect($skill->company_entity_id)->toBe($companyEntityId)
         ->and($skill->active)->toBeTrue();
 
@@ -186,7 +188,7 @@ test('an actor in one company cannot reach a sibling company catalog in the same
     $betaEntity = catalogPageCompanyEntity($tenantId, 'Beta Workforce', (int) $companyBeta->id);
     app(SkillCatalogDefaults::class)->install($betaEntity);
     $betaCategory = SkillCategory::query()
-        ->forOwner($tenantId, $betaEntity)->where('code', 'quality')->sole();
+        ->forCompany($tenantId, $betaEntity)->where('code', 'quality')->sole();
     app(SkillCatalogStore::class)->defineSkill($betaEntity, new SkillDraft(
         code: 'beta.secret.process',
         name: 'Beta Secret Process',
@@ -215,7 +217,7 @@ test('an actor in one company cannot reach a sibling company catalog in the same
     Livewire::actingAs($adminAlpha)->test(Index::class)
         ->set('companyEntityId', $betaEntity)->call('startSkill')->assertStatus(404);
 
-    expect(Skill::query()->forOwner($tenantId, $betaEntity)->where('code', 'beta.secret.process')->sole()->name)
+    expect(Skill::query()->forCompany($tenantId, $betaEntity)->where('code', 'beta.secret.process')->sole()->name)
         ->toBe('Beta Secret Process');
 });
 

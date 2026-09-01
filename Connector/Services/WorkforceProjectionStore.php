@@ -151,6 +151,7 @@ final class WorkforceProjectionStore
     private function persistCurrent(string $model, array $values, \DateTimeInterface $observedAt): TenantOwnedModel
     {
         $current = $model::query()
+            ->withoutCompanyScope('A sync pass addresses exactly one projection by the canonical workforce entity id it just resolved through this connection, and the company is part of the payload being written.')
             ->forTenant($this->tenantContext->requireTenantId())
             ->where('workforce_entity_id', $values['workforce_entity_id'])
             ->lockForUpdate()

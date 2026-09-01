@@ -2,8 +2,12 @@
 
 namespace App\Domains\PeopleConnector\Connector\Models;
 
+use App\Domains\PeopleConnector\Connector\Models\Concerns\CompanyOwned;
+
 final class WorkforceEmployeeProjection extends TenantOwnedModel
 {
+    use CompanyOwned;
+
     protected $table = 'people_connector_connector_workforce_employees';
 
     protected function casts(): array

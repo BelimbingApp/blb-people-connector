@@ -74,7 +74,7 @@ test('starter pack installs the ten controlled categories and the published 0-5 
     $again = app(SkillCatalogDefaults::class)->install($companyEntityId);
     expect($again['categories'])->toBe(0)
         ->and($again['scale'])->toBeNull()
-        ->and(ProficiencyScale::query()->count())->toBe(1);
+        ->and(ProficiencyScale::query()->forCompany((int) app(TenantContext::class)->requireTenantId(), $companyEntityId)->count())->toBe(1);
 });
 
 test('a published scale refuses mutation of itself and its levels', function (): void {
@@ -162,7 +162,7 @@ test('drafts can be discarded but published scales cannot; tenancy bounds every 
 
     $draft = $store->draft($companyEntityId, 'temp', 'Temp', proficiencyScaleLevels());
     $store->discardDraft($companyEntityId, (int) $draft->id);
-    expect(ProficiencyScale::query()->count())->toBe(0);
+    expect(ProficiencyScale::query()->forCompany((int) app(TenantContext::class)->requireTenantId(), $companyEntityId)->count())->toBe(0);
 
     $published = $store->draft($companyEntityId, 'standard', 'Standard', proficiencyScaleLevels());
     $store->publish($companyEntityId, (int) $published->id);
@@ -189,19 +189,19 @@ test('published-scale immutability holds at the database layer against builder a
     // trigger abort poisons the enclosing test transaction otherwise.
     $bypass = fn (callable $write): callable => fn () => DB::transaction($write);
 
-    expect($bypass(fn () => ProficiencyScale::query()->whereKey($scaleId)->update(['name' => 'SILENTLY RENAMED'])))
+    expect($bypass(fn () => ProficiencyScale::query()->withoutCompanyScope('Deliberately bypasses the model layer to prove the database trigger stands on its own.')->whereKey($scaleId)->update(['name' => 'SILENTLY RENAMED'])))
         ->toThrow(QueryException::class);
-    expect($bypass(fn () => ProficiencyScaleLevel::query()->where('scale_id', $scaleId)->where('level', 2)->update(['name' => 'Rewritten'])))
+    expect($bypass(fn () => ProficiencyScaleLevel::query()->withoutCompanyScope('Deliberately bypasses the model layer to prove the database trigger stands on its own.')->where('scale_id', $scaleId)->where('level', 2)->update(['name' => 'Rewritten'])))
         ->toThrow(QueryException::class);
     expect($bypass(fn () => DB::table('people_connector_skill_proficiency_scale_levels')
         ->where('scale_id', $scaleId)->where('level', 0)->update(['name' => 'Not assessed'])))
         ->toThrow(QueryException::class);
-    expect($bypass(fn () => ProficiencyScaleLevel::query()->insert([
+    expect($bypass(fn () => ProficiencyScaleLevel::query()->withoutCompanyScope('Deliberately bypasses the model layer to prove the database trigger stands on its own.')->insert([
         'tenant_id' => $scale->tenant_id, 'scale_id' => $scaleId, 'level' => 3,
         'name' => 'Injected', 'anchor' => 'x', 'authority' => 'y',
         'created_at' => now(), 'updated_at' => now(),
     ])))->toThrow(QueryException::class);
-    expect($bypass(fn () => ProficiencyScaleLevel::query()->where('scale_id', $scaleId)->where('level', 1)->delete()))
+    expect($bypass(fn () => ProficiencyScaleLevel::query()->withoutCompanyScope('Deliberately bypasses the model layer to prove the database trigger stands on its own.')->where('scale_id', $scaleId)->where('level', 1)->delete()))
         ->toThrow(QueryException::class);
     expect($bypass(fn () => DB::table('people_connector_skill_proficiency_scales')->where('id', $scaleId)->delete()))
         ->toThrow(QueryException::class);

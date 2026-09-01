@@ -617,6 +617,7 @@ final class WorkforceIdentityStore
         }
 
         $query = $projectionModel::query()
+            ->withoutCompanyScope('Addresses one projection by the canonical workforce entity id, which is unique per tenant; the caller resolved that entity through its own connection.')
             ->forTenant($this->tenantContext->requireTenantId())
             ->where('workforce_entity_id', $entity->id);
 
@@ -671,6 +672,12 @@ final class WorkforceIdentityStore
 
         foreach ($references as [$projectionModel, $column]) {
             $projections = $projectionModel::query()
+                // Whether a merge may be driven with one company's authority is
+                // the open attribution question in
+                // docs/contracts/company-ownership.md; query scoping cannot
+                // answer it, and a merge genuinely does have to rewrite every
+                // inbound reference in the tenant.
+                ->withoutCompanyScope('A merge rewrites every inbound reference to the superseded entity, which may legitimately span companies.')
                 ->forTenant($this->tenantContext->requireTenantId())
                 ->where($column, $superseded->id)
                 ->lockForUpdate()

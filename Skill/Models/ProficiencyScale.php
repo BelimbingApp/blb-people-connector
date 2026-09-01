@@ -2,10 +2,10 @@
 
 namespace App\Domains\PeopleConnector\Skill\Models;
 
+use App\Domains\PeopleConnector\Connector\Models\Concerns\CompanyOwned;
 use App\Domains\PeopleConnector\Connector\Models\TenantOwnedModel;
 use App\Domains\PeopleConnector\Skill\Enums\ProficiencyScaleStatus;
 use App\Domains\PeopleConnector\Skill\Exceptions\PublishedScaleImmutableException;
-use App\Domains\PeopleConnector\Skill\Models\Concerns\CompanyOwned;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
 /**

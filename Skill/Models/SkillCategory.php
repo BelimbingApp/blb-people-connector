@@ -2,8 +2,8 @@
 
 namespace App\Domains\PeopleConnector\Skill\Models;
 
+use App\Domains\PeopleConnector\Connector\Models\Concerns\CompanyOwned;
 use App\Domains\PeopleConnector\Connector\Models\TenantOwnedModel;
-use App\Domains\PeopleConnector\Skill\Models\Concerns\CompanyOwned;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
 /**
@@ -26,7 +26,8 @@ class SkillCategory extends TenantOwnedModel
     /** @return HasMany<Skill, $this> */
     public function skills(): HasMany
     {
-        return $this->hasMany(Skill::class, 'category_id');
+        return $this->hasMany(Skill::class, 'category_id')
+            ->withoutCompanyScope('Reached only from a category already resolved for its company; the store refuses a skill whose category belongs to another one.');
     }
 
     public function getAuditSubject(): ?array

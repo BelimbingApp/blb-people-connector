@@ -204,9 +204,12 @@ with `withoutCompanyScope()` and says why it is safe.
 
 Being honest about the edges:
 
-- **Inserts.** Global scopes do not run on insert. The database's `NOT NULL`
-  constraint on `company_entity_id` and the composite foreign key are the
-  backstop, and the stores validate the entity before writing.
+- **Creating a row through a model.** `Model::create()` and `$model->save()`
+  build their insert without scopes, so the guard never sees them. The
+  database's `NOT NULL` constraint on `company_entity_id` and the composite
+  foreign key are the backstop, and the stores validate the entity before
+  writing. A mass `Model::query()->insert()` *is* guarded, because Eloquent
+  passes that through the scoped query builder.
 - **Saving or deleting a model you already hold.** Eloquent addresses those by
   primary key without scopes. That is correct: you obtained the instance
   through a guarded query.

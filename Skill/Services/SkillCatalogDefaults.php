@@ -52,8 +52,7 @@ class SkillCatalogDefaults
 
             foreach (self::CATEGORIES as $category) {
                 $exists = SkillCategory::query()
-                    ->forTenant($tenantId)
-                    ->where('company_entity_id', $companyEntityId)
+                    ->forCompany($tenantId, $companyEntityId)
                     ->where('code', $category['code'])
                     ->exists();
 

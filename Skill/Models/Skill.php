@@ -2,12 +2,12 @@
 
 namespace App\Domains\PeopleConnector\Skill\Models;
 
+use App\Domains\PeopleConnector\Connector\Models\Concerns\CompanyOwned;
 use App\Domains\PeopleConnector\Connector\Models\TenantOwnedModel;
 use App\Domains\PeopleConnector\Skill\Enums\AssessmentMethod;
 use App\Domains\PeopleConnector\Skill\Enums\CriticalClassification;
 use App\Domains\PeopleConnector\Skill\Enums\SkillScope;
 use App\Domains\PeopleConnector\Skill\Exceptions\InvalidSkillCatalogException;
-use App\Domains\PeopleConnector\Skill\Models\Concerns\CompanyOwned;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 /**
@@ -47,7 +47,8 @@ class Skill extends TenantOwnedModel
     /** @return BelongsTo<SkillCategory, $this> */
     public function category(): BelongsTo
     {
-        return $this->belongsTo(SkillCategory::class, 'category_id');
+        return $this->belongsTo(SkillCategory::class, 'category_id')
+            ->withoutCompanyScope('The skill was already resolved for its company, and the store refuses a category from any other one.');
     }
 
     public function isCritical(): bool
