@@ -33,9 +33,6 @@ use App\Domains\PeopleConnector\Connector\Models\WorkforceCompanyProjection;
  */
 class CompanyAttribution
 {
-    /** @var array<string, array<int, string>> */
-    private array $memo = [];
-
     public function __construct(
         private readonly TenantContext $tenantContext,
     ) {}
@@ -52,13 +49,7 @@ class CompanyAttribution
             return [];
         }
 
-        // A page asks this several times — the picker, the guard on every
-        // action, and the render pass — and the answer is the same each time.
-        // The key carries both the tenant and the actor's company, so a reused
-        // instance in a long-running worker cannot serve one actor's answer to
-        // another; that is the trap that pinned a tenant per Octane worker in
-        // the provider health store.
-        return $this->memo[$tenantId.':'.$actorCompanyId] ??= $this->resolve($tenantId, (int) $actorCompanyId);
+        return $this->resolve($tenantId, (int) $actorCompanyId);
     }
 
     public function mayActFor(?User $actor, int $companyEntityId): bool
