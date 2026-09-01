@@ -60,10 +60,24 @@ class ProficiencyScale extends TenantOwnedModel
         });
     }
 
-    /** @return HasMany<ProficiencyScaleLevel, $this> */
+    /**
+     * The escape is on the relation, not on its callers, and it is what makes
+     * has()/whereHas()/withCount()/doesntHave() usable here. Those build a
+     * correlated subquery whose only link to the parent is a column-to-column
+     * predicate, which the company guard cannot read as a pin — so without
+     * this a good-faith author counting levels would be pushed into writing
+     * their own withoutCompanyScope() at the call site, manufacturing exactly
+     * the unexamined hole this guard exists to prevent. Correlation to a scale
+     * row the outer query already resolved is the reason it is safe, and it is
+     * stated once, here.
+     *
+     * @return HasMany<ProficiencyScaleLevel, $this>
+     */
     public function levels(): HasMany
     {
-        return $this->hasMany(ProficiencyScaleLevel::class, 'scale_id')->orderBy('level');
+        return $this->hasMany(ProficiencyScaleLevel::class, 'scale_id')
+            ->withoutCompanyScope('Levels are only ever reached correlated to one scale, whose company governed the query that produced it.')
+            ->orderBy('level');
     }
 
     public function isLocked(): bool

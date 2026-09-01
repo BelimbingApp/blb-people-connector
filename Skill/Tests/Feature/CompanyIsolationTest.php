@@ -148,3 +148,36 @@ test('one company cannot publish, retire or discard another company proficiency 
     expect(fn () => ProficiencyScaleLevel::query()->forTenant($fixture->tenantId)->get())
         ->toThrow(MissingCompanyScopeException::class, 'scale_id');
 });
+
+test('counting a scale\'s levels does not force the author into the escape hatch', function (): void {
+    $fixture = companyIsolationTenant();
+    $scales = app(ProficiencyScaleStore::class);
+
+    $scales->draft($fixture->alphaCompanyEntityId, 'standard', 'Alpha Standard', companyIsolationLevels());
+    $scales->draft($fixture->betaCompanyEntityId, 'standard', 'Beta Standard', companyIsolationLevels());
+
+    // has/whereHas/withCount/doesntHave correlate to the parent with a
+    // column-to-column predicate, which the guard cannot read as a pin. If
+    // those threw from a properly pinned parent, an author who just wants a
+    // level count would reach for withoutCompanyScope() at the call site —
+    // manufacturing the very hole this guard exists to prevent. The escape
+    // belongs on the relation, stated once, so the good-faith path works.
+    $alphaScales = ProficiencyScale::query()
+        ->forCompany($fixture->tenantId, $fixture->alphaCompanyEntityId)
+        ->withCount('levels')
+        ->get();
+
+    expect($alphaScales)->toHaveCount(1)
+        ->and((int) $alphaScales->first()->levels_count)->toBe(2)
+        ->and((string) $alphaScales->first()->name)->toBe('Alpha Standard');
+
+    expect(ProficiencyScale::query()
+        ->forCompany($fixture->tenantId, $fixture->alphaCompanyEntityId)
+        ->whereHas('levels', fn ($query) => $query->where('level', 1))
+        ->pluck('name')->all())->toBe(['Alpha Standard']);
+
+    expect(ProficiencyScale::query()
+        ->forCompany($fixture->tenantId, $fixture->alphaCompanyEntityId)
+        ->doesntHave('levels')
+        ->count())->toBe(0);
+});
