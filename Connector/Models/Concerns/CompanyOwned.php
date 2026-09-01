@@ -82,6 +82,11 @@ trait CompanyOwned
      * it. That visibility is the whole point — the defect this guard exists to
      * stop was invisible precisely because the unscoped queries looked exactly
      * like the scoped ones.
+     *
+     * The list stays complete because CompanyIsolationContract fails the suite
+     * if anything outside this method reaches for Laravel's own
+     * withoutGlobalScope(), which removes the guard just as effectively and
+     * says nothing about why.
      */
     public function scopeWithoutCompanyScope(Builder $query, string $reason): void
     {

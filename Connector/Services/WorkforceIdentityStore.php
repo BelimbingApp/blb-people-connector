@@ -671,17 +671,26 @@ final class WorkforceIdentityStore
         };
 
         foreach ($references as [$projectionModel, $column]) {
-            $projections = $projectionModel::query()
-                // Whether a merge may be driven with one company's authority is
-                // the open attribution question in
-                // docs/contracts/company-ownership.md; query scoping cannot
-                // answer it, and a merge genuinely does have to rewrite every
-                // inbound reference in the tenant.
-                ->withoutCompanyScope('A merge rewrites every inbound reference to the superseded entity, which may legitimately span companies.')
+            $query = $projectionModel::query()
                 ->forTenant($this->tenantContext->requireTenantId())
                 ->where($column, $superseded->id)
-                ->lockForUpdate()
-                ->get();
+                ->lockForUpdate();
+
+            // Merging a company rewrites company_entity_id, which is the axis
+            // itself, so that branch keeps its guard. Every other branch
+            // rewrites a department, position, manager or user reference — a
+            // shared manager or user entity can genuinely be pointed at from
+            // more than one company in the tenant, so rewriting only one
+            // company's references would leave dangling pointers. Whether a
+            // merge may be driven with one company's authority at all is the
+            // open attribution question in
+            // docs/contracts/company-ownership.md; query scoping cannot
+            // answer it.
+            if (! in_array($column, (new $projectionModel)->companyScopeColumns(), true)) {
+                $query->withoutCompanyScope('A merge rewrites every inbound reference to the superseded entity, and a shared manager or user entity may be referenced from more than one company.');
+            }
+
+            $projections = $query->get();
 
             foreach ($projections as $projection) {
                 $selfReferentialHierarchy = in_array(

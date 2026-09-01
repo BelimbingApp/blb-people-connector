@@ -7,10 +7,49 @@ use App\Domains\PeopleConnector\Connector\Exceptions\MissingCompanyScopeExceptio
 use App\Domains\PeopleConnector\Connector\Models\WorkforceCompanyProjection;
 use App\Domains\PeopleConnector\Connector\Services\CompanyAttribution;
 use App\Domains\PeopleConnector\Connector\Testing\CompanyIsolationContract;
+use App\Domains\PeopleConnector\Connector\Testing\TwoCompanyTenant;
+use App\Domains\PeopleConnector\Skill\Data\SkillDraft;
+use App\Domains\PeopleConnector\Skill\Enums\AssessmentMethod;
+use App\Domains\PeopleConnector\Skill\Enums\SkillScope;
+use App\Domains\PeopleConnector\Skill\Models\Skill;
+use App\Domains\PeopleConnector\Skill\Models\SkillCategory;
+use App\Domains\PeopleConnector\Skill\Services\SkillCatalogStore;
+use Illuminate\Support\Facades\DB;
 
 afterEach(function (): void {
     app(TenantContext::class)->clear();
 });
+
+/**
+ * One skill per company, so a query that leaks past the axis returns a row
+ * that visibly belongs to the other company.
+ *
+ * @return array{Skill, Skill} [alpha, beta]
+ */
+function companyIsolationRivalSkills(TwoCompanyTenant $fixture): array
+{
+    $catalog = app(SkillCatalogStore::class);
+
+    $alphaCategory = $catalog->defineCategory($fixture->alphaCompanyEntityId, 'safety', 'Alpha Safety');
+    $betaCategory = $catalog->defineCategory($fixture->betaCompanyEntityId, 'process', 'Beta Process');
+
+    $draft = fn (int $categoryId, string $code, string $name): SkillDraft => new SkillDraft(
+        code: $code,
+        name: $name,
+        definition: 'Operates the line to the approved standard.',
+        categoryId: $categoryId,
+        scope: SkillScope::Shared,
+        criticalClassification: null,
+        evidenceGuide: null,
+        defaultAssessmentMethod: AssessmentMethod::DirectObservation,
+        defaultReassessmentMonths: 12,
+    );
+
+    return [
+        $catalog->defineSkill($fixture->alphaCompanyEntityId, $draft((int) $alphaCategory->id, 'alpha.public', 'Alpha Public')),
+        $catalog->defineSkill($fixture->betaCompanyEntityId, $draft((int) $betaCategory->id, 'beta.secret.process', 'Beta Secret Process')),
+    ];
+}
 
 test('the repository actually contains company-owned models to check', function (): void {
     // Guards the guard: a discovery bug that finds nothing would make every
@@ -79,4 +118,97 @@ test('archiving a sibling company does not reopen the single-company carve-out',
     expect(Company::query()->where('tenant_id', $fixture->tenantId)->count())->toBe(1)
         ->and(app(CompanyAttribution::class)->mayActFor($alphaUser, $unattributed))->toBeFalse()
         ->and(app(CompanyAttribution::class)->mayActFor($alphaUser, $fixture->betaCompanyEntityId))->toBeFalse();
+});
+
+test('nothing opens the guard without stating a reason', function (): void {
+    // The document calls `grep -rn withoutCompanyScope` a complete list of the
+    // places the company boundary is deliberately not applied. Laravel's own
+    // withoutGlobalScope() opens the same guard and appears in no such grep,
+    // so the completeness claim is enforced here rather than trusted.
+    expect(CompanyIsolationContract::unreasonedGuardBypasses())->toBe([]);
+});
+
+test('a predicate on a joined table cannot pin the base table', function (): void {
+    $fixture = CompanyIsolationContract::twoCompaniesInOneTenant();
+    app(TenantContext::class)->set($fixture->tenantId);
+
+    [$alphaSkill, $betaSkill] = companyIsolationRivalSkills($fixture);
+    $skills = (new Skill)->getTable();
+    $categories = (new SkillCategory)->getTable();
+
+    // Reproduced against the first version of this guard: the ON clause
+    // correlates only on tenant_id, and the company predicate sits on the
+    // joined table. Alpha read Beta's skill through it, renamed it, deleted
+    // it, and every step reported as guard-compliant.
+    $bypass = fn () => Skill::query()
+        ->join($categories.' as c', fn ($join) => $join->on('c.tenant_id', '=', $skills.'.tenant_id'))
+        ->where($skills.'.tenant_id', $fixture->tenantId)
+        ->where('c.company_entity_id', $fixture->alphaCompanyEntityId)
+        ->select($skills.'.*');
+
+    expect(fn () => $bypass()->get())->toThrow(MissingCompanyScopeException::class)
+        ->and(fn () => $bypass()->update(['name' => 'DEFACED VIA JOIN']))->toThrow(MissingCompanyScopeException::class)
+        ->and(fn () => $bypass()->delete())->toThrow(MissingCompanyScopeException::class);
+
+    expect($betaSkill->refresh()->name)->toBe('Beta Secret Process');
+
+    // A join pinned on the base table is a legitimate query and still runs.
+    expect(Skill::query()
+        ->join($categories.' as c', fn ($join) => $join->on('c.id', '=', $skills.'.category_id'))
+        ->where($skills.'.tenant_id', $fixture->tenantId)
+        ->where($skills.'.company_entity_id', $fixture->alphaCompanyEntityId)
+        ->pluck($skills.'.name')->all())->toBe([$alphaSkill->name]);
+});
+
+test('a qualified pin must name the base table or its alias', function (): void {
+    $fixture = CompanyIsolationContract::twoCompaniesInOneTenant();
+    app(TenantContext::class)->set($fixture->tenantId);
+
+    companyIsolationRivalSkills($fixture);
+    $skills = (new Skill)->getTable();
+
+    expect(Skill::query()
+        ->where($skills.'.tenant_id', $fixture->tenantId)
+        ->where($skills.'.company_entity_id', $fixture->alphaCompanyEntityId)
+        ->count())->toBe(1);
+
+    expect(Skill::query()
+        ->from($skills.' as s')
+        ->where('s.tenant_id', $fixture->tenantId)
+        ->where('s.company_entity_id', $fixture->alphaCompanyEntityId)
+        ->count())->toBe(1);
+
+    expect(fn () => Skill::query()
+        ->forTenant($fixture->tenantId)
+        ->where('somewhere_else.company_entity_id', $fixture->alphaCompanyEntityId)
+        ->get())->toThrow(MissingCompanyScopeException::class);
+});
+
+test('a subquery or a raw tautology cannot stand in for a company value', function (): void {
+    $fixture = CompanyIsolationContract::twoCompaniesInOneTenant();
+    app(TenantContext::class)->set($fixture->tenantId);
+
+    companyIsolationRivalSkills($fixture);
+    $categories = (new SkillCategory)->getTable();
+
+    // Laravel records a whereIn subquery as an ordinary `In` holding a single
+    // Expression. The subquery is unbounded, so this must not read as a pin.
+    expect(fn () => Skill::query()
+        ->forTenant($fixture->tenantId)
+        ->whereIn('company_entity_id', DB::table($categories)->select('company_entity_id'))
+        ->get())->toThrow(MissingCompanyScopeException::class);
+
+    // `company_entity_id = company_entity_id` matches every row.
+    expect(fn () => Skill::query()
+        ->forTenant($fixture->tenantId)
+        ->where('company_entity_id', DB::raw('company_entity_id'))
+        ->get())->toThrow(MissingCompanyScopeException::class);
+
+    // A list of real ids does pin, and deliberately so: the guard proves the
+    // column is constrained to named companies. Whether the caller may act for
+    // those companies is CompanyAttribution's question, not the guard's.
+    expect(Skill::query()
+        ->forTenant($fixture->tenantId)
+        ->whereIn('company_entity_id', [$fixture->alphaCompanyEntityId, $fixture->betaCompanyEntityId])
+        ->count())->toBe(2);
 });

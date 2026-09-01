@@ -227,17 +227,101 @@ final class CompanyIsolationContract
         return $violations;
     }
 
-    /** @return list<\SplFileInfo> */
+    /**
+     * Application code that opens the guard without stating a reason.
+     *
+     * `withoutCompanyScope($reason)` is the sanctioned escape, and the reason
+     * is what makes the grep in docs/contracts/company-ownership.md a complete
+     * list. Laravel's own `withoutGlobalScope()` and `withoutGlobalScopes()`
+     * open the same guard silently and appear in no such grep, so this turns
+     * the document's completeness claim into something the suite enforces
+     * rather than something the reader has to trust.
+     *
+     * The trait's own sanctioned call is the single exception.
+     *
+     * @return list<string> "relative/path.php:line"
+     */
+    public static function unreasonedGuardBypasses(): array
+    {
+        $domainRoot = dirname(__DIR__, 2);
+        $allowed = [
+            $domainRoot.'/Connector/Models/Concerns/CompanyOwned.php',
+            __FILE__,
+        ];
+        $found = [];
+
+        foreach (self::phpFiles($domainRoot) as $file) {
+            $path = $file->getPathname();
+
+            if (in_array($path, $allowed, true)) {
+                continue;
+            }
+
+            foreach (self::guardRemovalCalls($path) as $line) {
+                $found[] = substr($path, strlen($domainRoot) + 1).':'.$line;
+            }
+        }
+
+        sort($found);
+
+        return $found;
+    }
+
+    /**
+     * Model files, found by directory rather than by declaration.
+     *
+     * A company-owned model placed outside a `Models` directory enrols itself
+     * into nothing, silently. That is a deliberate trade — parsing every file
+     * in the domain to find Eloquent subclasses costs more than it buys while
+     * the house layout puts models in `Models` — but it is a real limit, and
+     * the companion "the repository actually contains company-owned models"
+     * test only catches total discovery failure, not one missed model.
+     *
+     * @return list<\SplFileInfo>
+     */
     private static function modelFiles(): array
     {
         $domainRoot = dirname(__DIR__, 2);
         $files = [];
 
+        foreach (self::phpFiles($domainRoot) as $file) {
+            if (str_contains(str_replace('\\', '/', $file->getPath()), '/Models')) {
+                $files[] = $file;
+            }
+        }
+
+        return $files;
+    }
+
+    /**
+     * Lines calling Laravel's own scope-removal methods, found by tokenizing
+     * rather than by matching text — a comment or a docblock that names the
+     * method is discussing it, not calling it.
+     *
+     * @return list<int>
+     */
+    private static function guardRemovalCalls(string $path): array
+    {
+        $removers = ['withoutGlobalScope', 'withoutGlobalScopes'];
+        $lines = [];
+
+        foreach (token_get_all((string) file_get_contents($path)) as $token) {
+            if (is_array($token) && $token[0] === T_STRING && in_array($token[1], $removers, true)) {
+                $lines[] = $token[2];
+            }
+        }
+
+        return $lines;
+    }
+
+    /** @return list<\SplFileInfo> */
+    private static function phpFiles(string $root): array
+    {
+        $files = [];
+
         /** @var \SplFileInfo $file */
-        foreach (new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($domainRoot)) as $file) {
-            if ($file->isFile()
-                && $file->getExtension() === 'php'
-                && str_contains(str_replace('\\', '/', $file->getPath()), '/Models')) {
+        foreach (new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($root, \FilesystemIterator::SKIP_DOTS)) as $file) {
+            if ($file->isFile() && $file->getExtension() === 'php') {
                 $files[] = $file;
             }
         }
