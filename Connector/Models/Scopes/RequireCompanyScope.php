@@ -7,6 +7,7 @@ use Illuminate\Contracts\Database\Query\Expression;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Scope;
+use Illuminate\Database\Query\Builder as QueryBuilder;
 
 /**
  * Refuses to run a query against a company-owned table unless the query pins
@@ -37,7 +38,7 @@ final class RequireCompanyScope implements Scope
             throw MissingCompanyScopeException::forDerivedTable($model::class);
         }
 
-        if ($columns === [] || ! $this->pinsACompany($query->wheres ?? [], $columns, $baseTables)) {
+        if ($columns === [] || ! $this->pinsACompany($query, $columns, $baseTables)) {
             throw MissingCompanyScopeException::for($model::class, $columns);
         }
     }
@@ -62,29 +63,130 @@ final class RequireCompanyScope implements Scope
      *    records a `whereIn` subquery as an ordinary `In` holding a single
      *    Expression, so an unbounded subquery would otherwise read as a pin.
      *
-     * @param  array<int, array<string, mixed>>  $wheres
+     * A correlation to an enclosing query counts as well — see
+     * correlatesToAnOuterQuery().
+     *
      * @param  list<string>  $columns
      * @param  list<string>  $baseTables
      */
-    private function pinsACompany(array $wheres, array $columns, array $baseTables): bool
+    private function pinsACompany(QueryBuilder $query, array $columns, array $baseTables): bool
     {
+        $wheres = $query->wheres ?? [];
+
         foreach ($wheres as $where) {
             if (($where['boolean'] ?? 'and') !== 'and') {
                 return false;
             }
         }
 
+        $localTables = $this->localTableNames($query, $baseTables);
+
         foreach ($wheres as $where) {
-            if (! $this->comparesToARealValue($where)) {
-                continue;
+            if ($this->comparesToARealValue($where)
+                && $this->addressesOwningColumn($where['column'], $columns, $baseTables)) {
+                return true;
             }
 
-            if ($this->addressesOwningColumn($where['column'], $columns, $baseTables)) {
+            if ($localTables !== null && $this->correlatesToAnOuterQuery($where, $columns, $baseTables, $localTables)) {
                 return true;
             }
         }
 
         return false;
+    }
+
+    /**
+     * A correlated subquery pins each row to exactly one row of an enclosing
+     * query, which is the same strength as pinning to one literal parent id —
+     * so it counts.
+     *
+     * This is what makes has(), whereHas(), withCount() and doesntHave() usable
+     * on a company-owned model. Laravel links those to the parent with a
+     * column-to-column predicate and nothing else, so without this the guard
+     * refuses a subquery whose parent is perfectly well pinned. That is
+     * fail-closed and leaks nothing, but it leaves a good-faith author no way
+     * to satisfy the guard, and the next thing they reach for is
+     * withoutCompanyScope() at their own call site — an escape wide enough to
+     * cover whatever they append to it, reviewed by nobody. A guard that has to
+     * be switched off to do ordinary work gets switched off.
+     *
+     * The other side must be resolvable **only** by an enclosing query: not the
+     * base table, not a joined table, not unqualified. That distinction is
+     * load-bearing. A column-to-column predicate against a table this query can
+     * see is a join condition, not a pin — it constrains the company to
+     * whatever the joined row happens to carry, which is how a join read a
+     * sibling company's rows in the first place.
+     *
+     * @param  array<string, mixed>  $where
+     * @param  list<string>  $columns
+     * @param  list<string>  $baseTables
+     * @param  list<string>  $localTables
+     */
+    private function correlatesToAnOuterQuery(array $where, array $columns, array $baseTables, array $localTables): bool
+    {
+        if (($where['type'] ?? null) !== 'Column' || ($where['operator'] ?? '=') !== '=') {
+            return false;
+        }
+
+        $first = $where['first'] ?? null;
+        $second = $where['second'] ?? null;
+
+        if (! is_string($first) || ! is_string($second)) {
+            return false;
+        }
+
+        foreach ([[$first, $second], [$second, $first]] as [$owning, $other]) {
+            if (! $this->addressesOwningColumn($owning, $columns, $baseTables)) {
+                continue;
+            }
+
+            $qualifier = $this->qualifierOf($other);
+
+            if ($qualifier !== null && ! in_array($qualifier, $localTables, true)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Every table name this query can resolve on its own: the base table and
+     * everything it joins. Null when a join's table is an expression, because
+     * then the list cannot be trusted to be complete and a correlation cannot
+     * be told apart from a join condition.
+     *
+     * @param  list<string>  $baseTables
+     * @return list<string>|null
+     */
+    private function localTableNames(QueryBuilder $query, array $baseTables): ?array
+    {
+        $names = $baseTables;
+
+        foreach ($query->joins ?? [] as $join) {
+            $table = $join->table ?? null;
+
+            if (! is_string($table)) {
+                return null;
+            }
+
+            if (preg_match('/^(.+?)\s+as\s+(.+)$/i', trim($table), $aliased) === 1) {
+                $names[] = $this->unquote($aliased[1]);
+                $names[] = $this->unquote($aliased[2]);
+            } else {
+                $names[] = $this->unquote($table);
+            }
+        }
+
+        return array_values(array_unique($names));
+    }
+
+    private function qualifierOf(string $column): ?string
+    {
+        $column = $this->unquote($column);
+        $separator = strrpos($column, '.');
+
+        return $separator === false ? null : $this->unquote(substr($column, 0, $separator));
     }
 
     /**

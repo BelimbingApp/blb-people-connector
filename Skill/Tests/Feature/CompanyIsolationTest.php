@@ -181,3 +181,30 @@ test('counting a scale\'s levels does not force the author into the escape hatch
         ->doesntHave('levels')
         ->count())->toBe(0);
 });
+
+test('an appended orWhere on a relation cannot read or write past the parent', function (): void {
+    $fixture = companyIsolationTenant();
+    $scales = app(ProficiencyScaleStore::class);
+
+    $alphaScale = $scales->draft($fixture->alphaCompanyEntityId, 'standard', 'Alpha Standard', companyIsolationLevels());
+    $betaScale = $scales->draft($fixture->betaCompanyEntityId, 'standard', 'Beta Standard', companyIsolationLevels());
+
+    // With an escape on the relation, the escape covers whatever the caller
+    // appends — so an unbracketed orWhere read Beta's level, and the same
+    // query with ->update() wrote it. The relation carries no escape now, so
+    // the guard's first rule catches the orWhere instead.
+    expect(fn () => $alphaScale->levels()->orWhere('level', 1)->get())
+        ->toThrow(MissingCompanyScopeException::class)
+        ->and(fn () => $alphaScale->levels()->orWhere('level', 1)->update(['name' => 'DEFACED VIA RELATION']))
+        ->toThrow(MissingCompanyScopeException::class);
+
+    // A withCount closure is the same footgun one level down.
+    expect(fn () => ProficiencyScale::query()
+        ->forCompany($fixture->tenantId, $fixture->alphaCompanyEntityId)
+        ->withCount(['levels' => fn ($query) => $query->orWhereRaw('1 = 1')])
+        ->get())->toThrow(MissingCompanyScopeException::class);
+
+    expect(ProficiencyScaleLevel::query()->where('scale_id', $betaScale->id)->pluck('name')->all())
+        ->toBe(['Not trained', 'Competent'])
+        ->and($alphaScale->levels()->count())->toBe(2);
+});
