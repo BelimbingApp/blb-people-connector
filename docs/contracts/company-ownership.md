@@ -247,20 +247,36 @@ Being honest about the edges:
 
 ## The test
 
-`Connector/Testing/CompanyIsolationContract.php` holds one reusable assertion
-and one discovery test runs it over **every** model in the repository that
-declares itself company-owned. A new slice does not copy a test; adding the
-trait enrolls the model automatically. For each one it asserts that:
+`Connector/Testing/CompanyIsolationContract.php` is the shared piece. It finds
+every model in the domain that declares itself company-owned and states what
+that has to mean, so a new slice is enrolled by adding the trait rather than by
+remembering to copy a test. For each model it asserts that:
 
-- a query scoped to Company A never returns Company B's rows;
-- an unscoped query raises `MissingCompanyScopeException` rather than
-  returning the tenant;
-- an update and a delete addressed only by tenant are refused the same way.
+- a read scoped only to the tenant raises `MissingCompanyScopeException`;
+- so does a completely unscoped read;
+- so do an update and a delete addressed only by tenant;
+- `forCompany()` satisfies the guard;
+- `withoutCompanyScope()` opens it, but never with an empty reason.
 
-Alongside it, `CompanyIsolationTest` reproduces the reviewed exploit in full:
-two companies inside one tenant, and a user at Alpha who can neither read nor
-rename nor deactivate anything belonging to Beta, at the store layer and
-through the Livewire component.
+The same class provides `twoCompaniesInOneTenant()` — the fixture the
+repository never had, provisioned the way an adapter will: workforce entity,
+external identity, company projection, one platform company each.
+
+Two behavioural suites use it.
+`Connector/Tests/Feature/CompanyIsolationContractTest.php` covers the connector
+side: two companies visible to each other only through the axis, the
+attribution rule offering each user only their own company, and archiving a
+sibling not reopening the single-company carve-out.
+`Skill/Tests/Feature/CompanyIsolationTest.php` walks the reviewed exploit step
+by step with Beta's real row ids — read, rename, deactivate, publish, retire,
+discard — and confirms every step is refused. Coverage through the Livewire
+component lives in `Skill/Tests/Feature/CatalogPageTest.php`.
+
+These were checked against the bug, not assumed. With `forCompany()` degraded
+back to tenant-only scoping and the guard unregistered, twelve of the fifteen
+fail, and the rename step succeeds exactly as the reviewer reproduced it. With
+the guard alone removed — the interim convention, without the mechanism —
+eleven still fail.
 
 ---
 
