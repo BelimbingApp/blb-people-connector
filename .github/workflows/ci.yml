@@ -7,6 +7,10 @@ on:
   pull_request:
     branches:
       - main
+  # Run independently of repository changes so a moving platform main cannot
+  # turn this connector red silently between pull requests. GitHub cron is UTC.
+  schedule:
+    - cron: '17 3,15 * * *'
   workflow_dispatch:
 
 jobs:
