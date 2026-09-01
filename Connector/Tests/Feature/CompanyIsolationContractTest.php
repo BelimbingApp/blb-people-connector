@@ -212,3 +212,45 @@ test('a subquery or a raw tautology cannot stand in for a company value', functi
         ->whereIn('company_entity_id', [$fixture->alphaCompanyEntityId, $fixture->betaCompanyEntityId])
         ->count())->toBe(2);
 });
+
+test('a join cannot claim the base table name by aliasing', function (): void {
+    $fixture = CompanyIsolationContract::twoCompaniesInOneTenant();
+    app(TenantContext::class)->set($fixture->tenantId);
+
+    companyIsolationRivalSkills($fixture);
+    $skills = (new Skill)->getTable();
+    $categories = (new SkillCategory)->getTable();
+
+    // No raw SQL at all. Aliasing `from` frees the bare table name, and the
+    // join takes it — so `$skills.company_entity_id` is a predicate on the
+    // categories table while reading, to an earlier version of the guard, as
+    // a pin on the base table. Once `from` is aliased, only the alias counts.
+    expect(fn () => Skill::query()
+        ->from($skills.' as s')
+        ->join($categories.' as '.$skills, fn ($join) => $join->on($skills.'.tenant_id', '=', 's.tenant_id'))
+        ->where('s.tenant_id', $fixture->tenantId)
+        ->where($skills.'.company_entity_id', $fixture->alphaCompanyEntityId)
+        ->get())->toThrow(MissingCompanyScopeException::class);
+});
+
+test('a derived or raw from refuses rather than narrowing in silence', function (): void {
+    $fixture = CompanyIsolationContract::twoCompaniesInOneTenant();
+    app(TenantContext::class)->set($fixture->tenantId);
+
+    companyIsolationRivalSkills($fixture);
+    $skills = (new Skill)->getTable();
+
+    // fromSub() reads like it is still inside the guarded model. It is not:
+    // the guard cannot tell what an unqualified column refers to once the base
+    // relation is derived, so it refuses instead of accepting a pin it cannot
+    // verify.
+    expect(fn () => Skill::query()
+        ->fromSub(DB::table($skills)->where('tenant_id', $fixture->tenantId), 's')
+        ->where('company_entity_id', $fixture->alphaCompanyEntityId)
+        ->get())->toThrow(MissingCompanyScopeException::class, 'derived or raw table');
+
+    expect(fn () => Skill::query()
+        ->fromRaw($skills)
+        ->where('company_entity_id', $fixture->alphaCompanyEntityId)
+        ->get())->toThrow(MissingCompanyScopeException::class, 'derived or raw table');
+});

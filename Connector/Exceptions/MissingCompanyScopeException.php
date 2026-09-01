@@ -26,4 +26,17 @@ final class MissingCompanyScopeException extends \LogicException
             .'with withoutCompanyScope($reason). See docs/contracts/company-ownership.md.',
         );
     }
+
+    /**
+     * @param  class-string  $model
+     */
+    public static function forDerivedTable(string $model): self
+    {
+        return new self(
+            "[$model] is company-owned and this query selects from a derived or raw table, "
+            .'so the guard cannot tell which table a column refers to and refuses rather than guess. '
+            .'Query the model directly, or state why this query may span companies with '
+            .'withoutCompanyScope($reason). See docs/contracts/company-ownership.md.',
+        );
+    }
 }

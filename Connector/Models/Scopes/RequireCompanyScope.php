@@ -31,8 +31,13 @@ final class RequireCompanyScope implements Scope
         /** @var list<string> $columns */
         $columns = $model->companyScopeColumns();
         $query = $builder->getQuery();
+        $baseTables = $this->baseTableNames($query->from, $model);
 
-        if ($columns === [] || ! $this->pinsACompany($query->wheres ?? [], $columns, $this->baseTableNames($builder, $model))) {
+        if ($baseTables === null) {
+            throw MissingCompanyScopeException::forDerivedTable($model::class);
+        }
+
+        if ($columns === [] || ! $this->pinsACompany($query->wheres ?? [], $columns, $baseTables)) {
             throw MissingCompanyScopeException::for($model::class, $columns);
         }
     }
@@ -143,27 +148,46 @@ final class RequireCompanyScope implements Scope
     }
 
     /**
-     * Every name a qualified column may legitimately use for the base table:
-     * the model's table, the query's `from`, and the alias when `from` carries
-     * one. A join's table is deliberately absent.
+     * Every name a qualified column may legitimately use for the base table,
+     * or null when the query's `from` makes that unknowable.
      *
-     * @return list<string>
+     * Only names the query itself binds to the base table count. An earlier
+     * version also trusted the model's table name unconditionally, which a
+     * reviewer defeated with no raw SQL at all: aliasing `from` to something
+     * else leaves the bare table name free, and a join can then take it —
+     * `->from("skills as s")->join("categories as skills", …)` made
+     * `skills.company_entity_id` a predicate on the *categories* table while
+     * the guard still read it as the base table. So when `from` carries an
+     * alias, only the alias is accepted. That also matches SQL, where
+     * `skills.col` is no longer addressable once `skills` has been aliased.
+     *
+     * A non-string `from` — `fromSub()`, `fromRaw()`, any Expression — means
+     * the base relation is derived and this scope cannot tell what a column
+     * refers to. That fails closed rather than narrowing the accepted list in
+     * silence, because `Skill::query()->fromSub(…)` reads to an author like it
+     * is still inside the guarded model.
+     *
+     * @return list<string>|null
      */
-    private function baseTableNames(Builder $builder, Model $model): array
+    private function baseTableNames(mixed $from, Model $model): ?array
     {
-        $names = [$model->getTable()];
-        $from = $builder->getQuery()->from;
-
-        if (is_string($from)) {
-            if (preg_match('/^(.+?)\s+as\s+(.+)$/i', trim($from), $aliased) === 1) {
-                $names[] = $aliased[1];
-                $names[] = $aliased[2];
-            } else {
-                $names[] = $from;
-            }
+        if (! is_string($from)) {
+            return null;
         }
 
-        return array_values(array_unique(array_map($this->unquote(...), $names)));
+        if (preg_match('/^(.+?)\s+as\s+(.+)$/i', trim($from), $aliased) === 1) {
+            return [$this->unquote($aliased[2])];
+        }
+
+        $names = [$this->unquote($from)];
+
+        // Belt and braces: an unaliased `from` should already be the model's
+        // table, and this keeps qualifyColumn() working if it ever is not.
+        if ($this->unquote($from) === $model->getTable()) {
+            $names[] = $model->getTable();
+        }
+
+        return array_values(array_unique($names));
     }
 
     private function unquote(string $name): string
