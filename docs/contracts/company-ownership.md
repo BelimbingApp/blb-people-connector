@@ -109,7 +109,7 @@ guessing is how the connector reached three identical defects.
 
 | Table | Class | Company key | Why |
 |---|---|---|---|
-| `..._provider_connections` | **T** | — | This is the row that *assigns* companies, so it cannot be filtered by the axis it defines. Its `company_id` is a platform company and is deliberately nullable: one HR install legitimately serves a whole tenant. Listing and configuring connections is a tenant-administration action. |
+| `..._provider_connections` | **T** | — | This is the row that *assigns* workforce companies, so it cannot be filtered by that axis — it has no `company_entity_id` and should not. It does carry a **platform** `company_id`, deliberately nullable because one HR install legitimately serves a whole tenant, and a tenant-scoped connection stores no company at all. Listing and configuring connections is a tenant-administration action. |
 | `..._workforce_entities` | **T** | — | A bare identity token: an id, a `resource_type`, a state, and a merge pointer. It carries no company-owned fact, and it is shared on purpose — one person keeps one connector id no matter which connection observed them. See the caveat below; the *row* is tenant-wide, but *changing its state* is not. |
 | `..._external_identities` | **D** | `connection_id` | The (provider, external id) → entity mapping. Its company is whatever company its connection belongs to. This is exactly where the merge defect lived: the code scoped to the tenant and the connection boundary stopped there. |
 | `..._workforce_companies` | **C** (self) | `workforce_entity_id` | The company projection *is* the company. Its own workforce entity id is the axis value; there is no separate `company_entity_id` column and there should not be one. |
@@ -180,25 +180,75 @@ The reason string is required and is not decorative. `grep -rn
 withoutCompanyScope` lists every place in the repository where the company
 boundary is deliberately not applied, together with the author's stated
 justification. That list is short, reviewable, and countable — which is the
-opposite of the situation this document was written to end, where the
-unscoped queries were invisible because they looked exactly like the scoped
-ones.
+opposite of the situation this document was written to end, where the unscoped
+queries were invisible because they looked exactly like the scoped ones.
+
+That grep is only complete because something enforces it. Laravel's own
+`withoutGlobalScope()` and `withoutGlobalScopes()` remove this guard just as
+effectively, take no reason, and appear in no such grep. So
+`CompanyIsolationContract::unreasonedGuardBypasses()` tokenizes every PHP file
+in the domain and fails the suite if either method is called anywhere except
+the trait's own sanctioned line. Use `withoutCompanyScope($reason)`; the
+alternative does not build.
 
 ### What the guard accepts
 
-The predicate must be at the top level of the query and joined with `AND`,
-using `=` or `IN`. Predicates buried inside a nested `orWhere` group do not
-count, and a top-level `orWhere` anywhere in the query fails the guard
-outright, because either of those can widen the result set past the company.
-This is deliberately strict: a guard that can be talked into passing is not a
-guard.
+The predicate must satisfy all four of these, and each one closes a bypass
+that was reproduced end to end against an earlier version of this guard.
 
-The primary key does **not** count as a pin. Addressing a row by its `id`
-proves the caller knows an id, not that the caller may have it — and a leaked
-id is the second half of the reproduced exploit. When a relationship must
-traverse into a company-owned model by primary key (a skill reaching its
-category, a level reaching its scale), the relationship states so explicitly
-with `withoutCompanyScope()` and says why it is safe.
+1. **Top level, joined with `AND`.** A predicate buried inside a nested
+   `orWhere` group does not count, and a top-level `orWhere` anywhere in the
+   query fails the guard outright, because either can widen the result past
+   the company.
+2. **On the base table.** An unqualified column is fine — it resolves to the
+   base table anyway — but a qualified one must name the base table or its
+   `as` alias. Accepting any qualifier let a join whose `ON` clause correlated
+   only on `tenant_id` satisfy the guard with a predicate on the *joined*
+   table, leaving the base table unconstrained. A reviewer read a sibling
+   company's skill through it, renamed it, and deleted it, with all three
+   steps reported as compliant.
+3. **Compared to a real value, with `=` or `IN`.** A raw expression can be a
+   tautology (`company_entity_id = company_entity_id`), and Laravel records a
+   `whereIn` subquery as an ordinary `In` holding a single `Expression`, so an
+   unbounded subquery would otherwise read as a pin. Expressions are rejected
+   as values and inside value lists.
+4. **Not the base table's own primary key.** Addressing a row by its `id`
+   proves the caller knows an id, not that the caller may have it — and a
+   leaked id is the second half of the reproduced exploit.
+
+Point 4 is about the row's *own* key. A **parent's** key is different, and
+that is what a Class D table pins on: ownership genuinely lives on the parent,
+so naming the parent is naming the owner. The protection a Class D table gets
+is therefore weaker than a Class C table's, and the difference should be
+understood rather than glossed:
+`ProficiencyScaleLevel::query()->where('scale_id', $someScaleId)` is
+guard-compliant and returns that scale's levels whoever owns it. What the guard
+buys there is that you cannot sweep the tenant's levels — you have to name one
+scale. Who may name which scale is authorization, below.
+
+When a relationship must traverse into a company-owned model by primary key (a
+skill reaching its category, a level reaching its scale), the relationship says
+so explicitly with `withoutCompanyScope()` and states why it is safe.
+
+`whereIn('company_entity_id', [$a, $b])` is accepted, by design. The guard
+proves the column is constrained to *named* companies. It does not prove there
+is only one of them, and it does not prove the caller may act for any of them.
+
+### The guard is scoping, not authorization
+
+This is worth saying plainly, because "make the company axis a mechanism" can
+be read as "isolation is now enforced", and that is not what happened. What is
+enforced is that **omitting** the axis fails.
+
+The guard proves a company column is constrained. It does not know which
+companies the actor may act for. `workforce_entities` is Class T and unguarded,
+so any actor in the tenant can enumerate every entity id in it, including other
+companies' company entity ids — and `forCompany($tenantId, $anyOfThem)` will
+happily scope to one, as will the store methods that take a company entity id.
+
+Authorization lives in exactly one place: `Connector/Services/CompanyAttribution`,
+called from the Livewire components before any store call. Do not read a passing
+guard as permission.
 
 ### What the guard does not cover
 
@@ -207,9 +257,21 @@ Being honest about the edges:
 - **Creating a row through a model.** `Model::create()` and `$model->save()`
   build their insert without scopes, so the guard never sees them. The
   database's `NOT NULL` constraint on `company_entity_id` and the composite
-  foreign key are the backstop, and the stores validate the entity before
-  writing. A mass `Model::query()->insert()` *is* guarded, because Eloquent
+  foreign key ensure a company is **named**; they do not ensure it is *yours*.
+  Only the stores do that, in `SkillCatalogStore::assertDraft()` and its
+  siblings. A row written straight through `Skill::create()` can carry another
+  company's `company_entity_id` and another company's `category_id`, and it
+  persists. A mass `Model::query()->insert()` *is* guarded, because Eloquent
   passes that through the scoped query builder.
+- **Tables joined into a guarded query.** The guard runs for the query's base
+  model only. Joining a second company-owned table pins the base table but not
+  the joined one, so a join whose `ON` clause correlates loosely can still read
+  columns from another company's rows on the joined side. Scope joins yourself.
+- **Cross-company parent links written outside a store.** `skills.category_id`
+  has a composite foreign key on `(category_id, tenant_id)`, not on the
+  company, so a write that bypasses `SkillCatalogStore` can point a skill at
+  another company's category, and `$category->skills` would then surface it.
+  The store refuses this; the database does not.
 - **Saving or deleting a model you already hold.** Eloquent addresses those by
   primary key without scopes. That is correct: you obtained the instance
   through a guarded query.
@@ -258,6 +320,12 @@ remembering to copy a test. For each model it asserts that:
 - `forCompany()` satisfies the guard;
 - `withoutCompanyScope()` opens it, but never with an empty reason.
 
+Alongside those, one test per reproduced bypass: a join whose company predicate
+sits on the joined table, a qualifier naming some other table, a `whereIn`
+subquery, and a raw tautology — each refused, while a join pinned on the base
+table still runs. And one test that no file in the domain calls Laravel's
+unreasoned scope-removal methods.
+
 The same class provides `twoCompaniesInOneTenant()` — the fixture the
 repository never had, provisioned the way an adapter will: workforce entity,
 external identity, company projection, one platform company each.
@@ -274,9 +342,11 @@ component lives in `Skill/Tests/Feature/CatalogPageTest.php`.
 
 These were checked against the bug, not assumed. With `forCompany()` degraded
 back to tenant-only scoping and the guard unregistered, twelve of the fifteen
-fail, and the rename step succeeds exactly as the reviewer reproduced it. With
-the guard alone removed — the interim convention, without the mechanism —
-eleven still fail.
+original cases fail, and the rename step succeeds exactly as the reviewer
+reproduced it. With the guard alone removed — the interim convention, without
+the mechanism — eleven still fail. Restoring the guard's two original
+weaknesses, the loose column qualifier and the accepted raw expression, fails
+the three bypass tests and nothing else.
 
 ---
 
