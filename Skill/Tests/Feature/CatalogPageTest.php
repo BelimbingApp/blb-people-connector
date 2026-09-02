@@ -12,6 +12,7 @@ use App\Domains\PeopleConnector\Connector\Models\WorkforceCompanyProjection;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceEntity;
 use App\Domains\PeopleConnector\Skill\Data\SkillDraft;
 use App\Domains\PeopleConnector\Skill\Livewire\Catalog\Index;
+use App\Domains\PeopleConnector\Skill\Models\ProficiencyScale;
 use App\Domains\PeopleConnector\Skill\Models\Skill;
 use App\Domains\PeopleConnector\Skill\Models\SkillCategory;
 use App\Domains\PeopleConnector\Skill\Services\SkillCatalogDefaults;
@@ -143,10 +144,51 @@ test('a viewer can read the catalog but every manage action is refused', functio
         ->assertSee('Expert / Authoriser')
         ->assertDontSee('New skill');
 
-    expect(fn () => Livewire::actingAs($viewer)->test(Index::class)->call('installStarterPack'))
-        ->toThrow(AuthorizationDeniedException::class);
-    expect(fn () => Livewire::actingAs($viewer)->test(Index::class)->call('startSkill'))
-        ->toThrow(AuthorizationDeniedException::class);
+    // authorizedCompanyForManage() has two halves: the manage capability and
+    // the company check. Pinning only the company half leaves a view-only HOD
+    // able to write to their OWN company's catalog, which the company half
+    // permits. Both halves need every action driven through them.
+    //
+    // Real ids from the viewer's own company, so that with authorizeManage()
+    // removed the action would genuinely succeed rather than throw a
+    // not-found from the store and satisfy a laxer expectation.
+    $category = SkillCategory::query()
+        ->forCompany($tenantId, $companyEntityId)->where('code', 'quality')->sole();
+    $scale = ProficiencyScale::query()
+        ->forCompany($tenantId, $companyEntityId)->where('code', SkillCatalogDefaults::SCALE_CODE)->sole();
+    $skill = app(SkillCatalogStore::class)->defineSkill($companyEntityId, new SkillDraft(
+        code: 'viewer.probe.skill',
+        name: 'Viewer Probe Skill',
+        definition: 'Exists so a viewer has a real id to fail against.',
+        categoryId: (int) $category->id,
+    ));
+
+    // Captured before anything is driven: if an action did slip through, a
+    // value read afterwards would already be the changed one.
+    $scaleStatusBefore = $scale->status;
+
+    $refused = function (string $action, array $args = []) use ($viewer, $companyEntityId): void {
+        expect(fn () => Livewire::actingAs($viewer)->test(Index::class)
+            ->set('companyEntityId', $companyEntityId)
+            ->call($action, ...$args))
+            ->toThrow(AuthorizationDeniedException::class);
+    };
+
+    $refused('installStarterPack');
+    $refused('startSkill');
+    $refused('saveSkill');
+    $refused('saveCategory');
+    $refused('toggleSkillActive', [(int) $skill->id]);
+    $refused('renameCategory', [(int) $category->id, 'Renamed By Viewer']);
+    $refused('toggleCategoryActive', [(int) $category->id]);
+    $refused('publishScale', [(int) $scale->id]);
+    $refused('draftNewScaleVersion', [(int) $scale->id]);
+
+    expect($skill->refresh()->active)->toBeTrue()
+        ->and($category->refresh()->name)->not->toBe('Renamed By Viewer')
+        ->and($category->active)->toBeTrue()
+        ->and($scale->refresh()->status)->toBe($scaleStatusBefore)
+        ->and(ProficiencyScale::query()->forCompany($tenantId, $companyEntityId)->count())->toBe(1);
 });
 
 test('the page never leaks another tenant catalog', function (): void {
@@ -250,4 +292,61 @@ test('a single-company tenant with a tenant-scoped provider stays visible, then 
     Livewire::actingAs($user)
         ->test(Index::class)
         ->assertViewHas('companies', []);
+});
+
+test('every mutating catalog action refuses a company the actor may not act for', function (): void {
+    // The component documents authorizedCompanyForManage() as "the single
+    // authorization funnel for every mutating action". Nothing failed if an
+    // action stopped going through it: the sibling-company test above covers
+    // selectCompany, installStarterPack and startSkill, and none of those
+    // writes anything.
+    $adminAlpha = createAdminUser();
+    $tenantId = (int) app(TenantContext::class)->currentTenantId();
+    catalogPageCompanyEntity($tenantId, 'Alpha Workforce', (int) $adminAlpha->company_id);
+
+    $companyBeta = Company::factory()->create();
+    $betaEntity = catalogPageCompanyEntity($tenantId, 'Beta Workforce', (int) $companyBeta->id);
+    app(SkillCatalogDefaults::class)->install($betaEntity);
+
+    $betaCategory = SkillCategory::query()
+        ->forCompany($tenantId, $betaEntity)->where('code', 'quality')->sole();
+    $betaScale = ProficiencyScale::query()
+        ->forCompany($tenantId, $betaEntity)->where('code', SkillCatalogDefaults::SCALE_CODE)->sole();
+    $betaSkill = app(SkillCatalogStore::class)->defineSkill($betaEntity, new SkillDraft(
+        code: 'beta.secret.process',
+        name: 'Beta Secret Process',
+        definition: 'Beta-only production standard.',
+        categoryId: (int) $betaCategory->id,
+    ));
+
+    // Captured BEFORE, because refresh() reloads in place and returns $this --
+    // comparing $scale->refresh()->status to $scale->status compares a value
+    // to itself and passes whatever happened.
+    $betaScaleStatusBefore = $betaScale->status;
+
+    // Beta's REAL ids, deliberately. With a made-up id the action would 404
+    // from its own not-found check even with the funnel removed, and this
+    // test would pass while proving nothing.
+    $refuses = function (string $action, array $args = []) use ($adminAlpha, $betaEntity): void {
+        Livewire::actingAs($adminAlpha)->test(Index::class)
+            ->set('companyEntityId', $betaEntity)
+            ->call($action, ...$args)
+            ->assertStatus(404);
+    };
+
+    $refuses('saveSkill');
+    $refuses('saveCategory');
+    $refuses('toggleSkillActive', [(int) $betaSkill->id]);
+    $refuses('renameCategory', [(int) $betaCategory->id, 'Renamed By Alpha']);
+    $refuses('toggleCategoryActive', [(int) $betaCategory->id]);
+    $refuses('publishScale', [(int) $betaScale->id]);
+    $refuses('draftNewScaleVersion', [(int) $betaScale->id]);
+
+    // Nothing moved.
+    expect($betaSkill->refresh()->active)->toBeTrue()
+        ->and($betaSkill->name)->toBe('Beta Secret Process')
+        ->and($betaCategory->refresh()->name)->not->toBe('Renamed By Alpha')
+        ->and($betaCategory->active)->toBeTrue()
+        ->and($betaScale->refresh()->status)->toBe($betaScaleStatusBefore)
+        ->and(ProficiencyScale::query()->forCompany($tenantId, $betaEntity)->count())->toBe(1);
 });
