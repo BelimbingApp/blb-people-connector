@@ -257,7 +257,13 @@ final class CompanyIsolationContract
             $exercised++;
 
             try {
-                $write();
+                // Savepoint-wrapped: a write that gets past the refusal fails
+                // at the database, and on Postgres that poisons the test
+                // transaction — every later statement then aborts with
+                // "current transaction is aborted", so catching the exception
+                // alone recorded zero routes there and looked exactly like
+                // main (#32, review of 6a9dcc3).
+                DB::transaction($write);
                 $violations[] = "{$route}_moves_a_company_column";
             } catch (CompanyMoveRefusedException) {
                 // Expected: the row would have left its company.
@@ -352,7 +358,7 @@ final class CompanyIsolationContract
             $exercised++;
 
             try {
-                $write();
+                DB::transaction($write);
                 $violations[] = "{$route}_moves_a_company_column";
             } catch (CompanyMoveRefusedException) {
                 // Expected.
