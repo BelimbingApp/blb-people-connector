@@ -156,13 +156,26 @@ return new class extends Migration
             ." BEGIN SELECT RAISE(ABORT, 'proficiency scale has been published and cannot be deleted'); END",
         );
 
-        // Written out one statement per trigger rather than built in a loop.
-        // The schema-drift verifier reads migration source statically, and it
-        // cannot fold strtolower($operation), so a name assembled at runtime
-        // makes the statement unresolvable -- and an unresolvable statement
+        // Written out one statement per trigger. The schema-drift verifier
+        // reads migration source statically: a statement it cannot resolve
         // could be anything, so it is reported unreadable and the whole run
-        // comes back INCOMPLETE. The SQL below is byte-identical to what the
-        // loop produced; only its readability to the parser changed.
+        // comes back INCOMPLETE.
+        //
+        // The loop is not what it could not resolve, and this matters --
+        // a foreach over a literal array with plain concatenation parses
+        // fine. Three separate things here were each unresolvable on their
+        // own: the strtolower() call, the $notDraft closure call, and the
+        // double-quoted interpolation. StaticExpressionEvaluator folds no
+        // function call of any kind and has no case for an interpolated
+        // string, so removing any one of the three still leaves the rest.
+        //
+        // Which is why this is not a concession to an analyser. The only
+        // thing the loop bought was the $notDraft helper -- and that helper
+        // is precisely what cannot be folded, so a loop that keeps the
+        // deduplication cannot exist. Every loop shape that does parse ends
+        // up spelling all three conditions out anyway and adds indirection
+        // on top. Three literal statements read exactly as the database
+        // stores them, which has been checked against sqlite_master.
         DB::statement(
             'CREATE TRIGGER pcs_level_insert_guard'
             .' BEFORE INSERT ON people_connector_skill_proficiency_scale_levels'
