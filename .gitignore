@@ -1,2 +1,4 @@
 /.phpunit.cache/
 /vendor/
+# Probe models written by WorkforceReferenceContractTest; a fatal mid-test can leave one behind.
+Connector/Models/ZzContractProbe*.php

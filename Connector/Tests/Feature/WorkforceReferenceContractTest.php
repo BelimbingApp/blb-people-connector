@@ -1,12 +1,27 @@
 <?php
 
+use App\Base\Tenancy\Contracts\TenantContext;
 use App\Domains\PeopleConnector\Connector\Contracts\ReferencesWorkforceEntities;
+use App\Domains\PeopleConnector\Connector\Data\ExternalReference;
+use App\Domains\PeopleConnector\Connector\Data\ProviderScope;
+use App\Domains\PeopleConnector\Connector\Data\WorkforceCompany;
+use App\Domains\PeopleConnector\Connector\Data\WorkforceEmployee;
+use App\Domains\PeopleConnector\Connector\Data\WorkforcePosition;
+use App\Domains\PeopleConnector\Connector\Data\WorkforceProvenance;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceReference;
 use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
 use App\Domains\PeopleConnector\Connector\Models\Concerns\CompanyOwned;
 use App\Domains\PeopleConnector\Connector\Models\DomainModels;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceEmployeeProjection;
+use App\Domains\PeopleConnector\Connector\Services\ProviderConnectionStore;
+use App\Domains\PeopleConnector\Connector\Services\WorkforceIdentityStore;
+use App\Domains\PeopleConnector\Connector\Services\WorkforceProjectionStore;
+use App\Domains\PeopleConnector\Skill\Data\SkillDraft;
+use App\Domains\PeopleConnector\Skill\Enums\AssessmentMethod;
+use App\Domains\PeopleConnector\Skill\Enums\SkillScope;
 use App\Domains\PeopleConnector\Skill\Models\Skill;
+use App\Domains\PeopleConnector\Skill\Services\SkillCatalogStore;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
 /**
@@ -27,6 +42,10 @@ function workforceReferenceUndeclaredColumns(string $model): array
     $declared = $instance instanceof ReferencesWorkforceEntities
         ? array_map(fn (WorkforceReference $reference): string => $reference->column, $instance->workforceReferences())
         : [];
+
+    if (! Schema::hasTable($instance->getTable())) {
+        return ['undeclared' => ['table_missing:'.$instance->getTable()], 'declared_but_missing' => []];
+    }
 
     $columns = array_values(array_filter(
         Schema::getColumnListing($instance->getTable()),
@@ -57,14 +76,75 @@ test('the two columns the merge forgot are now declared where the merge reads th
         ->and($forEmployees)->toContain(WorkforceEmployeeProjection::class.'.manager_entity_id');
 });
 
-test('a model that declares a reference joins the merge without any list being edited', function (): void {
-    // The claim is about a model that does not exist yet, so the test brings
-    // one into existence: a file in a Models directory, discovered by the
-    // same scan production uses, and removed again whatever happens.
-    $path = dirname(__DIR__, 2).'/Models/ZzContractProbeModel.php';
-    $class = 'App\\Domains\\PeopleConnector\\Connector\\Models\\ZzContractProbeModel';
+/**
+ * Bring a model into existence for one test: a file in a Models directory,
+ * discovered by the same scan production uses.
+ *
+ * Cleanup cannot rest on `finally` alone — a fatal (say, redeclaring a class
+ * whose file was left behind) skips it. So the file is removed if it already
+ * exists before it is written, the class is only required if not yet loaded,
+ * and .gitignore refuses the file so a leak can never be committed.
+ *
+ * @return array{string, class-string}
+ */
+function workforceReferenceProbeModel(string $name, string $source): array
+{
+    $path = dirname(__DIR__, 2).'/Models/'.$name.'.php';
+    $class = 'App\\Domains\\PeopleConnector\\Connector\\Models\\'.$name;
 
-    file_put_contents($path, <<<'PHP'
+    if (file_exists($path)) {
+        unlink($path);
+    }
+
+    file_put_contents($path, $source);
+
+    if (! class_exists($class, false)) {
+        require $path;
+    }
+
+    DomainModels::forget();
+
+    return [$path, $class];
+}
+
+function workforceReferenceProbeCleanup(string $path): void
+{
+    if (file_exists($path)) {
+        unlink($path);
+    }
+
+    DomainModels::forget();
+}
+
+test('a model that declares a reference joins the merge without any list being edited', function (): void {
+    // Two probes, one company-owned and one not, both declaring an existing
+    // column under a resource type no real model declares it for — so when
+    // that kind of entity is merged, the only thing that can move the row
+    // is the probe. The claim is about a model that does not exist yet, so
+    // the test brings it into existence.
+    [$ownedPath, $owned] = workforceReferenceProbeModel('ZzContractProbeOwned', <<<'PHP'
+    <?php
+
+    namespace App\Domains\PeopleConnector\Connector\Models;
+
+    use App\Domains\PeopleConnector\Connector\Contracts\ReferencesWorkforceEntities;
+    use App\Domains\PeopleConnector\Connector\Data\WorkforceReference;
+    use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
+    use App\Domains\PeopleConnector\Connector\Models\Concerns\CompanyOwned;
+
+    final class ZzContractProbeOwned extends TenantOwnedModel implements ReferencesWorkforceEntities
+    {
+        use CompanyOwned;
+
+        protected $table = 'people_connector_skill_skills';
+
+        public function workforceReferences(): array
+        {
+            return [new WorkforceReference('owner_employee_entity_id', WorkforceResourceType::Position)];
+        }
+    }
+    PHP);
+    [$plainPath, $plain] = workforceReferenceProbeModel('ZzContractProbePlain', <<<'PHP'
     <?php
 
     namespace App\Domains\PeopleConnector\Connector\Models;
@@ -73,29 +153,62 @@ test('a model that declares a reference joins the merge without any list being e
     use App\Domains\PeopleConnector\Connector\Data\WorkforceReference;
     use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
 
-    final class ZzContractProbeModel extends TenantOwnedModel implements ReferencesWorkforceEntities
+    final class ZzContractProbePlain extends TenantOwnedModel implements ReferencesWorkforceEntities
     {
         protected $table = 'people_connector_connector_workforce_employees';
 
         public function workforceReferences(): array
         {
-            return [new WorkforceReference('position_entity_id', WorkforceResourceType::Position)];
+            return [new WorkforceReference('manager_entity_id', WorkforceResourceType::Position)];
         }
     }
     PHP);
 
     try {
-        require $path;
-        DomainModels::forget();
-
         $forPositions = array_map(fn (array $pair): string => $pair[0].'.'.$pair[1]->column, DomainModels::referencing(WorkforceResourceType::Position));
+        expect(DomainModels::all())->toContain($owned, $plain)
+            ->and($forPositions)->toContain($owned.'.owner_employee_entity_id', $plain.'.manager_entity_id');
 
-        expect(DomainModels::all())->toContain($class)
-            ->and($forPositions)->toContain($class.'.position_entity_id');
+        // Now the layer the registry check stops short of: a real merge.
+        [$tenant] = createTenantWithCompany(['name' => 'Probe Merge Tenant']);
+        app(TenantContext::class)->set((int) $tenant->id);
+        $connections = app(ProviderConnectionStore::class);
+        $connection = $connections->activate((int) $connections->configure(ProviderScope::tenant(), 'test.people')->id);
+        $projections = app(WorkforceProjectionStore::class);
+        $identities = app(WorkforceIdentityStore::class);
+        $at = new DateTimeImmutable('2026-08-30T09:00:00+00:00');
+        $company = new ExternalReference('test.people', WorkforceResourceType::Company, 'PROBE-CO');
+        $position = fn (string $id): ExternalReference => new ExternalReference('test.people', WorkforceResourceType::Position, $id);
+        $projections->upsert((int) $connection->id, new WorkforceCompany($company, 'Probe Co', true, $at));
+        $projections->upsert((int) $connection->id, new WorkforceEmployee(new ExternalReference('test.people', WorkforceResourceType::Employee, 'PROBE-EMP'), $company, 'Probe Employee', true, $at, $at));
+        foreach (['POS-OLD', 'POS-NEW'] as $id) {
+            $projections->upsert((int) $connection->id, new WorkforcePosition($position($id), $company, $id, true, $at, $at));
+        }
+        $companyId = (int) $identities->resolve((int) $connection->id, $company)->id;
+        $oldPosition = (int) $identities->resolve((int) $connection->id, $position('POS-OLD'))->id;
+        $catalog = app(SkillCatalogStore::class);
+        $category = $catalog->defineCategory($companyId, 'probe', 'Probe');
+        $skill = $catalog->defineSkill($companyId, new SkillDraft(
+            code: 'probe.skill', name: 'Probe', definition: 'Probe.', categoryId: (int) $category->id, scope: SkillScope::Shared,
+            criticalClassification: null, evidenceGuide: null, defaultAssessmentMethod: AssessmentMethod::DirectObservation, defaultReassessmentMonths: 12,
+        ));
+        // Point the probe-declared columns at the position entity directly:
+        // no store would, which is the point — only the probe declares them
+        // as position references.
+        DB::table('people_connector_skill_skills')->where('id', $skill->id)->update(['owner_employee_entity_id' => $oldPosition]);
+        DB::table('people_connector_connector_workforce_employees')->where('tenant_id', $tenant->id)->update(['manager_entity_id' => $oldPosition]);
+
+        $identities->merge((int) $connection->id, $position('POS-OLD'), $position('POS-NEW'), $at->modify('+1 hour'), new WorkforceProvenance('identity_merge', 'probe-review'));
+        $newPosition = (int) $identities->resolve((int) $connection->id, $position('POS-NEW'))->id;
+
+        expect($newPosition)->not->toBe($oldPosition)
+            ->and((int) DB::table('people_connector_skill_skills')->where('id', $skill->id)->value('owner_employee_entity_id'))->toBe($newPosition)
+            ->and((int) DB::table('people_connector_connector_workforce_employees')->where('tenant_id', $tenant->id)->value('manager_entity_id'))->toBe($newPosition);
     } finally {
-        unlink($path);
-        DomainModels::forget();
+        workforceReferenceProbeCleanup($ownedPath);
+        workforceReferenceProbeCleanup($plainPath);
+        app(TenantContext::class)->clear();
     }
 
-    expect(DomainModels::all())->not->toContain($class);
+    expect(DomainModels::all())->not->toContain($owned, $plain);
 });

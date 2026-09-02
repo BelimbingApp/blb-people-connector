@@ -11,6 +11,7 @@ use App\Domains\PeopleConnector\Connector\Exceptions\ConnectorRecordNotFoundExce
 use App\Domains\PeopleConnector\Connector\Exceptions\ExternalIdentityCollisionException;
 use App\Domains\PeopleConnector\Connector\Exceptions\WorkforceMergeConflictException;
 use App\Domains\PeopleConnector\Connector\Models\CompanyOwnedModels;
+use App\Domains\PeopleConnector\Connector\Models\Concerns\CompanyOwned;
 use App\Domains\PeopleConnector\Connector\Models\DomainModels;
 use App\Domains\PeopleConnector\Connector\Models\ExternalIdentity;
 use App\Domains\PeopleConnector\Connector\Models\ProviderConnection;
@@ -692,9 +693,13 @@ final class WorkforceIdentityStore
             // open attribution question in
             // docs/contracts/company-ownership.md; query scoping cannot
             // answer it.
-            $rewritesOwner = in_array($column, (new $projectionModel)->companyScopeColumns(), true);
+            // A declaring model need not be company-owned (#36 review): only
+            // a model carrying the trait has a company guard to keep or to
+            // open, and only its owner column counts as the company axis.
+            $companyOwned = in_array(CompanyOwned::class, class_uses_recursive($projectionModel), true);
+            $rewritesOwner = $companyOwned && in_array($column, (new $projectionModel)->companyScopeColumns(), true);
 
-            if (! $rewritesOwner) {
+            if ($companyOwned && ! $rewritesOwner) {
                 $query->withoutCompanyScope('A merge rewrites every inbound reference to the superseded entity, and a shared manager or user entity may be referenced from more than one company.');
             }
 
