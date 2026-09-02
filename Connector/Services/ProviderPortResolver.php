@@ -50,7 +50,7 @@ final class ProviderPortResolver
             throw new \InvalidArgumentException('Readable provider resolution requires a readable port interface.');
         }
 
-        $authorization = $this->authorizeActor($actor, $provider, $scope, 'people-connector.provider.read');
+        $authorization = $this->authorizeActor($actor, $provider, $scope, 'people-connector.provider.read', $capability, $contract, 'read');
 
         /** @var TPort */
         return $this->resolve(
@@ -60,6 +60,7 @@ final class ProviderPortResolver
             $provider->capabilities()->readPortContracts($capability),
             'read',
             $authorization,
+            $scope,
         );
     }
 
@@ -80,7 +81,7 @@ final class ProviderPortResolver
             throw new \InvalidArgumentException('Writable provider resolution requires a writable port interface.');
         }
 
-        $authorization = $this->authorizeActor($actor, $provider, $scope, 'people-connector.provider.write');
+        $authorization = $this->authorizeActor($actor, $provider, $scope, 'people-connector.provider.write', $capability, $contract, 'write');
 
         /** @var TPort */
         return $this->resolve(
@@ -90,6 +91,7 @@ final class ProviderPortResolver
             $provider->capabilities()->writePortContracts($capability),
             'write',
             $authorization,
+            $scope,
         );
     }
 
@@ -102,6 +104,9 @@ final class ProviderPortResolver
         ProviderAdapter $provider,
         ProviderScope $scope,
         string $permission,
+        PeopleCapability $capability,
+        string $contract,
+        string $direction,
     ): ProviderPortAuthorization {
         return ProviderPortAuthorization::authorize(
             $this->authorization,
@@ -111,6 +116,9 @@ final class ProviderPortResolver
             $provider,
             $scope,
             $permission,
+            $capability,
+            $contract,
+            $direction,
         );
     }
 
@@ -128,6 +136,7 @@ final class ProviderPortResolver
         array $declaredContracts,
         string $direction,
         ProviderPortAuthorization $authorization,
+        ProviderScope $scope,
     ): ProviderPort {
         $descriptor = $provider->descriptor();
         $context = [
@@ -154,7 +163,15 @@ final class ProviderPortResolver
             );
         }
 
-        if (! $authorization->permits($descriptor->id)) {
+        if (! $authorization->permits(
+            $descriptor->id,
+            $this->tenantContext->requireTenantId(),
+            $scope->key(),
+            'people-connector.provider.'.$direction,
+            $capability->value,
+            $direction,
+            $contract,
+        )) {
             throw new ProviderCompatibilityException(
                 providerId: $descriptor->id,
                 operation: "resolve_{$direction}_port",

@@ -7,9 +7,12 @@ use App\Base\Authz\DTO\Actor;
 use App\Base\Authz\DTO\ResourceContext;
 use App\Base\Tenancy\Contracts\TenantContext;
 use App\Domains\PeopleConnector\Connector\Contracts\ProviderAdapter;
+use App\Domains\PeopleConnector\Connector\Contracts\ReadableProviderPort;
+use App\Domains\PeopleConnector\Connector\Contracts\WritableProviderPort;
 use App\Domains\PeopleConnector\Connector\Exceptions\ProviderAuthorizationException;
 use App\Domains\PeopleConnector\Connector\Models\ProviderConnection;
 use App\Domains\PeopleConnector\Connector\Services\ProviderConnectionStore;
+use DateTimeImmutable;
 
 /** Evidence that the connector authorization gate completed for one port call. */
 final readonly class ProviderPortAuthorization
@@ -19,6 +22,10 @@ final readonly class ProviderPortAuthorization
         public int $tenantId,
         public string $scopeKey,
         public string $permission,
+        public string $capability,
+        public string $direction,
+        public string $contract,
+        public DateTimeImmutable $expiresAt,
     ) {}
 
     public static function authorize(
@@ -29,9 +36,24 @@ final readonly class ProviderPortAuthorization
         ProviderAdapter $provider,
         ProviderScope $scope,
         string $permission,
+        PeopleCapability $capability,
+        string $contract,
+        string $direction,
     ): self {
         $tenantId = $tenantContext->requireTenantId();
         $descriptor = $provider->descriptor();
+        $securityNow = new DateTimeImmutable(now()->toISOString());
+
+        if (($direction === 'read' && ! is_a($contract, ReadableProviderPort::class, true))
+            || ($direction === 'write' && ! is_a($contract, WritableProviderPort::class, true))
+            || ! in_array($direction, ['read', 'write'], true)
+            || $permission !== 'people-connector.provider.'.($direction === 'read' ? 'read' : 'write')) {
+            throw new ProviderAuthorizationException(
+                providerId: $descriptor->id,
+                operation: 'authorize_provider_access',
+                message: 'Provider port authorization evidence has an invalid direction or contract.',
+            );
+        }
 
         if ($actor->validate() !== null
             || $actor->tenantId !== $tenantId
@@ -69,7 +91,7 @@ final readonly class ProviderPortAuthorization
             ],
         );
 
-        return new self($descriptor->id, $tenantId, $scope->key(), $permission);
+        return new self($descriptor->id, $tenantId, $scope->key(), $permission, $capability->value, $direction, $contract, $securityNow->modify('+60 seconds'));
     }
 
     /** Conformance probes are test-only and never create production evidence. */
@@ -79,11 +101,25 @@ final readonly class ProviderPortAuthorization
             throw new \LogicException('Conformance authorization is available only in tests.');
         }
 
-        return new self($providerId, 0, 'conformance', 'conformance');
+        return new self($providerId, 0, 'conformance', 'conformance', '*', '*', '*', new DateTimeImmutable('+1 minute'));
     }
 
-    public function permits(string $providerId): bool
-    {
-        return $this->providerId === $providerId;
+    public function permits(
+        string $providerId,
+        int $tenantId,
+        string $scopeKey,
+        string $permission,
+        string $capability,
+        string $direction,
+        string $contract,
+    ): bool {
+        return $this->providerId === $providerId
+            && $this->tenantId === $tenantId
+            && $this->scopeKey === $scopeKey
+            && $this->permission === $permission
+            && $this->capability === $capability
+            && $this->direction === $direction
+            && $this->contract === $contract
+            && new DateTimeImmutable(now()->toISOString()) < $this->expiresAt;
     }
 }
