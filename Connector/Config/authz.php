@@ -10,5 +10,7 @@ return [
         'people-connector.connection.manage',
         'people-connector.provider.read',
         'people-connector.provider.write',
+        'people-connector.identity.manage',
+        'people-connector.support.break-glass',
     ],
 ];

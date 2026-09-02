@@ -39,6 +39,7 @@ Adapters publish stable identity, contract and adapter versions, independently c
 - [x] Publish provider-neutral DTOs, capability/error vocabulary, registry, conformance helper, disconnected UI, and CI. {codex/gpt-5}
 - [ ] Merge the connector ownership/privacy boundary and `0330` migration allocation proposed in BelimbingApp/belimbing#457.
 - [x] Persist non-secret tenant/company-scoped connections, canonical workforce identities, typed projections, append-only provenance, durable sync checkpoints, and reconciliation issues. {codex/gpt-5.6-sol}
+- [x] Add the connector-side actor/scope authorization gate, short-lived rotatable credential references, revocation, credential-free provider UI hand-offs, and time-boxed two-person support grants with immutable action records. {desktop-luna}
 - [ ] Add the provider-neutral user projection, explicit freshness/stale decisions, and adapter-driven bootstrap/incremental execution over the persistence foundation.
 - [ ] Prove governed export, backup/restore, privacy-aware deletion/tombstones, and full synchronization recovery for connector-owned records.
 - [ ] Add authentication/SSO and privileged-access controls without exposing secrets.
