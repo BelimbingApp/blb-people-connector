@@ -2,6 +2,9 @@
 
 namespace App\Domains\PeopleConnector\Skill\Models;
 
+use App\Domains\PeopleConnector\Connector\Contracts\ReferencesWorkforceEntities;
+use App\Domains\PeopleConnector\Connector\Data\WorkforceReference;
+use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
 use App\Domains\PeopleConnector\Connector\Models\Concerns\CompanyOwned;
 use App\Domains\PeopleConnector\Connector\Models\TenantOwnedModel;
 use App\Domains\PeopleConnector\Skill\Enums\AssessmentMethod;
@@ -16,11 +19,20 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
  * immutable after creation; employee, department, and company references are
  * connector workforce entity ids, never provider-model foreign keys.
  */
-class Skill extends TenantOwnedModel
+class Skill extends TenantOwnedModel implements ReferencesWorkforceEntities
 {
     use CompanyOwned;
 
     protected $table = 'people_connector_skill_skills';
+
+    /** @return list<WorkforceReference> */
+    public function workforceReferences(): array
+    {
+        return [
+            new WorkforceReference('department_entity_id', WorkforceResourceType::OrganizationUnit),
+            new WorkforceReference('owner_employee_entity_id', WorkforceResourceType::Employee),
+        ];
+    }
 
     protected static function booted(): void
     {
