@@ -1,6 +1,7 @@
 <?php
 
 use App\Base\Tenancy\Contracts\TenantContext;
+use App\Domains\PeopleConnector\Connector\Exceptions\CompanyMoveRefusedException;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceEntity;
 use App\Domains\PeopleConnector\Skill\Data\ProficiencyLevelDraft;
 use App\Domains\PeopleConnector\Skill\Enums\ProficiencyScaleStatus;
@@ -75,6 +76,32 @@ test('starter pack installs the ten controlled categories and the published 0-5 
     expect($again['categories'])->toBe(0)
         ->and($again['scale'])->toBeNull()
         ->and(ProficiencyScale::query()->forCompany((int) app(TenantContext::class)->requireTenantId(), $companyEntityId)->count())->toBe(1);
+});
+
+test('a scale cannot move to a sibling company at the model or database layer', function (): void {
+    [$tenantId, $companyEntityId] = proficiencyScaleFixture('Scale Owner Guard Tenant');
+    $scale = app(ProficiencyScaleStore::class)->draft($companyEntityId, 'core', 'Core', proficiencyScaleLevels());
+    $sibling = WorkforceEntity::query()->create([
+        'tenant_id' => $tenantId,
+        'resource_type' => 'company',
+        'state' => WorkforceEntity::STATE_ACTIVE,
+        'first_seen_at' => now(),
+    ]);
+
+    expect(fn () => ProficiencyScale::query()->forCompany($tenantId, $companyEntityId)->update(['company_entity_id' => $sibling->id]))
+        ->toThrow(CompanyMoveRefusedException::class, 'would leave its company')
+        ->and(fn () => $scale->forceFill(['company_entity_id' => $sibling->id])->save())
+        ->toThrow(CompanyMoveRefusedException::class, 'would leave its company');
+
+    // A draft is otherwise freely mutable, so only the owner guard can refuse
+    // this. Savepoint-wrapped: a trigger abort poisons the test transaction on Postgres.
+    expect(fn () => DB::transaction(fn () => ProficiencyScale::query()
+        ->movingCompany('Deliberately bypasses the model layer to prove the database trigger stands on its own.')
+        ->forCompany($tenantId, $companyEntityId)
+        ->update(['company_entity_id' => $sibling->id])))
+        ->toThrow(QueryException::class, 'cannot move to another company');
+
+    expect((int) $scale->refresh()->company_entity_id)->toBe($companyEntityId);
 });
 
 test('a published scale refuses mutation of itself and its levels', function (): void {

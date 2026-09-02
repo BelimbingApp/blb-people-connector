@@ -137,6 +137,27 @@ return new class extends Migration
             CREATE TRIGGER pcs_skill_code_guard_trigger
                 BEFORE UPDATE ON people_connector_skill_skills
                 FOR EACH ROW EXECUTE FUNCTION pcs_skill_code_guard();
+
+            CREATE OR REPLACE FUNCTION pcs_company_owner_guard() RETURNS trigger AS $$
+            BEGIN
+                IF NEW.company_entity_id IS DISTINCT FROM OLD.company_entity_id THEN
+                    RAISE EXCEPTION 'catalog row % belongs to company entity % and cannot move to another company', OLD.id, OLD.company_entity_id;
+                END IF;
+                RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql;
+
+            CREATE TRIGGER pcs_category_company_owner_guard_trigger
+                BEFORE UPDATE ON people_connector_skill_categories
+                FOR EACH ROW EXECUTE FUNCTION pcs_company_owner_guard();
+
+            CREATE TRIGGER pcs_skill_company_owner_guard_trigger
+                BEFORE UPDATE ON people_connector_skill_skills
+                FOR EACH ROW EXECUTE FUNCTION pcs_company_owner_guard();
+
+            CREATE TRIGGER pcs_scale_company_owner_guard_trigger
+                BEFORE UPDATE ON people_connector_skill_proficiency_scales
+                FOR EACH ROW EXECUTE FUNCTION pcs_company_owner_guard();
         SQL);
     }
 
@@ -200,6 +221,26 @@ return new class extends Migration
             .' WHEN NEW.code != OLD.code'
             ." BEGIN SELECT RAISE(ABORT, 'skill code is stable and cannot be changed'); END",
         );
+
+        // The company axis has no database backstop of its own: the composite
+        // foreign key accepts any entity in the tenant, so a pinned UPDATE can
+        // move a catalog row to a sibling company and nothing objects. Catalog
+        // rows never legitimately change company, so the database refuses.
+        DB::statement(
+            'CREATE TRIGGER pcs_category_company_owner_guard BEFORE UPDATE ON people_connector_skill_categories'
+            .' WHEN NEW.company_entity_id != OLD.company_entity_id'
+            ." BEGIN SELECT RAISE(ABORT, 'catalog row belongs to its company entity and cannot move to another company'); END",
+        );
+        DB::statement(
+            'CREATE TRIGGER pcs_skill_company_owner_guard BEFORE UPDATE ON people_connector_skill_skills'
+            .' WHEN NEW.company_entity_id != OLD.company_entity_id'
+            ." BEGIN SELECT RAISE(ABORT, 'catalog row belongs to its company entity and cannot move to another company'); END",
+        );
+        DB::statement(
+            'CREATE TRIGGER pcs_scale_company_owner_guard BEFORE UPDATE ON people_connector_skill_proficiency_scales'
+            .' WHEN NEW.company_entity_id != OLD.company_entity_id'
+            ." BEGIN SELECT RAISE(ABORT, 'catalog row belongs to its company entity and cannot move to another company'); END",
+        );
     }
 
     private function dropImmutabilityGuards(): void
@@ -211,15 +252,20 @@ return new class extends Migration
                 DROP TRIGGER IF EXISTS pcs_scale_guard_trigger ON people_connector_skill_proficiency_scales;
                 DROP TRIGGER IF EXISTS pcs_level_guard_trigger ON people_connector_skill_proficiency_scale_levels;
                 DROP TRIGGER IF EXISTS pcs_skill_code_guard_trigger ON people_connector_skill_skills;
+                DROP TRIGGER IF EXISTS pcs_category_company_owner_guard_trigger ON people_connector_skill_categories;
+                DROP TRIGGER IF EXISTS pcs_skill_company_owner_guard_trigger ON people_connector_skill_skills;
+                DROP TRIGGER IF EXISTS pcs_scale_company_owner_guard_trigger ON people_connector_skill_proficiency_scales;
                 DROP FUNCTION IF EXISTS pcs_scale_guard();
                 DROP FUNCTION IF EXISTS pcs_level_guard();
                 DROP FUNCTION IF EXISTS pcs_skill_code_guard();
+                DROP FUNCTION IF EXISTS pcs_company_owner_guard();
             SQL);
         } elseif ($driver === 'sqlite') {
             foreach ([
                 'pcs_scale_update_guard', 'pcs_scale_delete_guard',
                 'pcs_level_insert_guard', 'pcs_level_update_guard', 'pcs_level_delete_guard',
                 'pcs_skill_code_guard',
+                'pcs_category_company_owner_guard', 'pcs_skill_company_owner_guard', 'pcs_scale_company_owner_guard',
             ] as $trigger) {
                 DB::statement('DROP TRIGGER IF EXISTS '.$trigger);
             }

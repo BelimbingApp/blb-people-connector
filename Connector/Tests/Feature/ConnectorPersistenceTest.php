@@ -15,6 +15,7 @@ use App\Domains\PeopleConnector\Connector\Data\WorkforcePosition;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceProvenance;
 use App\Domains\PeopleConnector\Connector\Enums\ProviderConnectionMode;
 use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
+use App\Domains\PeopleConnector\Connector\Exceptions\CompanyMoveRefusedException;
 use App\Domains\PeopleConnector\Connector\Exceptions\ConnectorRecordNotFoundException;
 use App\Domains\PeopleConnector\Connector\Exceptions\ExternalIdentityCollisionException;
 use App\Domains\PeopleConnector\Connector\Exceptions\InvalidProviderConfigurationException;
@@ -233,6 +234,43 @@ test('identity resolution is idempotent tenant isolated and fails closed on coll
     app(TenantContext::class)->set((int) $tenantB->id);
     expect(fn () => $identities->resolve((int) $connection->id, $firstReference))
         ->toThrow(ConnectorRecordNotFoundException::class);
+});
+
+test('a projection changes company only through a sync pass that says so, never through a pinned update', function (): void {
+    [$tenant] = createTenantWithCompany(['name' => 'Transfer Tenant']);
+    $connection = connectorPersistenceConnection((int) $tenant->id);
+    $identities = app(WorkforceIdentityStore::class);
+    $projections = app(WorkforceProjectionStore::class);
+    $observedAt = new DateTimeImmutable('2026-08-30T09:00:00+00:00');
+    $alpha = connectorPersistenceReference(WorkforceResourceType::Company, 'COMPANY-ALPHA');
+    $beta = connectorPersistenceReference(WorkforceResourceType::Company, 'COMPANY-BETA');
+    $employee = connectorPersistenceReference(WorkforceResourceType::Employee, 'TRANSFER-1');
+
+    $projections->upsert((int) $connection->id, new WorkforceCompany($alpha, 'Alpha', true, $observedAt));
+    $projections->upsert((int) $connection->id, new WorkforceCompany($beta, 'Beta', true, $observedAt));
+    $projection = $projections->upsert((int) $connection->id, new WorkforceEmployee($employee, $alpha, 'Transferred Employee', true, $observedAt, $observedAt));
+
+    $alphaEntityId = (int) $identities->resolve((int) $connection->id, $alpha)->id;
+    $betaEntityId = (int) $identities->resolve((int) $connection->id, $beta)->id;
+    expect((int) $projection->company_entity_id)->toBe($alphaEntityId);
+
+    // Pinned on both axes, and beta is a real entity in the same tenant, so
+    // neither the scope guard nor the composite foreign key objects. The
+    // value check must.
+    expect(fn () => WorkforceEmployeeProjection::query()
+        ->forCompany((int) $tenant->id, $alphaEntityId)
+        ->update(['company_entity_id' => $betaEntityId]))
+        ->toThrow(CompanyMoveRefusedException::class, 'would leave its company')
+        ->and(fn () => $projection->forceFill(['company_entity_id' => $betaEntityId])->save())
+        ->toThrow(CompanyMoveRefusedException::class, 'would leave its company');
+    expect((int) $projection->refresh()->company_entity_id)->toBe($alphaEntityId);
+
+    // The provider says the employee now belongs to beta. That is the one
+    // legitimate transfer, and the sync pass states it.
+    $projections->upsert((int) $connection->id, new WorkforceEmployee($employee, $beta, 'Transferred Employee', true, $observedAt, $observedAt->modify('+1 hour')));
+
+    expect((int) $projection->refresh()->company_entity_id)->toBe($betaEntityId)
+        ->and(WorkforceEmployeeProjection::query()->forCompany((int) $tenant->id, $alphaEntityId)->count())->toBe(0);
 });
 
 test('remap merge and deactivate preserve identity and provenance history', function (): void {

@@ -5,12 +5,14 @@ namespace App\Domains\PeopleConnector\Connector\Testing;
 use App\Base\Tenancy\Models\Tenant;
 use App\Core\Company\Models\Company;
 use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
+use App\Domains\PeopleConnector\Connector\Exceptions\CompanyMoveRefusedException;
 use App\Domains\PeopleConnector\Connector\Exceptions\MissingCompanyScopeException;
 use App\Domains\PeopleConnector\Connector\Models\Concerns\CompanyOwned;
 use App\Domains\PeopleConnector\Connector\Models\ExternalIdentity;
 use App\Domains\PeopleConnector\Connector\Models\ProviderConnection;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceCompanyProjection;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceEntity;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Facades\Schema;
 
@@ -111,7 +113,10 @@ final class CompanyIsolationContract
             } catch (MissingCompanyScopeException) {
                 $violations[] = 'for_company_does_not_satisfy_the_guard';
             }
+
         }
+
+        $violations = array_merge($violations, self::companyColumnViolations($model, $columns));
 
         try {
             $model::query()
@@ -205,6 +210,149 @@ final class CompanyIsolationContract
         ]);
 
         return (int) $entity->id;
+    }
+
+    /**
+     * A correctly pinned write must still not be able to move the row to a
+     * sibling company without saying so (blb-people-connector#18). The pin is
+     * the exact shape the scope guard accepts, so this is the one write it
+     * cannot refuse; the base query builder refuses the *value* instead.
+     *
+     * Every route below is public Eloquent API that ends in the base
+     * builder's update() or upsert(). The review of #28 found five of them
+     * walking past a check on the Eloquent builder; they are enumerated here
+     * so the next one cannot.
+     *
+     * @param  class-string<Model>  $model
+     * @param  list<string>  $columns
+     * @return list<string>
+     */
+    private static function companyColumnViolations(string $model, array $columns): array
+    {
+        $violations = [];
+        $column = $columns[0];
+        $pinned = fn (): Builder => $model::query()->where($column, 1)->forTenant(self::UNUSED_TENANT_ID);
+
+        $routes = [
+            'update' => fn () => $pinned()->update([$column => 2]),
+            'update_qualified' => fn () => $pinned()->update([$pinned()->qualifyColumn($column) => 2]),
+            'increment_of_company_column' => fn () => $pinned()->increment($column),
+            'increment_extra' => fn () => $pinned()->increment('id', 1, [$column => 2]),
+            'increment_each_extra' => fn () => $pinned()->incrementEach(['id' => 1], [$column => 2]),
+            'decrement_extra' => fn () => $pinned()->decrement('id', 1, [$column => 2]),
+            'decrement_each_extra' => fn () => $pinned()->decrementEach(['id' => 1], [$column => 2]),
+            'update_or_insert' => fn () => $pinned()->updateOrInsert(['id' => 1], [$column => 2]),
+            'upsert_rows' => fn () => $pinned()->upsert([['id' => 1, $column => 2]], ['id']),
+            'upsert_flat_row' => fn () => $pinned()->upsert(['id' => 1, $column => 2], ['id']),
+            'upsert_update_list' => fn () => $pinned()->upsert([['id' => 1, $column => 2]], ['id'], [$column]),
+            'upsert_update_map' => fn () => $pinned()->upsert([['id' => 1, $column => 2]], ['id'], [$column => 2]),
+            'to_base_update' => fn () => $pinned()->toBase()->update([$column => 2]),
+            'get_query_update' => fn () => $pinned()->getQuery()->update([$column => 2]),
+        ];
+
+        foreach ($routes as $route => $write) {
+            try {
+                $write();
+                $violations[] = "{$route}_moves_a_company_column";
+            } catch (CompanyMoveRefusedException) {
+                // Expected: the row would have left its company.
+            }
+        }
+
+        // A stated move runs, once. The second write on the same builder is
+        // refused, and so is a clone taken while the grant was still armed,
+        // because the grant is shared by reference rather than copied.
+        $stated = $pinned()->movingCompany('Contract check: the stated move must actually be allowed to run, once.');
+        $clone = clone $stated;
+
+        try {
+            $stated->update([$column => 2]);
+        } catch (CompanyMoveRefusedException) {
+            $violations[] = 'stated_move_is_refused';
+        }
+
+        foreach (['same_builder' => $stated, 'clone_taken_while_armed' => $clone] as $label => $spent) {
+            try {
+                $spent->update([$column => 2]);
+                $violations[] = "grant_covers_a_second_write_on_{$label}";
+            } catch (CompanyMoveRefusedException) {
+                // Expected: one statement, one write.
+            }
+        }
+
+        try {
+            $pinned()->movingCompany('   ');
+            $violations[] = 'move_accepts_an_empty_reason';
+        } catch (CompanyMoveRefusedException $exception) {
+            if (! str_contains($exception->getMessage(), 'reason')) {
+                $violations[] = 'move_accepts_an_empty_reason';
+            }
+        }
+
+        // Model routes, with events silenced: a concrete model's own
+        // listeners may refuse a bare instance for their own reasons before
+        // the write is built, and events are not the mechanism here — the
+        // base builder sees the UPDATE a save() issues whether or not any
+        // listener ran. saveQuietly() is the route an author would reach for
+        // to get past a listener, so it is the one that must not get past this.
+        $held = fn (): Model => tap(new $model, function (Model $instance) use ($column): void {
+            $instance->setAttribute('id', 1);
+            $instance->setAttribute($column, 1);
+            $instance->syncOriginal();
+            $instance->exists = true;
+            $instance->setAttribute($column, 2);
+        });
+
+        $modelRoutes = [
+            'save_quietly' => fn () => $held()->saveQuietly(),
+            'save_without_events' => fn () => $model::withoutEvents(fn () => $held()->save()),
+            'model_update_quietly' => fn () => $held()->updateQuietly([$column => 2]),
+        ];
+
+        foreach ($modelRoutes as $route => $write) {
+            try {
+                $write();
+                $violations[] = "{$route}_moves_a_company_column";
+            } catch (CompanyMoveRefusedException) {
+                // Expected.
+            } catch (\Throwable $past) {
+                // Anything past the refusal (a query against a row that does
+                // not exist) means the guard let the move through.
+                $violations[] = "{$route}_moves_a_company_column:".$past::class;
+            }
+        }
+
+        // A stated move on a model covers one save() and is spent even when
+        // that save is stopped before it reaches the database.
+        $instance = $held()->movingCompany('Contract check: the model statement must be spent by one save.');
+        $haltOnce = true;
+        $instance::updating(function () use (&$haltOnce): ?bool {
+            if ($haltOnce) {
+                $haltOnce = false;
+
+                return false;
+            }
+
+            return null;
+        });
+
+        try {
+            $instance->save();
+        } catch (\Throwable) {
+            // Whatever a halted save does, the grant must be gone afterwards.
+        }
+
+        try {
+            $instance->setAttribute($column, 3);
+            $instance->saveQuietly();
+            $violations[] = 'model_grant_survives_a_halted_save';
+        } catch (CompanyMoveRefusedException) {
+            // Expected.
+        } catch (\Throwable $past) {
+            $violations[] = 'model_grant_survives_a_halted_save:'.$past::class;
+        }
+
+        return $violations;
     }
 
     /**

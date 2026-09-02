@@ -2,6 +2,8 @@
 
 namespace App\Domains\PeopleConnector\Connector\Models\Concerns;
 
+use App\Domains\PeopleConnector\Connector\Models\CompanyMoveGrant;
+use App\Domains\PeopleConnector\Connector\Models\CompanyOwnedQuery;
 use App\Domains\PeopleConnector\Connector\Models\Scopes\RequireCompanyScope;
 use Illuminate\Database\Eloquent\Builder;
 
@@ -28,6 +30,10 @@ use Illuminate\Database\Eloquent\Builder;
  */
 trait CompanyOwned
 {
+    private ?CompanyMoveGrant $companyMoveGrant = null;
+
+    private ?CompanyMoveGrant $pendingCompanyMoveGrant = null;
+
     public static function bootCompanyOwned(): void
     {
         static::addGlobalScope(new RequireCompanyScope);
@@ -52,6 +58,66 @@ trait CompanyOwned
         $column = $this->companyOwnerColumn();
 
         return $column === null ? [] : [$column];
+    }
+
+    /**
+     * Every query on this model writes through CompanyOwnedQuery, which
+     * refuses to change the columns above unless the write was stated with
+     * movingCompany($reason). See that class for why the check lives on the
+     * base builder and not here.
+     *
+     * `Model::query()->movingCompany('…')` reaches it through the Eloquent
+     * builder's method forwarding.
+     */
+    protected function newBaseQueryBuilder(): CompanyOwnedQuery
+    {
+        $connection = $this->getConnection();
+
+        return (new CompanyOwnedQuery($connection, $connection->getQueryGrammar(), $connection->getPostProcessor()))
+            ->guardingCompanyColumns(static::class, $this->companyScopeColumns());
+    }
+
+    /**
+     * Deliberately change which company this row belongs to on its next save.
+     *
+     * The statement covers exactly that one save() — consumed when the save
+     * begins, whether it then succeeds, aborts at the database, or is stopped
+     * by another listener — and a delete() does not spend it.
+     */
+    public function movingCompany(string $reason): static
+    {
+        $this->companyMoveGrant = new CompanyMoveGrant($reason);
+
+        return $this;
+    }
+
+    public function save(array $options = []): bool
+    {
+        $grant = $this->companyMoveGrant;
+        $this->companyMoveGrant = null;
+        $this->pendingCompanyMoveGrant = $grant;
+
+        try {
+            return parent::save($options);
+        } finally {
+            $this->pendingCompanyMoveGrant = null;
+        }
+    }
+
+    /**
+     * The UPDATE a save() issues runs through the same base builder as every
+     * other write, so the grant stated on the model is handed to that query.
+     *
+     * @param  Builder<static>  $query
+     * @return Builder<static>
+     */
+    protected function setKeysForSaveQuery($query)
+    {
+        if ($this->pendingCompanyMoveGrant !== null) {
+            $query->withCompanyMoveGrant($this->pendingCompanyMoveGrant);
+        }
+
+        return parent::setKeysForSaveQuery($query);
     }
 
     /**
