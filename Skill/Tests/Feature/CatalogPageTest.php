@@ -15,6 +15,7 @@ use App\Domains\PeopleConnector\Skill\Livewire\Catalog\Index;
 use App\Domains\PeopleConnector\Skill\Models\ProficiencyScale;
 use App\Domains\PeopleConnector\Skill\Models\Skill;
 use App\Domains\PeopleConnector\Skill\Models\SkillCategory;
+use App\Domains\PeopleConnector\Skill\Services\ProficiencyScaleStore;
 use App\Domains\PeopleConnector\Skill\Services\SkillCatalogDefaults;
 use App\Domains\PeopleConnector\Skill\Services\SkillCatalogStore;
 use Livewire\Livewire;
@@ -163,9 +164,11 @@ test('a viewer can read the catalog but every manage action is refused', functio
         categoryId: (int) $category->id,
     ));
 
+    $draft = app(ProficiencyScaleStore::class)->newDraftFrom($companyEntityId, (int) $scale->id);
+
     // Captured before anything is driven: if an action did slip through, a
     // value read afterwards would already be the changed one.
-    $scaleStatusBefore = $scale->status;
+    $draftStatusBefore = $draft->status;
 
     $refused = function (string $action, array $args = []) use ($viewer, $companyEntityId): void {
         expect(fn () => Livewire::actingAs($viewer)->test(Index::class)
@@ -181,14 +184,14 @@ test('a viewer can read the catalog but every manage action is refused', functio
     $refused('toggleSkillActive', [(int) $skill->id]);
     $refused('renameCategory', [(int) $category->id, 'Renamed By Viewer']);
     $refused('toggleCategoryActive', [(int) $category->id]);
-    $refused('publishScale', [(int) $scale->id]);
+    $refused('publishScale', [(int) $draft->id]);
     $refused('draftNewScaleVersion', [(int) $scale->id]);
 
     expect($skill->refresh()->active)->toBeTrue()
         ->and($category->refresh()->name)->not->toBe('Renamed By Viewer')
         ->and($category->active)->toBeTrue()
-        ->and($scale->refresh()->status)->toBe($scaleStatusBefore)
-        ->and(ProficiencyScale::query()->forCompany($tenantId, $companyEntityId)->count())->toBe(1);
+        ->and($draft->refresh()->status)->toBe($draftStatusBefore)
+        ->and(ProficiencyScale::query()->forCompany($tenantId, $companyEntityId)->count())->toBe(2);
 });
 
 test('the page never leaks another tenant catalog', function (): void {
@@ -319,10 +322,16 @@ test('every mutating catalog action refuses a company the actor may not act for'
         categoryId: (int) $betaCategory->id,
     ));
 
+    // install() leaves the standard scale already published, so publishScale
+    // driven at it could never change anything and the status assertion below
+    // detected nothing (#47, measured). Drive a real Draft instead, so the
+    // action has something to move and the assertion has something to catch.
+    $betaDraft = app(ProficiencyScaleStore::class)->newDraftFrom($betaEntity, (int) $betaScale->id);
+
     // Captured BEFORE, because refresh() reloads in place and returns $this --
     // comparing $scale->refresh()->status to $scale->status compares a value
     // to itself and passes whatever happened.
-    $betaScaleStatusBefore = $betaScale->status;
+    $betaDraftStatusBefore = $betaDraft->status;
 
     // Beta's REAL ids, deliberately. With a made-up id the action would 404
     // from its own not-found check even with the funnel removed, and this
@@ -339,7 +348,7 @@ test('every mutating catalog action refuses a company the actor may not act for'
     $refuses('toggleSkillActive', [(int) $betaSkill->id]);
     $refuses('renameCategory', [(int) $betaCategory->id, 'Renamed By Alpha']);
     $refuses('toggleCategoryActive', [(int) $betaCategory->id]);
-    $refuses('publishScale', [(int) $betaScale->id]);
+    $refuses('publishScale', [(int) $betaDraft->id]);
     $refuses('draftNewScaleVersion', [(int) $betaScale->id]);
 
     // Nothing moved.
@@ -347,6 +356,6 @@ test('every mutating catalog action refuses a company the actor may not act for'
         ->and($betaSkill->name)->toBe('Beta Secret Process')
         ->and($betaCategory->refresh()->name)->not->toBe('Renamed By Alpha')
         ->and($betaCategory->active)->toBeTrue()
-        ->and($betaScale->refresh()->status)->toBe($betaScaleStatusBefore)
-        ->and(ProficiencyScale::query()->forCompany($tenantId, $betaEntity)->count())->toBe(1);
+        ->and($betaDraft->refresh()->status)->toBe($betaDraftStatusBefore)
+        ->and(ProficiencyScale::query()->forCompany($tenantId, $betaEntity)->count())->toBe(2);
 });
