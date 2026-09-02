@@ -2,8 +2,8 @@
 
 namespace App\Domains\PeopleConnector\Connector\Models\Concerns;
 
-use App\Domains\PeopleConnector\Connector\Exceptions\CompanyMoveRefusedException;
-use App\Domains\PeopleConnector\Connector\Models\CompanyOwnedBuilder;
+use App\Domains\PeopleConnector\Connector\Models\CompanyMoveGrant;
+use App\Domains\PeopleConnector\Connector\Models\CompanyOwnedQuery;
 use App\Domains\PeopleConnector\Connector\Models\Scopes\RequireCompanyScope;
 use Illuminate\Database\Eloquent\Builder;
 
@@ -30,75 +30,13 @@ use Illuminate\Database\Eloquent\Builder;
  */
 trait CompanyOwned
 {
-    private ?string $companyMoveReason = null;
+    private ?CompanyMoveGrant $companyMoveGrant = null;
+
+    private ?CompanyMoveGrant $pendingCompanyMoveGrant = null;
 
     public static function bootCompanyOwned(): void
     {
         static::addGlobalScope(new RequireCompanyScope);
-
-        // A row may not change company by accident. The guard above proves a
-        // query names a company; it cannot see that a pinned write then sets
-        // the owning column to a sibling's id, and neither can the database,
-        // because that id is a real entity in the same tenant. So the change
-        // is refused unless the writer said movingCompany($reason) first.
-        static::updating(function (self $model): void {
-            $column = $model->companyOwnerColumn();
-
-            if ($column !== null && $model->isDirty($column) && $model->companyMoveReason === null) {
-                throw CompanyMoveRefusedException::for(static::class, $column);
-            }
-        });
-
-        static::saved(function (self $model): void {
-            $model->companyMoveReason = null;
-        });
-    }
-
-    /**
-     * @return CompanyOwnedBuilder<static>
-     */
-    public function newEloquentBuilder($query): CompanyOwnedBuilder
-    {
-        return new CompanyOwnedBuilder($query);
-    }
-
-    /**
-     * A save() runs its UPDATE through the same builder as everyone else, so a
-     * reason stated on the model has to reach the query it issues.
-     *
-     * @param  CompanyOwnedBuilder<static>  $query
-     * @return CompanyOwnedBuilder<static>
-     */
-    protected function setKeysForSaveQuery($query)
-    {
-        // Consumed here, not only on `saved`: a save that fails past this point
-        // (a trigger abort, a lost connection) must not leave the reason armed
-        // on the held instance, or the next dirty-owner save would pass unstated.
-        if ($this->companyMoveReason !== null) {
-            $query->movingCompany($this->companyMoveReason);
-            $this->companyMoveReason = null;
-        }
-
-        return parent::setKeysForSaveQuery($query);
-    }
-
-    /**
-     * Deliberately change which company owns this row on the next save.
-     *
-     * The reason is required for the same purpose as withoutCompanyScope():
-     * `grep -rn movingCompany` is the complete list of places a row may leave
-     * its company — today a sync pass writing the provider's payload, and an
-     * entity merge rewriting references to the superseded company.
-     */
-    public function movingCompany(string $reason): static
-    {
-        if (trim($reason) === '') {
-            throw CompanyMoveRefusedException::emptyReason();
-        }
-
-        $this->companyMoveReason = $reason;
-
-        return $this;
     }
 
     /**
@@ -120,6 +58,66 @@ trait CompanyOwned
         $column = $this->companyOwnerColumn();
 
         return $column === null ? [] : [$column];
+    }
+
+    /**
+     * Every query on this model writes through CompanyOwnedQuery, which
+     * refuses to change the columns above unless the write was stated with
+     * movingCompany($reason). See that class for why the check lives on the
+     * base builder and not here.
+     *
+     * `Model::query()->movingCompany('…')` reaches it through the Eloquent
+     * builder's method forwarding.
+     */
+    protected function newBaseQueryBuilder(): CompanyOwnedQuery
+    {
+        $connection = $this->getConnection();
+
+        return (new CompanyOwnedQuery($connection, $connection->getQueryGrammar(), $connection->getPostProcessor()))
+            ->guardingCompanyColumns(static::class, $this->companyScopeColumns());
+    }
+
+    /**
+     * Deliberately change which company this row belongs to on its next save.
+     *
+     * The statement covers exactly that one save() — consumed when the save
+     * begins, whether it then succeeds, aborts at the database, or is stopped
+     * by another listener — and a delete() does not spend it.
+     */
+    public function movingCompany(string $reason): static
+    {
+        $this->companyMoveGrant = new CompanyMoveGrant($reason);
+
+        return $this;
+    }
+
+    public function save(array $options = []): bool
+    {
+        $grant = $this->companyMoveGrant;
+        $this->companyMoveGrant = null;
+        $this->pendingCompanyMoveGrant = $grant;
+
+        try {
+            return parent::save($options);
+        } finally {
+            $this->pendingCompanyMoveGrant = null;
+        }
+    }
+
+    /**
+     * The UPDATE a save() issues runs through the same base builder as every
+     * other write, so the grant stated on the model is handed to that query.
+     *
+     * @param  Builder<static>  $query
+     * @return Builder<static>
+     */
+    protected function setKeysForSaveQuery($query)
+    {
+        if ($this->pendingCompanyMoveGrant !== null) {
+            $query->withCompanyMoveGrant($this->pendingCompanyMoveGrant);
+        }
+
+        return parent::setKeysForSaveQuery($query);
     }
 
     /**

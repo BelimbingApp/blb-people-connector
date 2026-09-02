@@ -165,10 +165,12 @@ that a Class C or Class D model uses. It does three things:
    just before it runs. If no top-level `AND` predicate constrains one of the
    declared columns, it throws `MissingCompanyScopeException` instead of
    executing.
-4. Refuses a write that would change the owning column — a builder `update()`
-   or `upsert()` naming it, or a `save()` with it dirty — unless the writer
-   first said `movingCompany($reason)`. It throws `CompanyMoveRefusedException`.
-   See "Moving a row between companies" below.
+4. Puts a `CompanyOwnedQuery` under the model as its *base* query builder,
+   which refuses any write that sets one of the declared columns — `update()`,
+   `upsert()`, `updateOrInsert()`, `increment()`/`decrement()` and their
+   `$extra` maps, `toBase()`/`getQuery()` writes, and the `UPDATE` a `save()`
+   issues — unless the writer first said `movingCompany($reason)`. It throws
+   `CompanyMoveRefusedException`. See "Moving a row between companies" below.
 
 The result is that `Skill::query()->forTenant($tenantId)->get()` — the exact
 line all three lanes wrote — now raises an error naming the model and the
@@ -259,16 +261,40 @@ fails, but the company axis has only a composite key to
 same tenant. The write is valid; it is only wrong. Afterwards the row is not
 visible as a leak. It looks like data that was never there.
 
-So changing the owning column is refused unless it is stated:
+So changing a company column is refused unless it is stated:
 
 ```php
 $projection->movingCompany('why this row may change company')->fill($values)->save();
 Model::query()->movingCompany('why')->forCompany(…)->update([…]);
 ```
 
+The refusal lives on the model's **base** query builder, `CompanyOwnedQuery`,
+not on the Eloquent builder and not in a model event. That placement is the
+finding of the #28 review, and it is what makes the list below complete:
+Eloquent's `update()` is `toBase()->update()`, `increment()`, `decrement()`,
+`incrementEach()` and `decrementEach()` are `toBase()->…` with an `$extra`
+column map spliced into the same `SET`, and `updateOrInsert()` is not on the
+Eloquent builder at all and is forwarded to the base one. A check on the
+Eloquent builder saw none of those; the base builder sees all of them, and
+also `->getQuery()`/`->toBase()` writes, `saveQuietly()` and
+`Model::withoutEvents()`, because nothing about it is an event. It applies to
+every column in `companyScopeColumns()`, so a Class D row cannot be moved to
+another company's parent either.
+
+A statement covers **one write**. On a builder, the grant is spent by the
+next `update()`/`upsert()` on that builder *or any clone of it* — the grant
+is shared by reference precisely because Eloquent clones the base query on
+every `toBase()`, and a flag copied into the clone would have left the
+original armed. On a model, the grant is spent by the next `save()`, whether
+that save succeeds, aborts at the database, or is halted by a listener before
+it gets there; a `delete()` does not spend it. This is the difference from an
+escape on a relation, which covered everything appended to it.
+
 The reason is required for the same purpose as on `withoutCompanyScope()`:
 `grep -rn movingCompany` is the complete list of places a row may leave its
-company. Today there are two, and they are the only two the domain knows of:
+company, and it is complete because every route that could move one without
+that marker is refused. Today there are two, and they are the only two the
+domain knows of:
 
 - **A sync pass.** `WorkforceProjectionStore` writes the provider's payload as
   observed, and the company an employee, position or unit belongs to is part of
@@ -279,10 +305,11 @@ company. Today there are two, and they are the only two the domain knows of:
   owned by the superseded company entity to its survivor, in the same
   transaction that marks the superseded entity merged.
 
-`CompanyIsolationContract` checks, for every company-owned model with an
-owning column, that a pinned update of that column is refused, that the
-qualified column name is refused too, that a stated move runs, that an empty
-reason is refused, and that a `save()` with the column dirty is refused.
+`CompanyIsolationContract` runs the whole route list against every
+company-owned model — fourteen builder routes and four model routes, plus the
+one-write rule on the same builder, on a clone taken while armed, and on a
+model whose save was halted — so a route that is added to Eloquent later, or
+a model added to the domain later, fails the suite rather than the tenant.
 
 **Where the database also refuses.** The Skill module's catalog rows —
 categories, skills, proficiency scales — never legitimately change company: no
@@ -520,10 +547,13 @@ Being honest about the edges:
   The store refuses this; the database does not.
 - **Saving or deleting a model you already hold.** Eloquent addresses those by
   primary key without scopes. That is correct: you obtained the instance
-  through a guarded query. The one thing a held model may not do silently is
-  change its owning column; see "Moving a row between companies".
+  through a guarded query. What a held model may not do silently is change a
+  company column; see "Moving a row between companies".
 - **Raw `DB::table()` queries, and `->getQuery()`.** Both leave Eloquent, and
   global scopes with it. Do not use either on a company-owned table.
+  (`->getQuery()` on a company-owned model still returns its
+  `CompanyOwnedQuery`, so the move refusal survives the step; the scope
+  guard does not.)
 - **A derived or raw `from`.** `fromSub()` and `fromRaw()` are *refused*, not
   silently allowed: once the base relation is derived, the guard cannot tell
   what an unqualified column refers to. That is a deliberate failure rather
