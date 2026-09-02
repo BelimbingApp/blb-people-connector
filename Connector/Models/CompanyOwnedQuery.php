@@ -98,7 +98,17 @@ final class CompanyOwnedQuery extends QueryBuilder
             $this->refuseUnstatedMove(array_keys($values), consume: false);
         }
 
-        return parent::updateOrInsert($attributes, $values);
+        // The update branch spends the grant in update(). The insert branch,
+        // an empty $values, and a throw never get there, and each would leave
+        // the grant armed for a later unstated write on this builder (#31).
+        // Whatever the branch, this call was the one write the statement
+        // covered.
+        try {
+            return parent::updateOrInsert($attributes, $values);
+        } finally {
+            $this->grant?->consume();
+            $this->grant = null;
+        }
     }
 
     public function upsert(array $values, $uniqueBy, $update = null)
