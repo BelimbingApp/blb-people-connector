@@ -359,8 +359,8 @@ test('remap merge and deactivate preserve identity and provenance history', func
         ->and($identities->resolve((int) $connection->id, $old)->id)->toBe($merged->id)
         ->and($identities->resolve((int) $connection->id, $replacement)->id)->toBe($merged->id)
         ->and(WorkforceEntity::query()->findOrFail($oldIdentity->workforce_entity_id)->state)->toBe(WorkforceEntity::STATE_MERGED)
-        ->and(WorkforceEmployeeProjection::query()->where('workforce_entity_id', $oldIdentity->workforce_entity_id)->value('active'))->toBeFalse()
-        ->and(WorkforceEmployeeProjection::query()->where('workforce_entity_id', $survivingIdentity->workforce_entity_id)->value('active'))->toBeTrue();
+        ->and(WorkforceEmployeeProjection::query()->withoutCompanyScope('Asserts the sync outcome for one canonical workforce entity, not a company-wide read.')->where('workforce_entity_id', $oldIdentity->workforce_entity_id)->value('active'))->toBeFalse()
+        ->and(WorkforceEmployeeProjection::query()->withoutCompanyScope('Asserts the sync outcome for one canonical workforce entity, not a company-wide read.')->where('workforce_entity_id', $survivingIdentity->workforce_entity_id)->value('active'))->toBeTrue();
 
     expect(fn () => $identities->deactivate(
         (int) $connection->id,
@@ -384,7 +384,7 @@ test('remap merge and deactivate preserve identity and provenance history', func
 
     expect($merged->refresh()->state)->toBe(WorkforceEntity::STATE_INACTIVE)
         ->and(ExternalIdentity::query()->forTenant((int) $tenant->id)->count())->toBe(4)
-        ->and(WorkforceEmployeeProjection::query()->where('workforce_entity_id', $survivingIdentity->workforce_entity_id)->value('active'))->toBeFalse()
+        ->and(WorkforceEmployeeProjection::query()->withoutCompanyScope('Asserts the sync outcome for one canonical workforce entity, not a company-wide read.')->where('workforce_entity_id', $survivingIdentity->workforce_entity_id)->value('active'))->toBeFalse()
         ->and(WorkforceSnapshot::query()->forTenant((int) $tenant->id)->pluck('event_type')->all())
         ->toContain('identity_remapped', 'entity_merged', 'identity_deactivated');
 });
@@ -555,6 +555,7 @@ test('merge rewrites every inbound current workforce relationship to its canonic
     }
 
     $oldPositionProjection = WorkforcePositionProjection::query()
+        ->withoutCompanyScope('Asserts the sync outcome for one canonical workforce entity, not a company-wide read.')
         ->forTenant((int) $tenant->id)
         ->where('workforce_entity_id', $identities->resolve((int) $connection->id, $positionOld)->id)
         ->firstOrFail();
@@ -660,7 +661,7 @@ test('typed workforce projections retain effective and observed facts without re
     expect($late->id)->toBe($newer->id)
         ->and($late->display_name)->toBe('Aminah New Name')
         ->and($late->active)->toBeTrue()
-        ->and(WorkforceEmployeeProjection::query()->forTenant((int) $tenant->id)->count())->toBe(1)
+        ->and(WorkforceEmployeeProjection::query()->withoutCompanyScope('Asserts a tenant-wide row count on purpose: this is the cross-tenant isolation check.')->forTenant((int) $tenant->id)->count())->toBe(1)
         ->and(WorkforceSnapshot::query()->forTenant((int) $tenant->id)->where('event_type', 'projection_upserted')->count())->toBe(6);
 
     expect(fn () => $projections->upsert((int) $connection->id, new WorkforceEmployee(
@@ -905,7 +906,7 @@ test('a deactivated workforce identity can be reactivated for a re-hire without 
     expect($identity->refresh()->state)->toBe(ExternalIdentity::STATE_INACTIVE)
         ->and($identity->effective_to->getTimestamp())->toBe($leftAt->getTimestamp())
         ->and($entity->refresh()->state)->toBe(WorkforceEntity::STATE_INACTIVE)
-        ->and(WorkforceEmployeeProjection::query()->where('workforce_entity_id', $entity->id)->value('active'))->toBeFalse();
+        ->and(WorkforceEmployeeProjection::query()->withoutCompanyScope('Asserts the sync outcome for one canonical workforce entity, not a company-wide read.')->where('workforce_entity_id', $entity->id)->value('active'))->toBeFalse();
 
     // Without reactivation this is where a re-hire dead-ends: every later
     // upsert for the same reference is rejected, permanently.
@@ -935,7 +936,7 @@ test('a deactivated workforce identity can be reactivated for a re-hire without 
         ->and($entity->deactivated_at)->toBeNull()
         // Reactivation restores the reference, not the person's facts: the
         // retired projection waits for the provider to restate them.
-        ->and(WorkforceEmployeeProjection::query()->where('workforce_entity_id', $entity->id)->value('active'))->toBeFalse();
+        ->and(WorkforceEmployeeProjection::query()->withoutCompanyScope('Asserts the sync outcome for one canonical workforce entity, not a company-wide read.')->where('workforce_entity_id', $entity->id)->value('active'))->toBeFalse();
 
     // Calling it again on an already active identity is a no-op, not a failure.
     expect($identities->reactivate((int) $connection->id, $employee, $reHiredAt->modify('+1 minute'), $feed)->id)
@@ -952,6 +953,7 @@ test('a deactivated workforce identity can be reactivated for a re-hire without 
     ));
 
     $projection = WorkforceEmployeeProjection::query()
+        ->withoutCompanyScope('Asserts the sync outcome for one canonical workforce entity, not a company-wide read.')
         ->forTenant((int) $tenant->id)
         ->where('workforce_entity_id', $entity->id)
         ->sole();

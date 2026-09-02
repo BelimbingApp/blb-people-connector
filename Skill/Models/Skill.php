@@ -2,12 +2,12 @@
 
 namespace App\Domains\PeopleConnector\Skill\Models;
 
+use App\Domains\PeopleConnector\Connector\Models\Concerns\CompanyOwned;
 use App\Domains\PeopleConnector\Connector\Models\TenantOwnedModel;
 use App\Domains\PeopleConnector\Skill\Enums\AssessmentMethod;
 use App\Domains\PeopleConnector\Skill\Enums\CriticalClassification;
 use App\Domains\PeopleConnector\Skill\Enums\SkillScope;
 use App\Domains\PeopleConnector\Skill\Exceptions\InvalidSkillCatalogException;
-use App\Domains\PeopleConnector\Skill\Models\Concerns\CompanyOwned;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 /**
@@ -44,7 +44,28 @@ class Skill extends TenantOwnedModel
         ];
     }
 
-    /** @return BelongsTo<SkillCategory, $this> */
+    /**
+     * No escape here, deliberately.
+     *
+     * A belongsTo constrains the parent's primary key, which is not
+     * SkillCategory's company column, so this relation does not satisfy the
+     * guard on its own. It used to carry an escape saying so — but an escape
+     * covers the whole query including whatever a caller appends, and
+     * `$skill->category()->orWhere('id', $otherId)` therefore read and wrote
+     * another company's category. Leaving the guard on turns that into a
+     * refusal.
+     *
+     * The cost, stated plainly: **lazy `$skill->category` throws.** Load it
+     * with the company pinned instead, which every caller can do because every
+     * caller already knows the company it is acting for:
+     *
+     *     Skill::query()->forCompany($tenantId, $companyEntityId)
+     *         ->with(['category' => fn ($q) => $q->forCompany($tenantId, $companyEntityId)])
+     *
+     * That is one line longer and it cannot silently cross the boundary.
+     *
+     * @return BelongsTo<SkillCategory, $this>
+     */
     public function category(): BelongsTo
     {
         return $this->belongsTo(SkillCategory::class, 'category_id');

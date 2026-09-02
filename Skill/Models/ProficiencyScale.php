@@ -2,10 +2,10 @@
 
 namespace App\Domains\PeopleConnector\Skill\Models;
 
+use App\Domains\PeopleConnector\Connector\Models\Concerns\CompanyOwned;
 use App\Domains\PeopleConnector\Connector\Models\TenantOwnedModel;
 use App\Domains\PeopleConnector\Skill\Enums\ProficiencyScaleStatus;
 use App\Domains\PeopleConnector\Skill\Exceptions\PublishedScaleImmutableException;
-use App\Domains\PeopleConnector\Skill\Models\Concerns\CompanyOwned;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 
 /**
@@ -60,7 +60,16 @@ class ProficiencyScale extends TenantOwnedModel
         });
     }
 
-    /** @return HasMany<ProficiencyScaleLevel, $this> */
+    /**
+     * No escape here, deliberately. A loaded relation constrains `scale_id` to
+     * a real value, and has()/whereHas()/withCount()/doesntHave() correlate to
+     * the parent's key — both of which the guard now reads as a pin on its own.
+     * An escape would have covered whatever a caller appended to the relation,
+     * including an unbracketed orWhere, which is the footgun the guard's
+     * first rule exists to catch.
+     *
+     * @return HasMany<ProficiencyScaleLevel, $this>
+     */
     public function levels(): HasMany
     {
         return $this->hasMany(ProficiencyScaleLevel::class, 'scale_id')->orderBy('level');

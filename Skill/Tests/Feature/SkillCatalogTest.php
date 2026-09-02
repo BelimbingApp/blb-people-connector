@@ -142,8 +142,8 @@ test('tenancy: another tenant cannot see, revise, or reference this catalog', fu
     $companyB = skillCatalogEntity((int) $tenantB->id, 'company');
     $store = app(SkillCatalogStore::class);
 
-    expect(Skill::query()->forTenant((int) $tenantB->id)->count())->toBe(0)
-        ->and(Skill::query()->forTenant($tenantIdA)->count())->toBe(1);
+    expect(Skill::query()->withoutCompanyScope('Counts every row in the tenant on purpose: this asserts cross-tenant isolation, which is a different axis.')->forTenant((int) $tenantB->id)->count())->toBe(0)
+        ->and(Skill::query()->withoutCompanyScope('Counts every row in the tenant on purpose: this asserts cross-tenant isolation, which is a different axis.')->forTenant($tenantIdA)->count())->toBe(1);
 
     // Tenant B cannot revise tenant A's skill…
     expect(fn () => $store->reviseSkill($companyEntityIdA, (int) $skillA->id, skillCatalogDraft($categoryA)))
@@ -171,7 +171,7 @@ test('deactivation keeps history and category deactivation refuses while skills 
     $store->deactivateSkill($companyEntityId, (int) $skill->id);
 
     expect($skill->refresh()->active)->toBeFalse()
-        ->and(Skill::query()->count())->toBe(1);
+        ->and(Skill::query()->forCompany((int) app(TenantContext::class)->requireTenantId(), $companyEntityId)->count())->toBe(1);
     Event::assertDispatched(SkillDeactivated::class);
 
     $store->deactivateCategory($companyEntityId, (int) $category->id);
@@ -210,7 +210,7 @@ test('skill codes are immutable at the model and database layers, not only in th
         ->toThrow(InvalidSkillCatalogException::class, 'stable');
 
     // Savepoint-wrapped: a trigger abort poisons the test transaction on Postgres.
-    expect(fn () => DB::transaction(fn () => Skill::query()->whereKey($skill->id)->update(['code' => 'renamed.by.builder'])))
+    expect(fn () => DB::transaction(fn () => Skill::query()->withoutCompanyScope('Deliberately bypasses the model layer to prove the database trigger stands on its own.')->whereKey($skill->id)->update(['code' => 'renamed.by.builder'])))
         ->toThrow(QueryException::class);
 
     expect($skill->refresh()->code)->toBe('forklift.operation');

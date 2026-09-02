@@ -219,7 +219,7 @@
                                     {{ $category->name }}
                                 @endif
                             </td>
-                            <td class="px-table-cell-x py-table-cell-y text-sm tabular-nums">{{ $category->skills()->count() }}</td>
+                            <td class="px-table-cell-x py-table-cell-y text-sm tabular-nums">{{ $category->skillCount() }}</td>
                             <td class="px-table-cell-x py-table-cell-y text-sm">
                                 <x-ui.badge :variant="$category->active ? 'success' : 'neutral'">
                                     {{ $category->active ? __('Active') : __('Inactive') }}

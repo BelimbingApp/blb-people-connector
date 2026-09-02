@@ -617,6 +617,7 @@ final class WorkforceIdentityStore
         }
 
         $query = $projectionModel::query()
+            ->withoutCompanyScope('Addresses one projection by the canonical workforce entity id, which is unique per tenant; the caller resolved that entity through its own connection.')
             ->forTenant($this->tenantContext->requireTenantId())
             ->where('workforce_entity_id', $entity->id);
 
@@ -670,11 +671,26 @@ final class WorkforceIdentityStore
         };
 
         foreach ($references as [$projectionModel, $column]) {
-            $projections = $projectionModel::query()
+            $query = $projectionModel::query()
                 ->forTenant($this->tenantContext->requireTenantId())
                 ->where($column, $superseded->id)
-                ->lockForUpdate()
-                ->get();
+                ->lockForUpdate();
+
+            // Merging a company rewrites company_entity_id, which is the axis
+            // itself, so that branch keeps its guard. Every other branch
+            // rewrites a department, position, manager or user reference — a
+            // shared manager or user entity can genuinely be pointed at from
+            // more than one company in the tenant, so rewriting only one
+            // company's references would leave dangling pointers. Whether a
+            // merge may be driven with one company's authority at all is the
+            // open attribution question in
+            // docs/contracts/company-ownership.md; query scoping cannot
+            // answer it.
+            if (! in_array($column, (new $projectionModel)->companyScopeColumns(), true)) {
+                $query->withoutCompanyScope('A merge rewrites every inbound reference to the superseded entity, and a shared manager or user entity may be referenced from more than one company.');
+            }
+
+            $projections = $query->get();
 
             foreach ($projections as $projection) {
                 $selfReferentialHierarchy = in_array(

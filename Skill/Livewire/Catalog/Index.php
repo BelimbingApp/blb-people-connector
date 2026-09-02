@@ -5,6 +5,7 @@ namespace App\Domains\PeopleConnector\Skill\Livewire\Catalog;
 use App\Base\Authz\Contracts\AuthorizationService;
 use App\Base\Authz\DTO\Actor;
 use App\Base\Tenancy\Contracts\TenantContext;
+use App\Domains\PeopleConnector\Connector\Services\CompanyAttribution;
 use App\Domains\PeopleConnector\Skill\Data\SkillDraft;
 use App\Domains\PeopleConnector\Skill\Enums\AssessmentMethod;
 use App\Domains\PeopleConnector\Skill\Enums\CriticalClassification;
@@ -16,7 +17,6 @@ use App\Domains\PeopleConnector\Skill\Models\SkillCategory;
 use App\Domains\PeopleConnector\Skill\Services\ProficiencyScaleStore;
 use App\Domains\PeopleConnector\Skill\Services\SkillCatalogDefaults;
 use App\Domains\PeopleConnector\Skill\Services\SkillCatalogStore;
-use App\Domains\PeopleConnector\Skill\Services\SkillCompanyAccess;
 use Illuminate\Contracts\View\View;
 use Illuminate\Support\Facades\Auth;
 use Livewire\Component;
@@ -25,7 +25,7 @@ use Livewire\Component;
  * Catalog administration for HR (manage capability) with a read-only view for
  * HODs and evaluators (view capability). Every query and store call is bound
  * to one company workforce entity the acting user may act for, resolved by
- * SkillCompanyAccess — companyEntityId is a client-writable Livewire property,
+ * the connector's CompanyAttribution service — companyEntityId is a client-writable Livewire property,
  * so it is re-checked on every action, never trusted. With no accessible
  * company the page states that honestly instead of pretending a catalog
  * exists.
@@ -53,6 +53,9 @@ class Index extends Component
     public ?string $newCategoryCode = null;
 
     public ?string $newCategoryName = null;
+
+    /** @var array<int, string>|null */
+    private ?array $allowedCompanies = null;
 
     public function mount(): void
     {
@@ -233,10 +236,16 @@ class Index extends Component
         ]);
     }
 
-    /** @return array<int, string> company entity id => display name */
+    /**
+     * Resolved once per request: the picker, every action guard, and the
+     * render pass all ask the same question of the same actor.
+     *
+     * @return array<int, string> company entity id => display name
+     */
     private function allowedCompanies(): array
     {
-        return app(SkillCompanyAccess::class)->allowedCompanyEntities(Auth::user());
+        return $this->allowedCompanies ??= app(CompanyAttribution::class)
+            ->allowedCompanyEntities(Auth::user());
     }
 
     /**
@@ -255,16 +264,25 @@ class Index extends Component
     private function categories(int $companyEntityId)
     {
         return SkillCategory::query()
-            ->forOwner(app(TenantContext::class)->requireTenantId(), $companyEntityId)
+            ->forCompany(app(TenantContext::class)->requireTenantId(), $companyEntityId)
             ->orderBy('name')
             ->get();
     }
 
+    /**
+     * Skill::category() carries no escape, so the eager load has to pin the
+     * company itself — which costs nothing here, because this method was
+     * handed the company it is allowed to act for. A category belonging to
+     * anyone else simply does not load, and the view renders a blank cell
+     * rather than another company's category name.
+     */
     private function skills(int $companyEntityId)
     {
+        $tenantId = app(TenantContext::class)->requireTenantId();
+
         return Skill::query()
-            ->forOwner(app(TenantContext::class)->requireTenantId(), $companyEntityId)
-            ->with('category')
+            ->forCompany($tenantId, $companyEntityId)
+            ->with(['category' => fn ($query) => $query->forCompany($tenantId, $companyEntityId)])
             ->orderBy('code')
             ->get();
     }
@@ -288,7 +306,7 @@ class Index extends Component
     private function scales(int $companyEntityId)
     {
         return ProficiencyScale::query()
-            ->forOwner(app(TenantContext::class)->requireTenantId(), $companyEntityId)
+            ->forCompany(app(TenantContext::class)->requireTenantId(), $companyEntityId)
             ->with('levels')
             ->orderBy('code')
             ->orderByDesc('version')
