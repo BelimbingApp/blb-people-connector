@@ -232,6 +232,17 @@ test('a pinned update cannot move a catalog row to a sibling company at the mode
 
     expect((int) $skill->refresh()->company_entity_id)->toBe($companyEntityId)
         ->and((int) $category->refresh()->company_entity_id)->toBe($companyEntityId);
+
+    // A stated reason covers one save, including one that fails: the trigger
+    // aborts the first save, and the same instance must be refused again
+    // afterwards rather than carrying the reason over.
+    expect(fn () => DB::transaction(fn () => $skill
+        ->movingCompany('Deliberately bypasses the model layer to prove the database trigger stands on its own.')
+        ->forceFill(['company_entity_id' => $sibling])
+        ->save()))
+        ->toThrow(QueryException::class, 'cannot move to another company');
+    expect(fn () => $skill->forceFill(['company_entity_id' => $sibling])->save())
+        ->toThrow(CompanyMoveRefusedException::class, 'would leave its company');
 });
 
 test('skill codes are immutable at the model and database layers, not only in the store', function (): void {

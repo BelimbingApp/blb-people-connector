@@ -71,8 +71,12 @@ trait CompanyOwned
      */
     protected function setKeysForSaveQuery($query)
     {
+        // Consumed here, not only on `saved`: a save that fails past this point
+        // (a trigger abort, a lost connection) must not leave the reason armed
+        // on the held instance, or the next dirty-owner save would pass unstated.
         if ($this->companyMoveReason !== null) {
             $query->movingCompany($this->companyMoveReason);
+            $this->companyMoveReason = null;
         }
 
         return parent::setKeysForSaveQuery($query);
