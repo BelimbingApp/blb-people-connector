@@ -269,7 +269,6 @@ test('effective dating returns the most recent applicable profile', function ():
                 weightPercent: 100.0,
             ),
         ],
-        effectiveDate: now()->subMonth(),
     );
 
     $newer = new RequirementProfileDraft(
@@ -285,23 +284,25 @@ test('effective dating returns the most recent applicable profile', function ():
                 weightPercent: 100.0,
             ),
         ],
-        effectiveDate: now()->subDay(),
     );
 
-    $profileOlder = $store->draft($companyEntityId, $older);
-    $store->publish($companyEntityId, (int) $profileOlder->id);
+    $v1 = $store->draft($companyEntityId, $older);
+    Carbon::setTestNow('2024-01-10 12:00:00');
+    $v1 = $store->publish($companyEntityId, (int) $v1->id);
 
-    $profileNewer = $store->draft($companyEntityId, $newer);
-    $store->publish($companyEntityId, (int) $profileNewer->id);
+    $v2 = $store->newDraftFrom($companyEntityId, (int) $v1->id);
+    $v2->update(['name' => 'Newer Profile']);
+    Carbon::setTestNow('2024-01-20 12:00:00');
+    $v2 = $store->publish($companyEntityId, (int) $v2->id);
 
     $employee = ['company_entity_id' => $companyEntityId];
 
-    $result = $resolver->resolve($employee);
-    expect($result['profile'])->not->toBeNull()
-        ->and($result['profile']->version)->toBe(2)
-        ->and($result['profile']->name)->toBe('Newer Profile');
+    $resultCurrent = $resolver->resolve($employee, Carbon::parse('2024-01-25'));
+    expect($resultCurrent['profile'])->not->toBeNull()
+        ->and($resultCurrent['profile']->version)->toBe(2)
+        ->and($resultCurrent['profile']->name)->toBe('Newer Profile');
 
-    $resultOld = $resolver->resolve($employee, now()->subWeek());
+    $resultOld = $resolver->resolve($employee, Carbon::parse('2024-01-15'));
     expect($resultOld['profile'])->not->toBeNull()
         ->and($resultOld['profile']->version)->toBe(1)
         ->and($resultOld['profile']->name)->toBe('Older Profile');
