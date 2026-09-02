@@ -91,44 +91,48 @@ final class PrivilegedSupportService
         ?DateTimeImmutable $occurredAt = null,
     ): PrivilegedSupportAction {
         $tenantId = $this->tenantContext->requireTenantId();
-        $grant = $this->currentGrant($grant, $tenantId);
-        $scope = $grant->company_id === null ? ProviderScope::tenant() : ProviderScope::company((int) $grant->company_id);
-        $this->assertGrantActor($actor, $grant);
-        $this->assertActor($actor, $tenantId, $scope);
-        $this->authorizeSupport($actor, $grant, $tenantId, $scope);
         $occurredAt ??= new DateTimeImmutable;
 
-        if (! in_array($capability, $grant->capabilities ?? [], true)
-            || ! $grant->isActive($occurredAt) || trim($action) === '' || trim($outcome) === '') {
-            throw new ProviderAuthorizationException(
-                providerId: 'connector',
-                operation: 'record_break_glass_action',
-                message: 'Expired or revoked break-glass grants cannot perform or record actions.',
-            );
-        }
+        return DB::transaction(function () use ($grant, $actor, $capability, $action, $outcome, $context, $occurredAt, $tenantId): PrivilegedSupportAction {
+            $grant = $this->currentGrant($grant, $tenantId, true);
+            $scope = $grant->company_id === null ? ProviderScope::tenant() : ProviderScope::company((int) $grant->company_id);
+            $this->assertGrantActor($actor, $grant);
+            $this->assertActor($actor, $tenantId, $scope);
+            $this->authorizeSupport($actor, $grant, $tenantId, $scope);
 
-        return PrivilegedSupportAction::query()->create([
-            'tenant_id' => $tenantId,
-            'grant_id' => $grant->id,
-            'actor_user_id' => $actor->id,
-            'action' => trim($action),
-            'outcome' => trim($outcome),
-            'context' => $context,
-            'occurred_at' => $occurredAt,
-        ]);
+            if (! in_array($capability, $grant->capabilities ?? [], true)
+                || ! $grant->isActive($occurredAt) || trim($action) === '' || trim($outcome) === '') {
+                throw new ProviderAuthorizationException(
+                    providerId: 'connector',
+                    operation: 'record_break_glass_action',
+                    message: 'Expired or revoked break-glass grants cannot perform or record actions.',
+                );
+            }
+
+            return PrivilegedSupportAction::query()->create([
+                'tenant_id' => $tenantId,
+                'grant_id' => $grant->id,
+                'actor_user_id' => $actor->id,
+                'action' => trim($action),
+                'outcome' => trim($outcome),
+                'context' => array_merge($context, ['capability' => $capability]),
+                'occurred_at' => $occurredAt,
+            ]);
+        });
     }
 
     public function revoke(PrivilegedSupportGrant $grant, Actor $actor, ?DateTimeImmutable $revokedAt = null): void
     {
         $tenantId = $this->tenantContext->requireTenantId();
-        $grant = $this->currentGrant($grant, $tenantId);
-        $scope = $grant->company_id === null ? ProviderScope::tenant() : ProviderScope::company((int) $grant->company_id);
-        $this->assertGrantActor($actor, $grant);
-        $this->assertActor($actor, $tenantId, $scope);
         $revokedAt ??= new DateTimeImmutable;
-        $this->authorizeSupport($actor, $grant, $tenantId, $scope);
 
         DB::transaction(function () use ($grant, $actor, $revokedAt, $tenantId): void {
+            $grant = $this->currentGrant($grant, $tenantId, true);
+            $scope = $grant->company_id === null ? ProviderScope::tenant() : ProviderScope::company((int) $grant->company_id);
+            $this->assertGrantActor($actor, $grant);
+            $this->assertActor($actor, $tenantId, $scope);
+            $this->authorizeSupport($actor, $grant, $tenantId, $scope);
+
             if (! $grant->isActive($revokedAt)) {
                 return;
             }
@@ -158,12 +162,17 @@ final class PrivilegedSupportService
         }
     }
 
-    private function currentGrant(PrivilegedSupportGrant $grant, int $tenantId): PrivilegedSupportGrant
+    private function currentGrant(PrivilegedSupportGrant $grant, int $tenantId, bool $forUpdate = false): PrivilegedSupportGrant
     {
-        return PrivilegedSupportGrant::query()
+        $query = PrivilegedSupportGrant::query()
             ->forTenant($tenantId)
-            ->whereKey($grant->getKey())
-            ->first()
+            ->whereKey($grant->getKey());
+
+        if ($forUpdate) {
+            $query->lockForUpdate();
+        }
+
+        return $query->first()
             ?? throw new ProviderAuthorizationException(
                 providerId: 'connector',
                 operation: 'load_break_glass',

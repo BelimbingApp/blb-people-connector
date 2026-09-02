@@ -5,6 +5,7 @@ namespace App\Domains\PeopleConnector\Connector\Services;
 use App\Base\Tenancy\Contracts\TenantContext;
 use App\Domains\PeopleConnector\Connector\Data\ProviderAuthenticationRequest;
 use App\Domains\PeopleConnector\Connector\Data\ProviderCredential;
+use App\Domains\PeopleConnector\Connector\Exceptions\ConnectorRecordNotFoundException;
 use App\Domains\PeopleConnector\Connector\Exceptions\ProviderAuthenticationException;
 use App\Domains\PeopleConnector\Connector\Models\ProviderConnection;
 use App\Domains\PeopleConnector\Connector\Models\ProviderCredentialRecord;
@@ -13,7 +14,10 @@ use Illuminate\Support\Facades\DB;
 
 final class ProviderCredentialStore
 {
-    public function __construct(private readonly TenantContext $tenantContext) {}
+    public function __construct(
+        private readonly TenantContext $tenantContext,
+        private readonly TenantConnectionLocator $connections,
+    ) {}
 
     public function issue(
         ProviderAuthenticationRequest $request,
@@ -24,12 +28,9 @@ final class ProviderCredentialStore
         DateTimeImmutable $expiresAt,
     ): ProviderCredential {
         $tenantId = $this->tenantContext->requireTenantId();
+        $connection = $this->activeConnection($request, $connection, $tenantId);
 
-        if ($request->tenantId !== $tenantId
-            || (int) $connection->tenant_id !== $tenantId
-            || (int) $connection->id !== $request->connectionId
-            || (string) $connection->status !== ProviderConnection::STATUS_ACTIVE
-            || (string) $connection->provider_id === '') {
+        if ((string) $connection->provider_id === '') {
             throw new ProviderAuthenticationException(
                 providerId: (string) $connection->provider_id,
                 operation: 'issue_credential',
@@ -119,6 +120,24 @@ final class ProviderCredentialStore
             );
         }
 
+        try {
+            $connection = $this->connections->get($request->connectionId);
+        } catch (ConnectorRecordNotFoundException) {
+            throw new ProviderAuthenticationException(
+                providerId: 'unknown',
+                operation: 'resolve_credential',
+                message: 'The provider connection is missing or outside the current tenant.',
+            );
+        }
+
+        if ($connection->status !== ProviderConnection::STATUS_ACTIVE) {
+            throw new ProviderAuthenticationException(
+                providerId: (string) $connection->provider_id,
+                operation: 'resolve_credential',
+                message: 'Provider credentials cannot be resolved for an inactive connection.',
+            );
+        }
+
         $credential = ProviderCredentialRecord::query()
             ->forTenant($tenantId)
             ->where('connection_id', $request->connectionId)
@@ -146,5 +165,34 @@ final class ProviderCredentialStore
         }
 
         return $result;
+    }
+
+    private function activeConnection(
+        ProviderAuthenticationRequest $request,
+        ProviderConnection $suppliedConnection,
+        int $tenantId,
+    ): ProviderConnection {
+        try {
+            $connection = $this->connections->get($request->connectionId);
+        } catch (ConnectorRecordNotFoundException) {
+            throw new ProviderAuthenticationException(
+                providerId: (string) $suppliedConnection->provider_id,
+                operation: 'issue_credential',
+                message: 'Provider credentials require a connection inside the current tenant.',
+            );
+        }
+
+        if ($request->tenantId !== $tenantId
+            || (int) $connection->tenant_id !== $tenantId
+            || $connection->status !== ProviderConnection::STATUS_ACTIVE
+            || (string) $connection->provider_id !== (string) $suppliedConnection->provider_id) {
+            throw new ProviderAuthenticationException(
+                providerId: (string) $connection->provider_id,
+                operation: 'issue_credential',
+                message: 'Provider credentials cannot cross the current tenant or connection boundary.',
+            );
+        }
+
+        return $connection;
     }
 }
