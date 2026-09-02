@@ -12,6 +12,7 @@ use App\Domains\PeopleConnector\Connector\Models\WorkforceCompanyProjection;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceEntity;
 use App\Domains\PeopleConnector\Skill\Data\SkillDraft;
 use App\Domains\PeopleConnector\Skill\Livewire\Catalog\Index;
+use App\Domains\PeopleConnector\Skill\Models\ProficiencyScale;
 use App\Domains\PeopleConnector\Skill\Models\Skill;
 use App\Domains\PeopleConnector\Skill\Models\SkillCategory;
 use App\Domains\PeopleConnector\Skill\Services\SkillCatalogDefaults;
@@ -250,4 +251,56 @@ test('a single-company tenant with a tenant-scoped provider stays visible, then 
     Livewire::actingAs($user)
         ->test(Index::class)
         ->assertViewHas('companies', []);
+});
+
+test('every mutating catalog action refuses a company the actor may not act for', function (): void {
+    // The component documents authorizedCompanyForManage() as "the single
+    // authorization funnel for every mutating action". Nothing failed if an
+    // action stopped going through it: the sibling-company test above covers
+    // selectCompany, installStarterPack and startSkill, and none of those
+    // writes anything.
+    $adminAlpha = createAdminUser();
+    $tenantId = (int) app(TenantContext::class)->currentTenantId();
+    catalogPageCompanyEntity($tenantId, 'Alpha Workforce', (int) $adminAlpha->company_id);
+
+    $companyBeta = Company::factory()->create();
+    $betaEntity = catalogPageCompanyEntity($tenantId, 'Beta Workforce', (int) $companyBeta->id);
+    app(SkillCatalogDefaults::class)->install($betaEntity);
+
+    $betaCategory = SkillCategory::query()
+        ->forCompany($tenantId, $betaEntity)->where('code', 'quality')->sole();
+    $betaScale = ProficiencyScale::query()
+        ->forCompany($tenantId, $betaEntity)->where('code', SkillCatalogDefaults::SCALE_CODE)->sole();
+    $betaSkill = app(SkillCatalogStore::class)->defineSkill($betaEntity, new SkillDraft(
+        code: 'beta.secret.process',
+        name: 'Beta Secret Process',
+        definition: 'Beta-only production standard.',
+        categoryId: (int) $betaCategory->id,
+    ));
+
+    // Beta's REAL ids, deliberately. With a made-up id the action would 404
+    // from its own not-found check even with the funnel removed, and this
+    // test would pass while proving nothing.
+    $refuses = function (string $action, array $args = []) use ($adminAlpha, $betaEntity): void {
+        Livewire::actingAs($adminAlpha)->test(Index::class)
+            ->set('companyEntityId', $betaEntity)
+            ->call($action, ...$args)
+            ->assertStatus(404);
+    };
+
+    $refuses('saveSkill');
+    $refuses('saveCategory');
+    $refuses('toggleSkillActive', [(int) $betaSkill->id]);
+    $refuses('renameCategory', [(int) $betaCategory->id, 'Renamed By Alpha']);
+    $refuses('toggleCategoryActive', [(int) $betaCategory->id]);
+    $refuses('publishScale', [(int) $betaScale->id]);
+    $refuses('draftNewScaleVersion', [(int) $betaScale->id]);
+
+    // Nothing moved.
+    expect($betaSkill->refresh()->active)->toBeTrue()
+        ->and($betaSkill->name)->toBe('Beta Secret Process')
+        ->and($betaCategory->refresh()->name)->not->toBe('Renamed By Alpha')
+        ->and($betaCategory->active)->toBeTrue()
+        ->and($betaScale->refresh()->status)->toBe($betaScale->status)
+        ->and(ProficiencyScale::query()->forCompany($tenantId, $betaEntity)->count())->toBe(1);
 });
