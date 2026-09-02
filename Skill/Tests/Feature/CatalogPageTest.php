@@ -86,6 +86,23 @@ function catalogPageViewer(int $companyId): User
     return $viewer;
 }
 
+/**
+ * A draft scale on a code of its OWN, not a new version of the standard one.
+ *
+ * newDraftFrom() opens a draft on the SAME code, and draft()'s open-draft rule
+ * is per code -- so it would leave draftNewScaleVersion unable to write even
+ * fully un-funnelled, killing the count assertion that is its only detector
+ * (#47, measured by opus-5-review-z). A separate code keeps both live.
+ */
+function catalogPageProbeDraft(int $companyEntityId): ProficiencyScale
+{
+    return app(ProficiencyScaleStore::class)->draft($companyEntityId, 'probe', 'Probe', [
+        new ProficiencyLevelDraft(0, 'None', 'No demonstrated capability.', 'None.'),
+        new ProficiencyLevelDraft(1, 'Basic', 'Works with supervision.', 'Supervised.'),
+        new ProficiencyLevelDraft(2, 'Full', 'Works unsupervised.', 'Authorised.'),
+    ]);
+}
+
 test('the catalog page states honestly that no company is synchronized yet', function (): void {
     $admin = createAdminUser();
 
@@ -208,23 +225,6 @@ test('the page never leaks another tenant catalog', function (): void {
         ->test(Index::class)
         ->assertDontSee('Tenant A Co');
 });
-
-/**
- * A draft scale on a code of its OWN, not a new version of the standard one.
- *
- * newDraftFrom() opens a draft on the SAME code, and draft()'s open-draft rule
- * is per code -- so it would leave draftNewScaleVersion unable to write even
- * fully un-funnelled, killing the count assertion that is its only detector
- * (#47, measured by opus-5-review-z). A separate code keeps both live.
- */
-function catalogPageProbeDraft(int $companyEntityId): ProficiencyScale
-{
-    return app(ProficiencyScaleStore::class)->draft($companyEntityId, 'probe', 'Probe', [
-        new ProficiencyLevelDraft(0, 'None', 'No demonstrated capability.', 'None.'),
-        new ProficiencyLevelDraft(1, 'Basic', 'Works with supervision.', 'Supervised.'),
-        new ProficiencyLevelDraft(2, 'Full', 'Works unsupervised.', 'Authorised.'),
-    ]);
-}
 
 test('the route requires the view capability', function (): void {
     $admin = createAdminUser();

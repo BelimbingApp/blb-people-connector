@@ -533,6 +533,13 @@ under precisely the condition that matters. So:
 > exclusion test fails open on the identical mismatch, and every unfamiliar
 > spelling becomes an attack.
 
+What decides which of those a test is, is not the question it asks but **which
+way its match points**. An inclusion test fails closed because a match means
+*permit*, so a mismatch refuses. A test that **refuses** on a match permits on
+a mismatch, and is an exclusion test wearing an inclusion test's shape however
+its condition reads. The outer-query guard under "Why this shape and not
+another" is refused on exactly that ground.
+
 When a question genuinely needs an exclusion — "is this name absent" — the
 answer is usually to find a condition that removes the question instead. Here
 that was: a correlation is only distinguishable from a join condition when there
@@ -641,7 +648,8 @@ Being honest about the edges:
   means *permit*, so an unrecognised spelling refuses. Here a match would mean
   *refuse*, so an unrecognised spelling permits — the schema-qualified
   `public.categories` that this document already records as failing open,
-  rebuilt on purpose. Second, it would be switched off: merges, reconciliation
+  rebuilt on purpose. A security check that silently does nothing on a naming
+  variation is worse than none, because it licenses confidence. Second, it would be switched off: merges, reconciliation
   and reporting read across companies legitimately and would trip it
   constantly, each becoming a `withoutCompanyScope()` at a call site. Class T
   is unguarded deliberately; the honest answer for a join out of one is the
