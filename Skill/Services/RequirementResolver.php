@@ -81,7 +81,7 @@ class RequirementResolver
 
     /**
      * @param  array<string, mixed>  $employeeData
-     * @return array{matches: bool, explanation: string, matched_selectors: array<string>}
+     * @return array{matches: bool, explanation: string, matched_selectors: array<string>, partial_match?: bool}
      */
     private function matchesProfile(RequirementProfile $profile, array $employeeData): array
     {
@@ -91,11 +91,13 @@ class RequirementResolver
                 'matches' => false,
                 'explanation' => 'Profile has no selectors.',
                 'matched_selectors' => [],
+                'partial_match' => false,
             ];
         }
 
         $matchedSelectors = [];
         $explanations = [];
+        $selectorIndex = 0;
 
         foreach ($selectors as $selector) {
             $selectorMatch = $this->matchesSelector($selector, $employeeData);
@@ -104,11 +106,13 @@ class RequirementResolver
                     'matches' => false,
                     'explanation' => "Failed on selector: {$selectorMatch['explanation']}",
                     'matched_selectors' => [],
+                    'partial_match' => $selectorIndex > 0 || $selectors->count() > 1,
                 ];
             }
 
             $matchedSelectors[] = $selector->selector_type->value;
             $explanations[] = $selectorMatch['explanation'];
+            $selectorIndex++;
         }
 
         return [
