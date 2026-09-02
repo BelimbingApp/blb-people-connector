@@ -6,7 +6,6 @@ use App\Domains\PeopleConnector\Connector\Models\Concerns\CompanyOwned;
 use App\Domains\PeopleConnector\Connector\Models\TenantOwnedModel;
 use App\Domains\PeopleConnector\Skill\Enums\RequirementProfileStatus;
 use App\Domains\PeopleConnector\Skill\Exceptions\PublishedRequirementImmutableException;
-use Illuminate\Database\Eloquent\Relations\HasMany;
 
 /**
  * A versioned requirement profile defining what skills a position requires.
