@@ -92,6 +92,24 @@ test('a port resolver cannot be constructed without its authorization dependenci
     expect(fn () => new ProviderPortResolver)->toThrow(ArgumentCountError::class);
 });
 
+test('a port resolver built around its constructor cannot reach an adapter', function (): void {
+    app(TenantContext::class)->set(1);
+    $provider = Mockery::mock(ProviderAdapter::class);
+    $provider->shouldNotReceive('descriptor');
+    $provider->shouldNotReceive('capabilities');
+    $provider->shouldNotReceive('resolvePort');
+
+    $resolver = (new ReflectionClass(ProviderPortResolver::class))->newInstanceWithoutConstructor();
+
+    expect(fn () => $resolver->read(
+        resolverTestActor(tenantId: 1, companyId: 10),
+        $provider,
+        PeopleCapability::EmployeeDirectory,
+        TestEmployeeReader::class,
+        ProviderScope::company(10),
+    ))->toThrow(Error::class, 'must not be accessed before initialization');
+});
+
 test('unsupported writes fail before the adapter is asked to resolve a port', function (): void {
     [$actor, $scope] = resolverTestAuthorizedAccess('Unsupported Write Tenant');
     $provider = Mockery::mock(ProviderAdapter::class);
