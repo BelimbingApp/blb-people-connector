@@ -88,6 +88,32 @@ final readonly class WorkforceHistoryEvent
         );
     }
 
+    /**
+     * A deactivated identity coming back into force — a re-hire, or a
+     * provider correcting a deactivation it should not have emitted.
+     *
+     * The instant the identity stopped being in force travels with the event,
+     * so the closed interval survives even though the identity row itself now
+     * carries the new one.
+     */
+    public static function identityReactivated(
+        ExternalReference $reference,
+        ?\DateTimeInterface $previousEffectiveTo = null,
+    ): self {
+        return new self(
+            WorkforceHistoryEventType::IdentityReactivated,
+            $reference,
+            null,
+            null,
+            null,
+            null,
+            [
+                'external_id' => $reference->externalId,
+                'previous_effective_to' => $previousEffectiveTo?->format(DATE_ATOM),
+            ],
+        );
+    }
+
     public static function projectionUpserted(
         WorkforceCompany|WorkforceOrganizationUnit|WorkforcePosition|WorkforceEmployee $record,
     ): self {

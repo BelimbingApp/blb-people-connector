@@ -368,12 +368,133 @@ final class WorkforceIdentityStore
         });
     }
 
+    /**
+     * Bring a deactivated provider identity back into force.
+     *
+     * Deactivation is not a terminal state. A re-hire, or a provider
+     * correcting a deactivation it should not have emitted, has to be
+     * representable, and until this existed every later upsert for that
+     * external reference was rejected forever by assertActive().
+     *
+     * Nothing about the deactivation is erased. The identity_deactivated
+     * snapshot stays exactly where it was written, and this appends an
+     * identity_reactivated snapshot carrying the instant the previous period
+     * of force ended, so both ends of the closed interval remain readable
+     * from history. The identity row itself is current state, not a log: it
+     * takes the new effective_from, because the reference is in force again
+     * from this event rather than continuously since the original hire.
+     *
+     * The current projection is deliberately left retired. Reactivation says
+     * the reference is live again; it does not restate the person's facts.
+     * The next upsert, which now passes assertActive(), restores those from
+     * what the provider actually sent.
+     *
+     * Only a deactivated identity can come back. A remapped identity was
+     * superseded by a named replacement, which it records in
+     * replaced_by_identity_id; a merged one had its entity folded into a
+     * survivor, recorded as merged_into_entity_id on the entity — merge()
+     * leaves the identity's own replaced_by_identity_id null. Either way the
+     * reference was superseded rather than switched off, so both stay one-way,
+     * and so does an identity whose entity was merged away underneath it.
+     */
+    public function reactivate(
+        int $connectionId,
+        ExternalReference $reference,
+        \DateTimeInterface $occurredAt,
+        ?WorkforceProvenance $provenance = null,
+    ): WorkforceEntity {
+        if ($provenance === null) {
+            throw new ExternalIdentityCollisionException('External identity reactivation requires source provenance.');
+        }
+
+        return DB::transaction(function () use ($connectionId, $reference, $occurredAt, $provenance): WorkforceEntity {
+            $connection = $this->connections->get($connectionId, lock: true);
+            $identity = $this->requiredIdentity($connection, $reference, lock: true);
+            $rawEntity = $this->entity((int) $identity->workforce_entity_id, $reference->resourceType->value, lock: true);
+            $canonical = $this->canonicalEntity($rawEntity, lock: true);
+
+            // The entity was folded into a survivor underneath this identity,
+            // which happens whenever it was deactivated before the merge:
+            // merge() only retires the identities that were active at the
+            // time. Coming back here would leave the identity active while
+            // still pointing at a superseded entity, and the next upsert would
+            // then die inside history validation on an unrelated message.
+            if ((int) $canonical->id !== (int) $rawEntity->id) {
+                throw new ExternalIdentityCollisionException(
+                    'This identity belongs to a workforce entity that was merged away and cannot be reactivated.'
+                    .' Reactivate the surviving identity, or rebind this one through a reviewed remap.',
+                );
+            }
+
+            if ($identity->state === ExternalIdentity::STATE_ACTIVE) {
+                return $canonical;
+            }
+
+            if ($identity->state !== ExternalIdentity::STATE_INACTIVE) {
+                throw new ExternalIdentityCollisionException(
+                    'Only a deactivated external identity can be reactivated.',
+                );
+            }
+
+            $this->assertTransitionChronology($occurredAt, $identity->last_observed_at);
+
+            $previousEffectiveTo = $identity->effective_to;
+
+            $identity->fill([
+                'state' => ExternalIdentity::STATE_ACTIVE,
+                'effective_from' => $occurredAt,
+                'effective_to' => null,
+                'last_observed_at' => $occurredAt,
+            ])->save();
+
+            // The entity is only inactive while no identity is in force. One
+            // now is, so it comes back with it. A merged entity is left alone:
+            // its canonical successor is elsewhere, exactly as deactivate()
+            // refuses to retire one.
+            if ($rawEntity->state === WorkforceEntity::STATE_INACTIVE) {
+                $rawEntity->fill([
+                    'state' => WorkforceEntity::STATE_ACTIVE,
+                    'deactivated_at' => null,
+                ])->save();
+            }
+
+            $this->history->record(
+                $connection,
+                $rawEntity,
+                $identity,
+                WorkforceHistoryEvent::identityReactivated($reference, $previousEffectiveTo),
+                $occurredAt,
+                $occurredAt,
+                $provenance,
+            );
+
+            return $canonical;
+        });
+    }
+
     public function assertActive(ExternalIdentity $identity): void
     {
-        if ((int) $identity->tenant_id !== $this->tenantContext->requireTenantId()
-            || $identity->state !== ExternalIdentity::STATE_ACTIVE) {
-            throw new ExternalIdentityCollisionException('Only an active current identity may update a workforce projection.');
+        $sameTenant = (int) $identity->tenant_id === $this->tenantContext->requireTenantId();
+
+        if ($sameTenant && $identity->state === ExternalIdentity::STATE_ACTIVE) {
+            return;
         }
+
+        $message = 'Only an active current identity may update a workforce projection.';
+
+        // The recovery is only named for the one state reactivate() accepts.
+        // A remapped or merged identity was superseded rather than switched
+        // off, and a cross-tenant identity is not ours to touch: pointing an
+        // operator at reactivate() for either would send them to a call that
+        // refuses. The base sentence is byte-identical in every case, so the
+        // appended sentence is what distinguishes the recoverable one.
+        if ($sameTenant && $identity->state === ExternalIdentity::STATE_INACTIVE) {
+            throw new ExternalIdentityCollisionException(
+                $message.' This identity was deactivated; reactivate it before projecting its facts again.',
+            );
+        }
+
+        throw new ExternalIdentityCollisionException($message);
     }
 
     private function requiredIdentity(
