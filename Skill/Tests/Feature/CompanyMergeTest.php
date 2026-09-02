@@ -9,6 +9,7 @@ use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
 use App\Domains\PeopleConnector\Connector\Exceptions\WorkforceMergeConflictException;
 use App\Domains\PeopleConnector\Connector\Models\CompanyOwnedModels;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceEmployeeProjection;
+use App\Domains\PeopleConnector\Connector\Models\WorkforceEntity;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceOrganizationUnitProjection;
 use App\Domains\PeopleConnector\Connector\Models\WorkforcePositionProjection;
 use App\Domains\PeopleConnector\Connector\Services\ProviderConnectionStore;
@@ -17,12 +18,16 @@ use App\Domains\PeopleConnector\Connector\Services\WorkforceProjectionStore;
 use App\Domains\PeopleConnector\Skill\Data\ProficiencyLevelDraft;
 use App\Domains\PeopleConnector\Skill\Data\SkillDraft;
 use App\Domains\PeopleConnector\Skill\Enums\AssessmentMethod;
+use App\Domains\PeopleConnector\Skill\Enums\ProficiencyScaleStatus;
 use App\Domains\PeopleConnector\Skill\Enums\SkillScope;
+use App\Domains\PeopleConnector\Skill\Exceptions\PublishedScaleImmutableException;
 use App\Domains\PeopleConnector\Skill\Models\ProficiencyScale;
 use App\Domains\PeopleConnector\Skill\Models\Skill;
 use App\Domains\PeopleConnector\Skill\Models\SkillCategory;
 use App\Domains\PeopleConnector\Skill\Services\ProficiencyScaleStore;
 use App\Domains\PeopleConnector\Skill\Services\SkillCatalogStore;
+use Illuminate\Database\QueryException;
+use Illuminate\Support\Facades\DB;
 
 // Self-contained on purpose: Pest test functions are global once their file
 // loads, so a helper borrowed from another test file exists only when that
@@ -164,4 +169,41 @@ test('a company merge that would collide on a unique catalog code is refused who
     expect(Skill::query()->forCompany($tenantId, $old)->count())->toBe(1)
         ->and(SkillCategory::query()->forCompany($tenantId, $old)->count())->toBe(1)
         ->and(Skill::query()->forCompany($tenantId, $new)->count())->toBe(1);
+});
+
+test('a company merge carries a published scale too, and only a merge may move it', function (): void {
+    [$tenantId, $connectionId, $old, $new] = companyMergeFixture();
+    $scales = app(ProficiencyScaleStore::class);
+    $scale = $scales->publish($old, (int) $scales->draft($old, 'core', 'Core', companyMergeLevels())->id);
+    expect($scale->status)->toBe(ProficiencyScaleStatus::Published);
+
+    // Reproduced first (review of #34): PublishedScaleImmutableException,
+    // the whole merge refused, category and skill not moved, entity never
+    // marked merged. Any company that had ever published a scale could not
+    // be merged.
+    companyMergeRun($connectionId);
+
+    expect((int) $scale->refresh()->company_entity_id)->toBe($new)
+        ->and($scale->status)->toBe(ProficiencyScaleStatus::Published)
+        ->and($scale->levels()->count())->toBe(3)
+        ->and(ProficiencyScale::query()->forCompany($tenantId, $new)->count())->toBe(1);
+
+    // The exemption is the merge and nothing wider: a published scale still
+    // refuses a move to a company that is not its owner's survivor, at the
+    // model layer and, with the model layer stepped around, at the database.
+    $sibling = (int) app(WorkforceIdentityStore::class)->resolve($connectionId, companyMergeCompanyReference('COMPANY-NEW'))->id;
+    $stranger = WorkforceEntity::query()->create([
+        'tenant_id' => $tenantId,
+        'resource_type' => WorkforceResourceType::Company->value,
+        'state' => WorkforceEntity::STATE_ACTIVE,
+        'first_seen_at' => now(),
+    ]);
+    expect($sibling)->toBe($new)
+        ->and(fn () => $scale->movingCompany('Contract check: a stated move must still meet the immutability guard.')->forceFill(['company_entity_id' => $stranger->id])->save())
+        ->toThrow(PublishedScaleImmutableException::class)
+        ->and(fn () => DB::transaction(fn () => ProficiencyScale::query()
+            ->movingCompany('Deliberately bypasses the model layer to prove the database trigger stands on its own.')
+            ->forCompany($tenantId, $new)
+            ->update(['company_entity_id' => $stranger->id])))
+        ->toThrow(QueryException::class);
 });

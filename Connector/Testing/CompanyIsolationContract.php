@@ -447,18 +447,6 @@ final class CompanyIsolationContract
     }
 
     /**
-     * Model files, found by directory rather than by declaration.
-     *
-     * A company-owned model placed outside a `Models` directory enrols itself
-     * into nothing, silently. That is a deliberate trade — parsing every file
-     * in the domain to find Eloquent subclasses costs more than it buys while
-     * the house layout puts models in `Models` — but it is a real limit, and
-     * the companion "the repository actually contains company-owned models"
-     * test only catches total discovery failure, not one missed model.
-     *
-     * @return list<\SplFileInfo>
-     */
-    /**
      * Lines calling Laravel's own scope-removal methods, found by tokenizing
      * rather than by matching text — a comment or a docblock that names the
      * method is discussing it, not calling it.

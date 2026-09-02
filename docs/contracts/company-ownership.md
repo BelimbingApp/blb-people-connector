@@ -314,7 +314,11 @@ are two, and they are the only two the domain knows of:
   unique catalog key in the survivor is refused whole with
   `WorkforceMergeConflictException`; nothing moves until a person resolves
   the duplicate. Class D rows follow their parent; a company projection is
-  the entity itself and is retired rather than rewritten.
+  the entity itself and is retired rather than rewritten. A **published or
+  retired proficiency scale** is carried too: its immutability guard (model
+  and trigger) exempts a change of owner alone, from an entity already marked
+  merged into the new owner, and nothing else — content and lifecycle stay
+  immutable.
 
 `CompanyIsolationContract` runs the whole route list against every
 company-owned model — fourteen builder routes and three model routes, plus the
@@ -332,7 +336,13 @@ state `merged` whose `merged_into_entity_id` is the new owner — which is what
 the merge records, in the same transaction, before it rewrites anything. That
 is the actual rule, expressed where the model layer cannot be bypassed. The
 model-layer refusal gives the author a message; the trigger stands when the
-model layer is stepped around. Projection tables get no trigger, because the
+model layer is stepped around. Note what the trigger's exemption is: a
+**standing** permission, not one scoped to the merge transaction. Once entity
+A is recorded as merged into B, any write that moves a catalog row from A to
+B is permitted by the database from then on. That is bounded — the row can
+only go where the merge would have sent it — and it is the price of a rule
+the database can check without a session flag; it is stated here so nobody
+reads it later as a bug. Projection tables get no trigger, because the
 database cannot tell a provider-side transfer from a mistake; there the named
 escape is the mechanism, and the sync store is the one caller.
 

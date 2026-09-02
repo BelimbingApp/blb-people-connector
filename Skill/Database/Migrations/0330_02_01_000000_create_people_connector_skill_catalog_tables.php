@@ -87,6 +87,27 @@ return new class extends Migration
                     AND NEW.published_at IS NOT DISTINCT FROM OLD.published_at THEN
                     RETURN NEW;
                 END IF;
+                -- A company merge carries a published scale to the survivor:
+                -- only the owner changes, and only from an entity already
+                -- marked merged into the new owner. Content and lifecycle
+                -- stay immutable.
+                IF NEW.company_entity_id IS DISTINCT FROM OLD.company_entity_id
+                    AND NEW.status = OLD.status
+                    AND NEW.tenant_id = OLD.tenant_id
+                    AND NEW.code = OLD.code
+                    AND NEW.name = OLD.name
+                    AND NEW.version = OLD.version
+                    AND NEW.published_at IS NOT DISTINCT FROM OLD.published_at
+                    AND NEW.retired_at IS NOT DISTINCT FROM OLD.retired_at
+                    AND EXISTS (
+                        SELECT 1 FROM people_connector_connector_workforce_entities
+                        WHERE id = OLD.company_entity_id
+                            AND tenant_id = OLD.tenant_id
+                            AND state = 'merged'
+                            AND merged_into_entity_id = NEW.company_entity_id
+                    ) THEN
+                    RETURN NEW;
+                END IF;
                 RAISE EXCEPTION 'proficiency scale % is % and immutable; draft a new version instead', OLD.id, OLD.status;
             END;
             $$ LANGUAGE plpgsql;
@@ -170,12 +191,21 @@ return new class extends Migration
 
     private function createSqliteGuards(): void
     {
+        // The third arm mirrors the plpgsql function: a company merge may
+        // change the owner of a non-draft scale, and nothing else, and only
+        // from an entity already marked merged into the new owner.
         DB::statement(
             'CREATE TRIGGER pcs_scale_update_guard BEFORE UPDATE ON people_connector_skill_proficiency_scales'
             ." WHEN NOT (OLD.status = 'draft' OR (OLD.status = 'published' AND NEW.status = 'retired'"
             .' AND NEW.tenant_id = OLD.tenant_id AND NEW.company_entity_id = OLD.company_entity_id'
             .' AND NEW.code = OLD.code AND NEW.name = OLD.name AND NEW.version = OLD.version'
-            .' AND NEW.published_at IS OLD.published_at))'
+            .' AND NEW.published_at IS OLD.published_at)'
+            .' OR (NEW.company_entity_id != OLD.company_entity_id AND NEW.status = OLD.status'
+            .' AND NEW.tenant_id = OLD.tenant_id AND NEW.code = OLD.code AND NEW.name = OLD.name'
+            .' AND NEW.version = OLD.version AND NEW.published_at IS OLD.published_at AND NEW.retired_at IS OLD.retired_at'
+            .' AND EXISTS (SELECT 1 FROM people_connector_connector_workforce_entities'
+            .' WHERE id = OLD.company_entity_id AND tenant_id = OLD.tenant_id'
+            ." AND state = 'merged' AND merged_into_entity_id = NEW.company_entity_id)))"
             ." BEGIN SELECT RAISE(ABORT, 'proficiency scale is published and immutable; draft a new version instead'); END",
         );
         DB::statement(
