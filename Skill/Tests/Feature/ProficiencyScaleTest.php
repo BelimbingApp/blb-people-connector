@@ -133,6 +133,13 @@ test('when both scale guards would refuse, the owner guard is the one that speak
 
     // Published AND moving company with no merge record, so BOTH guards would
     // refuse. Which message surfaces is decided purely by firing order.
+    //
+    // That both are genuinely armed is not visible from here, and this test
+    // does not prove it: the owner guard alone is exercised by 'a scale
+    // cannot move to a sibling company at the model or database layer' above,
+    // and the immutability guard alone by 'published-scale immutability holds
+    // at the database layer against builder and raw writes' below. Without
+    // that pair this test would pass just as happily with one trigger missing.
     // Savepoint-wrapped: a trigger abort poisons the test transaction on Postgres.
     expect(fn () => DB::transaction(fn () => ProficiencyScale::query()
         ->movingCompany('Deliberately bypasses the model layer to prove which database trigger speaks first.')
