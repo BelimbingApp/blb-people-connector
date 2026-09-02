@@ -21,10 +21,13 @@ use App\Domains\PeopleConnector\Skill\Exceptions\PublishedRequirementImmutableEx
 use App\Domains\PeopleConnector\Skill\Exceptions\RequirementProfileNotFoundException;
 use App\Domains\PeopleConnector\Skill\Models\RequirementItem;
 use App\Domains\PeopleConnector\Skill\Models\RequirementProfile;
+use App\Domains\PeopleConnector\Skill\Models\RequirementProfileSelector;
 use App\Domains\PeopleConnector\Skill\Models\Skill;
 use App\Domains\PeopleConnector\Skill\Services\RequirementProfileStore;
 use App\Domains\PeopleConnector\Skill\Services\RequirementResolver;
 use App\Domains\PeopleConnector\Skill\Services\SkillCatalogStore;
+use Carbon\Carbon;
+use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
@@ -77,7 +80,7 @@ function requirementFixture(string $tenantName = 'Requirements Tenant'): array
     return [(int) $tenant->id, (int) $company->id, $skillA, $skillB];
 }
 
-function simpleProfileDraft(Skill $skillA, Skill $skillB): RequirementProfileDraft
+function simpleProfileDraft(Skill $skillA, Skill $skillB, ?DateTimeInterface $effectiveDate = null): RequirementProfileDraft
 {
     return new RequirementProfileDraft(
         code: 'warehouse.operator',
@@ -101,6 +104,7 @@ function simpleProfileDraft(Skill $skillA, Skill $skillB): RequirementProfileDra
                 weightPercent: 40.0,
             ),
         ],
+        effectiveDate: $effectiveDate,
     );
 }
 
@@ -111,12 +115,15 @@ test('a requirement profile carries workbook parity fields and fires lifecycle e
     $store = app(RequirementProfileStore::class);
     $profile = $store->draft($companyEntityId, simpleProfileDraft($skillA, $skillB));
 
+    $itemCount = RequirementItem::query()->forCompany($tenantId, $companyEntityId)->where('profile_id', $profile->id)->count();
+    $selectorCount = RequirementProfileSelector::query()->forCompany($tenantId, $companyEntityId)->where('profile_id', $profile->id)->count();
+
     expect($profile->code)->toBe('warehouse.operator')
         ->and($profile->name)->toBe('Warehouse Operator')
         ->and($profile->version)->toBe(1)
         ->and($profile->status)->toBe(RequirementProfileStatus::Draft)
-        ->and($profile->items()->count())->toBe(2)
-        ->and($profile->selectors()->count())->toBe(1);
+        ->and($itemCount)->toBe(2)
+        ->and($selectorCount)->toBe(1);
 
     $profile = $store->publish($companyEntityId, (int) $profile->id);
 
@@ -143,15 +150,19 @@ test('published profiles are immutable and versioning creates new drafts', funct
     expect(fn () => $v1->update(['name' => 'Renamed']))
         ->toThrow(PublishedRequirementImmutableException::class, 'cannot be modified');
 
-    expect(fn () => $v1->items()->first()->update(['required_level' => 5]))
+    $firstItem = RequirementItem::query()->forCompany($tenantId, $companyEntityId)->where('profile_id', $v1->id)->first();
+    expect(fn () => $firstItem->update(['required_level' => 5]))
         ->toThrow(PublishedRequirementImmutableException::class);
 
     $v2 = $store->newDraftFrom($companyEntityId, (int) $v1->id);
 
+    $v1ItemCount = RequirementItem::query()->forCompany($tenantId, $companyEntityId)->where('profile_id', $v1->id)->count();
+    $v2ItemCount = RequirementItem::query()->forCompany($tenantId, $companyEntityId)->where('profile_id', $v2->id)->count();
+
     expect($v2->version)->toBe(2)
         ->and($v2->status)->toBe(RequirementProfileStatus::Draft)
         ->and($v2->code)->toBe($v1->code)
-        ->and($v2->items()->count())->toBe($v1->items()->count());
+        ->and($v2ItemCount)->toBe($v1ItemCount);
 
     $v2 = $store->publish($companyEntityId, (int) $v2->id);
 
@@ -477,6 +488,50 @@ test('multi-selector profiles require all selectors to match', function (): void
 
     expect($matchesDeptOnly['profile'])->toBeNull()
         ->and($matchesDeptOnly['explanation'])->toContain('Failed on selector');
+});
+
+test('company isolation: sibling company cannot address profiles or child records', function (): void {
+    [$tenantId, $companyEntityId, $skillA, $skillB] = requirementFixture();
+    $store = app(RequirementProfileStore::class);
+
+    $profile = $store->draft($companyEntityId, simpleProfileDraft($skillA, $skillB));
+    $profileId = (int) $profile->id;
+
+    $siblingCompanyEntity = requirementEntity($tenantId, 'company');
+
+    expect(fn () => RequirementProfile::query()->forCompany($tenantId, (int) $siblingCompanyEntity->id)->findOrFail($profileId))
+        ->toThrow(ModelNotFoundException::class);
+
+    $items = RequirementItem::query()->forCompany($tenantId, (int) $siblingCompanyEntity->id)->where('profile_id', $profileId)->get();
+    expect($items)->toHaveCount(0);
+
+    $selectors = RequirementProfileSelector::query()->forCompany($tenantId, (int) $siblingCompanyEntity->id)->where('profile_id', $profileId)->get();
+    expect($selectors)->toHaveCount(0);
+});
+
+test('as-of dating uses published_at/retired_at interval, not null effective_date', function (): void {
+    [$tenantId, $companyEntityId, $skillA, $skillB] = requirementFixture();
+    $store = app(RequirementProfileStore::class);
+    $resolver = app(RequirementResolver::class);
+
+    $v1 = $store->draft($companyEntityId, simpleProfileDraft($skillA, $skillB, effectiveDate: null));
+    Carbon::setTestNow('2024-01-10 12:00:00');
+    $v1 = $store->publish($companyEntityId, (int) $v1->id);
+
+    $v2 = $store->newDraftFrom($companyEntityId, (int) $v1->id);
+    Carbon::setTestNow('2024-01-20 12:00:00');
+    $v2 = $store->publish($companyEntityId, (int) $v2->id);
+
+    expect($v1->refresh()->status)->toBe(RequirementProfileStatus::Retired)
+        ->and($v1->retired_at)->not->toBeNull()
+        ->and($v1->effective_date)->toBeNull()
+        ->and($v2->effective_date)->toBeNull();
+
+    $historicalResult = $resolver->resolve(['company_entity_id' => $companyEntityId], Carbon::parse('2024-01-15'));
+
+    expect($historicalResult['profile'])->not->toBeNull()
+        ->and((int) $historicalResult['profile']->id)->toBe((int) $v1->id)
+        ->and($historicalResult['profile']->version)->toBe(1);
 });
 
 test('criticality enum provides workbook priority multipliers', function (): void {

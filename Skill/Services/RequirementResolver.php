@@ -40,13 +40,13 @@ class RequirementResolver
         $profiles = RequirementProfile::query()
             ->forCompany($tenantId, (int) $companyEntityId)
             ->whereIn('status', [RequirementProfileStatus::Published->value, RequirementProfileStatus::Retired->value])
+            ->whereDate('published_at', '<=', $asOf)
             ->where(function ($query) use ($asOf): void {
-                $query->whereNull('effective_date')
-                    ->orWhereDate('effective_date', '<=', $asOf);
+                $query->whereNull('retired_at')
+                    ->orWhereDate('retired_at', '>=', $asOf);
             })
-            ->orderByRaw('COALESCE(effective_date, published_at) DESC')
+            ->orderBy('published_at', 'desc')
             ->orderBy('version', 'desc')
-            ->with('selectors')
             ->get();
 
         $bestFailureExplanation = null;
@@ -81,7 +81,11 @@ class RequirementResolver
      */
     private function matchesProfile(RequirementProfile $profile, array $employeeData): array
     {
-        $selectors = $profile->selectors;
+        $tenantId = app(TenantContext::class)->requireTenantId();
+        $selectors = RequirementProfileSelector::query()
+            ->forCompany($tenantId, (int) $profile->company_entity_id)
+            ->where('profile_id', $profile->getKey())
+            ->get();
         if ($selectors->isEmpty()) {
             return [
                 'matches' => false,

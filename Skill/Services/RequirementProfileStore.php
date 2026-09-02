@@ -86,7 +86,10 @@ class RequirementProfileStore
         $tenantId = app(TenantContext::class)->requireTenantId();
         $source = $this->requireProfile($tenantId, $companyEntityId, $profileId);
 
-        $selectors = $source->selectors()->get()
+        $selectors = RequirementProfileSelector::query()
+            ->forCompany($tenantId, $companyEntityId)
+            ->where('profile_id', $source->getKey())
+            ->get()
             ->map(fn (RequirementProfileSelector $selector): RequirementSelectorDraft => new RequirementSelectorDraft(
                 $selector->selector_type,
                 $selector->selector_value,
@@ -94,7 +97,10 @@ class RequirementProfileStore
             ))
             ->all();
 
-        $items = $source->items()->get()
+        $items = RequirementItem::query()
+            ->forCompany($tenantId, $companyEntityId)
+            ->where('profile_id', $source->getKey())
+            ->get()
             ->map(fn (RequirementItem $item): RequirementItemDraft => new RequirementItemDraft(
                 (int) $item->skill_id,
                 (int) $item->sequence,
@@ -131,7 +137,10 @@ class RequirementProfileStore
                 );
             }
 
-            $items = $profile->items()->get();
+            $items = RequirementItem::query()
+                ->forCompany($tenantId, $companyEntityId)
+                ->where('profile_id', $profile->getKey())
+                ->get();
             $this->assertPublishableItems($items->all());
 
             $previous = $this->publishedOf($tenantId, (int) $profile->company_entity_id, (string) $profile->code);

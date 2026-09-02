@@ -61,24 +61,6 @@ class RequirementProfile extends TenantOwnedModel
         ];
     }
 
-    /**
-     * @return HasMany<RequirementItem, $this>
-     */
-    public function items(): HasMany
-    {
-        return $this->hasMany(RequirementItem::class, 'profile_id')
-            ->withoutCompanyScope('Items are reached through their profile, which was already scoped.')
-            ->orderBy('sequence');
-    }
-
-    /**
-     * @return HasMany<RequirementProfileSelector, $this>
-     */
-    public function selectors(): HasMany
-    {
-        return $this->hasMany(RequirementProfileSelector::class, 'profile_id')
-            ->withoutCompanyScope('Selectors are reached through their profile, which was already scoped.');
-    }
 
     public function isLocked(): bool
     {

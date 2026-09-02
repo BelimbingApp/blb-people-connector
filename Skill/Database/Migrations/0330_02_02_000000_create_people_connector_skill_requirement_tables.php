@@ -264,6 +264,7 @@ return new class extends Migration
         Schema::create('people_connector_skill_requirement_profile_selectors', function (Blueprint $table): void {
             $table->id();
             $table->unsignedBigInteger('tenant_id');
+            $table->unsignedBigInteger('company_entity_id');
             $table->unsignedBigInteger('profile_id');
             $table->string('selector_type', 40);
             $table->string('selector_value', 255)->nullable();
@@ -272,6 +273,7 @@ return new class extends Migration
 
             $table->index('tenant_id', 'pcs_req_selector_tenant_idx');
             $table->unique(['id', 'tenant_id'], 'pcs_req_selector_id_tenant_uq');
+            $table->index(['tenant_id', 'company_entity_id'], 'pcs_req_selector_company_idx');
             $table->index(['tenant_id', 'profile_id'], 'pcs_req_selector_profile_idx');
             $table->index(['tenant_id', 'selector_type', 'selector_entity_id'], 'pcs_req_selector_type_idx');
             $table->foreign('tenant_id', 'pcs_req_selector_tenant_fk')
@@ -289,6 +291,7 @@ return new class extends Migration
         Schema::create('people_connector_skill_requirement_items', function (Blueprint $table): void {
             $table->id();
             $table->unsignedBigInteger('tenant_id');
+            $table->unsignedBigInteger('company_entity_id');
             $table->unsignedBigInteger('profile_id');
             $table->unsignedBigInteger('skill_id');
             $table->unsignedSmallInteger('sequence');
@@ -303,6 +306,7 @@ return new class extends Migration
 
             $table->index('tenant_id', 'pcs_req_item_tenant_idx');
             $table->unique(['id', 'tenant_id'], 'pcs_req_item_id_tenant_uq');
+            $table->index(['tenant_id', 'company_entity_id'], 'pcs_req_item_company_idx');
             $table->index(['tenant_id', 'profile_id', 'sequence'], 'pcs_req_item_profile_seq_idx');
             $table->unique(['tenant_id', 'profile_id', 'skill_id'], 'pcs_req_item_profile_skill_uq');
             $table->foreign('tenant_id', 'pcs_req_item_tenant_fk')
