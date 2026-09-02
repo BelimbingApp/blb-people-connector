@@ -10,6 +10,7 @@ use App\Base\Authz\Exceptions\AuthorizationDeniedException;
 use App\Base\Tenancy\Contracts\TenantContext;
 use App\Domains\PeopleConnector\Connector\Contracts\ProviderAdapter;
 use App\Domains\PeopleConnector\Connector\Contracts\ReadableProviderPort;
+use App\Domains\PeopleConnector\Connector\Contracts\ResolvesProviderPorts;
 use App\Domains\PeopleConnector\Connector\Contracts\WritableProviderPort;
 use App\Domains\PeopleConnector\Connector\Data\CapabilityChannel;
 use App\Domains\PeopleConnector\Connector\Data\CapabilityDeclaration;
@@ -92,9 +93,28 @@ test('a port resolver cannot be constructed without its authorization dependenci
     expect(fn () => new ProviderPortResolver)->toThrow(ArgumentCountError::class);
 });
 
+test('an adapter without the internal resolver seam cannot expose a port', function (): void {
+    [$actor, $scope] = resolverTestAuthorizedAccess('Missing Adapter Resolver Tenant');
+    $provider = Mockery::mock(ProviderAdapter::class);
+    $provider->shouldReceive('descriptor')->andReturn(providerDescriptor());
+    $provider->shouldReceive('capabilities')->once()->andReturn(new CapabilitySet([
+        new CapabilityDeclaration(PeopleCapability::EmployeeDirectory, [
+            new CapabilityChannel(CapabilityDelivery::Synchronous, TestEmployeeReader::class),
+        ]),
+    ]));
+
+    expect(fn () => app(ProviderPortResolver::class)->read(
+        $actor,
+        $provider,
+        PeopleCapability::EmployeeDirectory,
+        TestEmployeeReader::class,
+        $scope,
+    ))->toThrow(ProviderCompatibilityException::class, 'no authorized port resolver');
+});
+
 test('a port resolver built around its constructor cannot reach an adapter', function (): void {
     app(TenantContext::class)->set(1);
-    $provider = Mockery::mock(ProviderAdapter::class);
+    $provider = Mockery::mock(ProviderAdapter::class, ResolvesProviderPorts::class);
     $provider->shouldNotReceive('descriptor');
     $provider->shouldNotReceive('capabilities');
     $provider->shouldNotReceive('resolvePort');
@@ -112,7 +132,7 @@ test('a port resolver built around its constructor cannot reach an adapter', fun
 
 test('unsupported writes fail before the adapter is asked to resolve a port', function (): void {
     [$actor, $scope] = resolverTestAuthorizedAccess('Unsupported Write Tenant');
-    $provider = Mockery::mock(ProviderAdapter::class);
+    $provider = Mockery::mock(ProviderAdapter::class, ResolvesProviderPorts::class);
     $provider->shouldReceive('capabilities')->once()->andReturn(new CapabilitySet([]));
     $provider->shouldReceive('descriptor')->andReturn(providerDescriptor());
     $provider->shouldNotReceive('resolvePort');
@@ -128,7 +148,7 @@ test('unsupported writes fail before the adapter is asked to resolve a port', fu
 
 test('a declared port that cannot be resolved is a compatibility failure', function (): void {
     [$actor, $scope] = resolverTestAuthorizedAccess('Compatibility Tenant');
-    $provider = Mockery::mock(ProviderAdapter::class);
+    $provider = Mockery::mock(ProviderAdapter::class, ResolvesProviderPorts::class);
     $provider->shouldReceive('capabilities')->once()->andReturn(new CapabilitySet([
         new CapabilityDeclaration(PeopleCapability::EmployeeDirectory, [
             new CapabilityChannel(CapabilityDelivery::Synchronous, TestEmployeeWriter::class),
@@ -150,7 +170,7 @@ test('declared readable and writable ports resolve with their exact type after a
     [$actor, $scope, $authorization] = resolverTestAuthorizedAccess('Resolution Tenant');
     $reader = new class implements TestEmployeeReader {};
     $writer = new class implements TestEmployeeWriter {};
-    $provider = Mockery::mock(ProviderAdapter::class);
+    $provider = Mockery::mock(ProviderAdapter::class, ResolvesProviderPorts::class);
     $provider->shouldReceive('capabilities')->twice()->andReturn(new CapabilitySet([
         new CapabilityDeclaration(PeopleCapability::EmployeeDirectory, [
             new CapabilityChannel(CapabilityDelivery::Synchronous, TestEmployeeReader::class),
@@ -193,7 +213,7 @@ test('denied connector authorization never asks an adapter for capabilities or a
     };
     app()->instance(AuthorizationService::class, $authorization);
 
-    $provider = Mockery::mock(ProviderAdapter::class);
+    $provider = Mockery::mock(ProviderAdapter::class, ResolvesProviderPorts::class);
     $provider->shouldReceive('descriptor')->andReturn(providerDescriptor());
     $provider->shouldNotReceive('capabilities');
     $provider->shouldNotReceive('resolvePort');
@@ -213,7 +233,7 @@ test('a cross-tenant or cross-company actor is rejected before the authorization
     $authorization->shouldNotReceive('authorize');
     app()->instance(AuthorizationService::class, $authorization);
 
-    $provider = Mockery::mock(ProviderAdapter::class);
+    $provider = Mockery::mock(ProviderAdapter::class, ResolvesProviderPorts::class);
     $provider->shouldReceive('descriptor')->andReturn(providerDescriptor());
     $provider->shouldNotReceive('capabilities');
     $resolver = app(ProviderPortResolver::class);
@@ -241,7 +261,7 @@ test('an installed adapter that is not active for the scope is rejected before t
     $authorization->shouldNotReceive('authorize');
     app()->instance(AuthorizationService::class, $authorization);
 
-    $provider = Mockery::mock(ProviderAdapter::class);
+    $provider = Mockery::mock(ProviderAdapter::class, ResolvesProviderPorts::class);
     $provider->shouldReceive('descriptor')->andReturn(providerDescriptor());
     $provider->shouldNotReceive('capabilities');
 

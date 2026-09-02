@@ -4,6 +4,7 @@ use App\Domains\PeopleConnector\Connector\Contracts\BootstrapsWorkforce;
 use App\Domains\PeopleConnector\Connector\Contracts\ProviderAdapter;
 use App\Domains\PeopleConnector\Connector\Contracts\ReadsWorkforceChanges;
 use App\Domains\PeopleConnector\Connector\Contracts\ReconcilesWorkforce;
+use App\Domains\PeopleConnector\Connector\Contracts\ResolvesProviderPorts;
 use App\Domains\PeopleConnector\Connector\Contracts\WorkforceSource;
 use App\Domains\PeopleConnector\Connector\Contracts\WritableProviderPort;
 use App\Domains\PeopleConnector\Connector\Data\CapabilityChannel;
@@ -40,7 +41,7 @@ interface TestEmployeeCommandPort extends WritableProviderPort {}
 
 function conformingPeopleProvider(string $id = 'test.provider', string $contract = '1.0.0'): ProviderAdapter
 {
-    return new class($id, $contract) implements ProviderAdapter
+    return new class($id, $contract) implements ProviderAdapter, ResolvesProviderPorts
     {
         private WorkforceSource $source;
 

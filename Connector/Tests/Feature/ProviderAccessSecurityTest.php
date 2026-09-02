@@ -2,33 +2,18 @@
 
 use App\Base\Authz\Contracts\AuthorizationService;
 use App\Base\Authz\DTO\Actor;
-use App\Base\Authz\DTO\AuthorizationDecision;
-use App\Base\Authz\DTO\ResourceContext;
-use App\Base\Authz\Enums\AuthorizationReasonCode;
 use App\Base\Authz\Enums\PrincipalType;
-use App\Base\Authz\Exceptions\AuthorizationDeniedException;
 use App\Base\Tenancy\Contracts\TenantContext;
-use App\Domains\PeopleConnector\Connector\Contracts\BootstrapsWorkforce;
-use App\Domains\PeopleConnector\Connector\Contracts\ProviderAdapter;
-use App\Domains\PeopleConnector\Connector\Data\CapabilityChannel;
-use App\Domains\PeopleConnector\Connector\Data\CapabilityDeclaration;
-use App\Domains\PeopleConnector\Connector\Data\CapabilitySet;
 use App\Domains\PeopleConnector\Connector\Data\ProviderAuthenticationRequest;
 use App\Domains\PeopleConnector\Connector\Data\ProviderCredential;
-use App\Domains\PeopleConnector\Connector\Data\ProviderDescriptor;
 use App\Domains\PeopleConnector\Connector\Data\ProviderScope;
 use App\Domains\PeopleConnector\Connector\Data\ProviderUiHandoff;
-use App\Domains\PeopleConnector\Connector\Enums\CapabilityDelivery;
-use App\Domains\PeopleConnector\Connector\Enums\PeopleCapability;
 use App\Domains\PeopleConnector\Connector\Exceptions\ProviderAuthenticationException;
-use App\Domains\PeopleConnector\Connector\Exceptions\ProviderAuthorizationException;
 use App\Domains\PeopleConnector\Connector\Models\PrivilegedSupportAction;
 use App\Domains\PeopleConnector\Connector\Models\ProviderCredentialRecord;
 use App\Domains\PeopleConnector\Connector\Services\PrivilegedSupportService;
-use App\Domains\PeopleConnector\Connector\Services\ProviderAccessAuthorizer;
 use App\Domains\PeopleConnector\Connector\Services\ProviderConnectionStore;
 use App\Domains\PeopleConnector\Connector\Services\ProviderCredentialStore;
-use Illuminate\Support\Collection;
 
 function peopleConnectorTestActor(int $tenantId = 1, int $companyId = 10, int $id = 20): Actor
 {
@@ -42,135 +27,6 @@ function peopleConnectorTestActivateConnection(int $tenantId, int $companyId, st
     $connection = $store->configure(ProviderScope::company($companyId), $providerId);
     $store->activate((int) $connection->id);
 }
-
-test('provider access authorizes the actor before resolving an adapter port', function (): void {
-    [$tenant, $company] = createTenantWithCompany(['name' => 'Access Tenant']);
-    peopleConnectorTestActivateConnection((int) $tenant->id, (int) $company->id, 'test.provider');
-    $authorization = new class implements AuthorizationService
-    {
-        public bool $called = false;
-
-        public function can(Actor $actor, string $capability, ?ResourceContext $resource = null, array $context = []): AuthorizationDecision
-        {
-            $this->called = true;
-
-            return AuthorizationDecision::allow();
-        }
-
-        public function authorize(Actor $actor, string $capability, ?ResourceContext $resource = null, array $context = []): void
-        {
-            $this->called = true;
-        }
-
-        public function filterAllowed(Actor $actor, string $capability, iterable $resources, array $context = []): Collection
-        {
-            return collect($resources);
-        }
-    };
-    app()->instance(AuthorizationService::class, $authorization);
-    $port = Mockery::mock(BootstrapsWorkforce::class);
-    $provider = Mockery::mock(ProviderAdapter::class);
-    $provider->shouldReceive('descriptor')->andReturn(new ProviderDescriptor(
-        'test.provider', 'Test Provider', '1.0.0', '1.0.0',
-    ));
-    $provider->shouldReceive('capabilities')->once()->andReturn(new CapabilitySet([
-        new CapabilityDeclaration(PeopleCapability::EmployeeDirectory, [
-            new CapabilityChannel(CapabilityDelivery::Synchronous, BootstrapsWorkforce::class),
-        ]),
-    ]));
-    $provider->shouldReceive('resolvePort')->once()->with(BootstrapsWorkforce::class)->andReturn($port);
-
-    $resolved = app(ProviderAccessAuthorizer::class)->read(
-        peopleConnectorTestActor((int) $tenant->id, (int) $company->id),
-        $provider,
-        PeopleCapability::EmployeeDirectory,
-        BootstrapsWorkforce::class,
-        ProviderScope::company((int) $company->id),
-    );
-
-    expect($resolved)->toBe($port)->and($authorization->called)->toBeTrue();
-});
-
-test('denied connector authorization never asks an adapter for capabilities or a port', function (): void {
-    [$tenant, $company] = createTenantWithCompany(['name' => 'Denied Access Tenant']);
-    peopleConnectorTestActivateConnection((int) $tenant->id, (int) $company->id, 'test.provider');
-    $authorization = new class implements AuthorizationService
-    {
-        public function can(Actor $actor, string $capability, ?ResourceContext $resource = null, array $context = []): AuthorizationDecision
-        {
-            return AuthorizationDecision::deny(AuthorizationReasonCode::DENIED_MISSING_CAPABILITY);
-        }
-
-        public function authorize(Actor $actor, string $capability, ?ResourceContext $resource = null, array $context = []): void
-        {
-            throw new AuthorizationDeniedException(
-                AuthorizationDecision::deny(AuthorizationReasonCode::DENIED_MISSING_CAPABILITY),
-            );
-        }
-
-        public function filterAllowed(Actor $actor, string $capability, iterable $resources, array $context = []): Collection
-        {
-            return collect();
-        }
-    };
-    app()->instance(AuthorizationService::class, $authorization);
-    $provider = Mockery::mock(ProviderAdapter::class);
-    $provider->shouldReceive('descriptor')->andReturn(new ProviderDescriptor(
-        'test.provider', 'Test Provider', '1.0.0', '1.0.0',
-    ));
-    $provider->shouldNotReceive('capabilities');
-    $provider->shouldNotReceive('resolvePort');
-
-    expect(fn () => app(ProviderAccessAuthorizer::class)->read(
-        peopleConnectorTestActor((int) $tenant->id, (int) $company->id),
-        $provider,
-        PeopleCapability::EmployeeDirectory,
-        BootstrapsWorkforce::class,
-        ProviderScope::company((int) $company->id),
-    ))->toThrow(AuthorizationDeniedException::class);
-});
-
-test('provider access rejects a cross-tenant or cross-company actor before authorization', function (): void {
-    app(TenantContext::class)->set(1);
-    $authorization = Mockery::mock(AuthorizationService::class);
-    $authorization->shouldNotReceive('authorize');
-    app()->instance(AuthorizationService::class, $authorization);
-
-    $provider = Mockery::mock(ProviderAdapter::class);
-    $provider->shouldReceive('descriptor')->andReturn(new ProviderDescriptor(
-        'test.provider', 'Test Provider', '1.0.0', '1.0.0',
-    ));
-
-    expect(fn () => app(ProviderAccessAuthorizer::class)->read(
-        peopleConnectorTestActor(tenantId: 2),
-        $provider,
-        PeopleCapability::EmployeeDirectory,
-        BootstrapsWorkforce::class,
-        ProviderScope::company(10),
-    ))->toThrow(ProviderAuthorizationException::class);
-});
-
-test('provider access rejects an installed adapter that is not active for the scope', function (): void {
-    [$tenant, $company] = createTenantWithCompany(['name' => 'Inactive Adapter Tenant']);
-    peopleConnectorTestActivateConnection((int) $tenant->id, (int) $company->id, 'other.provider');
-    $authorization = Mockery::mock(AuthorizationService::class);
-    $authorization->shouldNotReceive('authorize');
-    app()->instance(AuthorizationService::class, $authorization);
-
-    $provider = Mockery::mock(ProviderAdapter::class);
-    $provider->shouldReceive('descriptor')->andReturn(new ProviderDescriptor(
-        'test.provider', 'Test Provider', '1.0.0', '1.0.0',
-    ));
-    $provider->shouldNotReceive('capabilities');
-
-    expect(fn () => app(ProviderAccessAuthorizer::class)->read(
-        peopleConnectorTestActor((int) $tenant->id, (int) $company->id),
-        $provider,
-        PeopleCapability::EmployeeDirectory,
-        BootstrapsWorkforce::class,
-        ProviderScope::company((int) $company->id),
-    ))->toThrow(ProviderAuthorizationException::class);
-});
 
 test('credential claims contain rotation metadata but never a secret', function (): void {
     $issuedAt = new DateTimeImmutable('2026-09-02T00:00:00+00:00');
@@ -278,6 +134,79 @@ test('break-glass access requires a separate approver and records its actions', 
         ->and($action->context['capability'])->toBe('employee_directory:read')
         ->and(PrivilegedSupportAction::query()
             ->where('grant_id', $grant->id)->count())->toBe(2);
+});
+
+test('break-glass actions and revocation reject an unlisted actor or capability', function (): void {
+    [$tenant, $company] = createTenantWithCompany(['name' => 'Support Boundary Tenant']);
+    app(TenantContext::class)->set((int) $tenant->id);
+    $authorization = Mockery::mock(AuthorizationService::class);
+    $authorization->shouldReceive('authorize')->times(3)->andReturnNull();
+    app()->instance(AuthorizationService::class, $authorization);
+
+    $issuedAt = new DateTimeImmutable;
+    $service = app(PrivilegedSupportService::class);
+    $grant = $service->issue(
+        peopleConnectorTestActor((int) $tenant->id, (int) $company->id, 40),
+        peopleConnectorTestActor((int) $tenant->id, (int) $company->id, 41),
+        ProviderScope::company((int) $company->id),
+        ['employee_directory:read'],
+        'Reject unauthorized support mutations',
+        $issuedAt,
+        $issuedAt->modify('+15 minutes'),
+    );
+
+    expect(fn () => $service->recordAction(
+        $grant,
+        peopleConnectorTestActor((int) $tenant->id, (int) $company->id, 42),
+        'employee_directory:read',
+        'provider_health_read',
+        'completed',
+    ))->toThrow(ProviderAuthorizationException::class)
+        ->and(fn () => $service->recordAction(
+            $grant,
+            peopleConnectorTestActor((int) $tenant->id, (int) $company->id, 40),
+            'employee_directory:write',
+            'provider_write',
+            'completed',
+        ))->toThrow(ProviderAuthorizationException::class)
+        ->and(fn () => $service->revoke(
+            $grant,
+            peopleConnectorTestActor((int) $tenant->id, (int) $company->id, 42),
+        ))->toThrow(ProviderAuthorizationException::class)
+        ->and($grant->refresh()->revoked_at)->toBeNull();
+});
+
+test('break-glass action records resist builder updates and deletes', function (): void {
+    [$tenant, $company] = createTenantWithCompany(['name' => 'Support Immutability Tenant']);
+    app(TenantContext::class)->set((int) $tenant->id);
+    $authorization = Mockery::mock(AuthorizationService::class);
+    $authorization->shouldReceive('authorize')->times(3)->andReturnNull();
+    app()->instance(AuthorizationService::class, $authorization);
+
+    $issuedAt = new DateTimeImmutable;
+    $service = app(PrivilegedSupportService::class);
+    $grant = $service->issue(
+        peopleConnectorTestActor((int) $tenant->id, (int) $company->id, 50),
+        peopleConnectorTestActor((int) $tenant->id, (int) $company->id, 51),
+        ProviderScope::company((int) $company->id),
+        ['employee_directory:read'],
+        'Prove append-only support evidence',
+        $issuedAt,
+        $issuedAt->modify('+15 minutes'),
+    );
+    $action = $service->recordAction(
+        $grant,
+        peopleConnectorTestActor((int) $tenant->id, (int) $company->id, 50),
+        'employee_directory:read',
+        'provider_health_read',
+        'completed',
+    );
+
+    expect(fn () => PrivilegedSupportAction::query()->whereKey($action->id)->update(['outcome' => 'tampered']))
+        ->toThrow(Throwable::class)
+        ->and(fn () => PrivilegedSupportAction::query()->whereKey($action->id)->delete())
+        ->toThrow(Throwable::class)
+        ->and(PrivilegedSupportAction::query()->findOrFail($action->id)->outcome)->toBe('completed');
 });
 
 test('expired break-glass access cannot record a provider action', function (): void {

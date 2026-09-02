@@ -9,6 +9,7 @@ use App\Base\Tenancy\Contracts\TenantContext;
 use App\Domains\PeopleConnector\Connector\Contracts\ProviderAdapter;
 use App\Domains\PeopleConnector\Connector\Contracts\ProviderPort;
 use App\Domains\PeopleConnector\Connector\Contracts\ReadableProviderPort;
+use App\Domains\PeopleConnector\Connector\Contracts\ResolvesProviderPorts;
 use App\Domains\PeopleConnector\Connector\Contracts\WritableProviderPort;
 use App\Domains\PeopleConnector\Connector\Data\ProviderScope;
 use App\Domains\PeopleConnector\Connector\Enums\PeopleCapability;
@@ -178,6 +179,15 @@ final class ProviderPortResolver
                 providerId: $descriptor->id,
                 operation: "resolve_{$direction}_port",
                 message: "Provider '{$descriptor->id}' does not support {$direction} access for capability '{$capability->value}' through {$contract}.",
+                context: $context,
+            );
+        }
+
+        if (! $provider instanceof ResolvesProviderPorts) {
+            throw new ProviderCompatibilityException(
+                providerId: $descriptor->id,
+                operation: "resolve_{$direction}_port",
+                message: "Provider '{$descriptor->id}' declares {$contract} but exposes no authorized port resolver.",
                 context: $context,
             );
         }

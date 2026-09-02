@@ -6,6 +6,7 @@ use App\Domains\PeopleConnector\Connector\Contracts\BootstrapsWorkforce;
 use App\Domains\PeopleConnector\Connector\Contracts\ProviderAdapter;
 use App\Domains\PeopleConnector\Connector\Contracts\ReadsWorkforceChanges;
 use App\Domains\PeopleConnector\Connector\Contracts\ReconcilesWorkforce;
+use App\Domains\PeopleConnector\Connector\Contracts\ResolvesProviderPorts;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceChangeRequest;
 use App\Domains\PeopleConnector\Connector\Data\WorkforcePageRequest;
 
@@ -31,6 +32,12 @@ final class ProviderConformance
         }
 
         $ports = [];
+        if (! $provider instanceof ResolvesProviderPorts) {
+            $violations[] = 'provider_port_resolver_missing';
+
+            return $violations;
+        }
+
         foreach ($provider->capabilities()->all() as $declaration) {
             foreach ($declaration->portContracts() as $contract) {
                 if (isset($ports[$contract])) {
