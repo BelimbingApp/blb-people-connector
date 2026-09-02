@@ -61,7 +61,6 @@ class RequirementProfile extends TenantOwnedModel
         ];
     }
 
-
     public function isLocked(): bool
     {
         return $this->status !== RequirementProfileStatus::Draft;
