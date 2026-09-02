@@ -29,6 +29,18 @@ final readonly class ProviderPortAuthorization
         public DateTimeImmutable $expiresAt,
     ) {}
 
+    /**
+     * Every distinct capability gets its own permission name, per the HR data
+     * boundary's rule 7.3: a role holds access only through a permission that
+     * names the capability. A single 'provider.read'/'provider.write' grant
+     * must never stand in for all twelve — that shape was found to let any
+     * directory-read role read Payroll or Documents through the same check.
+     */
+    public static function permissionFor(PeopleCapability $capability, string $direction): string
+    {
+        return "people-connector.provider.{$direction}.{$capability->value}";
+    }
+
     public static function authorize(
         AuthorizationService $authorization,
         TenantContext $tenantContext,
@@ -36,7 +48,6 @@ final readonly class ProviderPortAuthorization
         Actor $actor,
         ProviderAdapter $provider,
         ProviderScope $scope,
-        string $permission,
         PeopleCapability $capability,
         string $contract,
         string $direction,
@@ -47,14 +58,15 @@ final readonly class ProviderPortAuthorization
 
         if (($direction === 'read' && ! is_a($contract, ReadableProviderPort::class, true))
             || ($direction === 'write' && ! is_a($contract, WritableProviderPort::class, true))
-            || ! in_array($direction, ['read', 'write'], true)
-            || $permission !== 'people-connector.provider.'.($direction === 'read' ? 'read' : 'write')) {
+            || ! in_array($direction, ['read', 'write'], true)) {
             throw new ProviderAuthorizationException(
                 providerId: $descriptor->id,
                 operation: 'authorize_provider_access',
                 message: 'Provider port authorization evidence has an invalid direction or contract.',
             );
         }
+
+        $permission = self::permissionFor($capability, $direction);
 
         if ($actor->validate() !== null
             || $actor->tenantId !== $tenantId
