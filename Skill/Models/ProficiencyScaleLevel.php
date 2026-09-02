@@ -5,7 +5,6 @@ namespace App\Domains\PeopleConnector\Skill\Models;
 use App\Domains\PeopleConnector\Connector\Models\Concerns\CompanyOwned;
 use App\Domains\PeopleConnector\Connector\Models\TenantOwnedModel;
 use App\Domains\PeopleConnector\Skill\Exceptions\PublishedScaleImmutableException;
-use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 /**
  * One behavioural anchor on a proficiency scale. `anchor` describes the
@@ -42,7 +41,7 @@ class ProficiencyScaleLevel extends TenantOwnedModel
     protected static function booted(): void
     {
         $guard = function (ProficiencyScaleLevel $level): void {
-            $scale = $level->scale()->first();
+            $scale = $level->owningScale();
 
             if ($scale !== null && $scale->isLocked()) {
                 throw new PublishedScaleImmutableException(
@@ -57,20 +56,26 @@ class ProficiencyScaleLevel extends TenantOwnedModel
     }
 
     /**
-     * The escape is needed because a belongsTo constrains the parent's primary
-     * key, which is not ProficiencyScale's company column. It is safe for the
-     * relation as written: the level came from a query pinned to one scale,
-     * and this walks back to that same scale.
+     * The owning scale, as a model — deliberately not a relation.
      *
-     * The escape covers whatever a caller appends to this relation, including
-     * an unbracketed orWhere. Do not append one.
+     * A level carries `scale_id` and nothing else that names a company, so
+     * walking back to the scale genuinely cannot be pinned from here: the
+     * escape is unavoidable. What *was* avoidable is handing the escaped
+     * builder to a caller. As a belongsTo relation this returned a live query
+     * with the guard switched off, and anything appended to it inherited that
+     * — `$level->scale()->orWhere(...)` read and wrote another company's
+     * scale.
      *
-     * @return BelongsTo<ProficiencyScale, $this>
+     * So the escape stays where it is genuinely needed and the builder does
+     * not leave this method. It is private, it is consumed in the same
+     * expression, and it returns a model, so there is nothing to append to.
      */
-    public function scale(): BelongsTo
+    private function owningScale(): ?ProficiencyScale
     {
-        return $this->belongsTo(ProficiencyScale::class, 'scale_id')
-            ->withoutCompanyScope('Constrains the scale primary key, which is not its company column; the level came from a query already pinned to that scale.');
+        return ProficiencyScale::query()
+            ->withoutCompanyScope('A level names its scale only by the scale primary key, which is not the scale company column; the level itself was reached through a query already pinned to that scale.')
+            ->whereKey($this->scale_id)
+            ->first();
     }
 
     public function getAuditSubject(): ?array

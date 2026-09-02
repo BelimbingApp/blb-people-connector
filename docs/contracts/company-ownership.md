@@ -183,6 +183,33 @@ relation, and an unbracketed `orWhere` appended to one will read and write past
 the company. Prefer pinning explicitly over reaching for the escape, and put it
 as close to the query that needs it as you can.
 
+That is not a hypothetical, and writing the warning down did not stop it. Three
+relations carried an escape with a warning exactly like this one attached, and
+all three were exploitable as written:
+
+```php
+$alphaCategory->skills()->orWhere('id', $betaSkillId)->get();
+// where category_id = ? and category_id is not null or id = ?
+```
+
+That SQL pins no company. It also pins no tenant, because `skills()` was a
+plain `hasMany` on `category_id` and `TenantOwnedModel` carries no global
+tenant scope — so one appended `orWhere` reached any skill id in **any**
+tenant, and the same predicate with `->update()` and `->delete()` defaced and
+then removed the row.
+
+So there is a rule about where an escape may live, and it is structural rather
+than advisory:
+
+> **Never return an escaped builder to a caller.** Build it and consume it in
+> the same expression, and return a value or a model — something with nothing
+> to append to. If what you want to hand back is a query, the escape is in the
+> wrong place.
+
+The escapes that remain all satisfy that: each is a builder created and
+finished inside one method, and the reason on each is true of the finished
+query rather than of a query somebody else will go on to extend.
+
 The reason string is required and is not decorative. `grep -rn
 withoutCompanyScope` lists every place in the repository where the company
 boundary is deliberately not applied, together with the author's stated
@@ -237,6 +264,23 @@ that was reproduced end to end against an earlier version of this guard.
 4. **Not the base table's own primary key.** Addressing a row by its `id`
    proves the caller knows an id, not that the caller may have it — and a
    leaked id is the second half of the reproduced exploit.
+5. **The query must be one SELECT.** A `union()` or `unionAll()` arm is a
+   second SELECT that this guard never inspects — it reads `wheres`, `from`
+   and `joins`, and Laravel keeps union arms somewhere else entirely. So
+   pinning the base did nothing at all to the arm:
+
+   ```php
+   Skill::query()->forCompany($tenantId, $alpha)
+       ->union(fn ($q) => $q->from('people_connector_skill_skills'))
+       ->get();
+   ```
+
+   returned the sibling company's row *and another tenant's row*, hydrated as
+   `Skill`, and the query reported itself compliant. Ordinary Eloquent — no
+   `DB::` facade, no raw SQL. A query carrying a union is now refused
+   outright, for the same reason `fromSub()` and `fromRaw()` are: it reads
+   like it is still inside the guarded model and it is not. Run the arms as
+   separate pinned queries and merge the results.
 
 Point 4 is about the row's *own* key. A **parent's** key is different, and
 that is what a Class D table pins on: ownership genuinely lives on the parent,
@@ -248,9 +292,24 @@ guard-compliant and returns that scale's levels whoever owns it. What the guard
 buys there is that you cannot sweep the tenant's levels — you have to name one
 scale. Who may name which scale is authorization, below.
 
-When a relationship must traverse into a company-owned model by primary key (a
-skill reaching its category, a level reaching its scale), the relationship says
-so explicitly with `withoutCompanyScope()` and states why it is safe.
+When a relationship traverses into a company-owned model by primary key, that
+relationship does **not** satisfy the guard, and the answer is no longer to
+switch the guard off for it:
+
+- `SkillCategory::skills()` is deleted. It constrained `category_id`, which is
+  not Skill's company column, so it could only run with an escape. Callers get
+  `skillCount()` and `hasActiveSkills()` instead — both pinned to the
+  category's own tenant and company, both returning a value. Code that wants
+  the rows writes the pinned query where it needs it.
+- `Skill::category()` keeps the relation and drops the escape. The honest cost
+  is that lazy `$skill->category` now throws; load it with the company pinned,
+  which every caller can do because every caller already knows the company it
+  is acting for:
+  `->with(['category' => fn ($q) => $q->forCompany($tenantId, $companyEntityId)])`.
+- `ProficiencyScaleLevel::scale()` becomes a private `owningScale()` returning
+  a model. A level names its scale only by the scale's primary key, so the
+  escape there is genuinely unavoidable — but it now lives inside one method
+  and never hands a builder out.
 
 **A correlation to an enclosing query also counts as a pin**, and getting that
 right removed an escape rather than adding one. `has()`, `whereHas()`,
@@ -268,9 +327,49 @@ reviewer read *and wrote* a sibling company's level through an appended
 
 The rule: a `Column` predicate pins the query when the query has **no joins at
 all**, one side is an owning column on the base table, and the other side is
-qualified with something that is not the base table. That is the same strength
-as pinning to one literal parent id, because it binds each row to exactly one
-row of the enclosing query.
+qualified with something that is not the base table. It binds each row of this
+query to exactly one row of the enclosing query.
+
+**What that is worth depends entirely on the enclosing query, and the rule
+cannot check it.** An earlier version of this paragraph claimed the correlation
+had "the same strength as pinning to one literal parent id". That is true only
+when the enclosing query is itself pinned to one company — which is the case
+the rule was written for, `has()` / `whereHas()` / `withCount()` on a
+company-owned parent, because that parent carries the guard and therefore had
+to be pinned before it could run at all.
+
+It is not true when the outer query is unguarded. `workforce_entities` is Class
+T by design, so:
+
+```php
+WorkforceEntity::query()->forTenant($tenantId)
+    ->addSelect(['skill_name' => Skill::query()->select('name')
+        ->whereColumn('company_entity_id', 'people_connector_connector_workforce_entities.id')
+        ->limit(1)])
+    ->get();
+```
+
+reads a skill name for *every* company entity in the tenant, with no escape and
+no join anywhere. The correlation did its job — one inner row per outer row —
+and the outer row set was the whole tenant. Before the correlation rule existed
+this was refused, so the rule genuinely widened what runs.
+
+That was accepted rather than reverted, because the alternative is worse. The
+guard sees one query at a time; a subquery holds no reference to the query that
+encloses it, so there is nothing for the rule to inspect. Refusing every
+correlation puts `withCount('levels')` out of reach from a properly pinned
+parent, and **a guard that has to be switched off to do ordinary work gets
+switched off** — the failure this whole section is about. So the rule stays and
+the promise is corrected instead:
+
+> A correlation inherits the enclosing query's scoping. It cannot add any. If
+> the outer query spans companies, so does the correlated read, and the guard
+> will not say so.
+
+Practically: when you correlate a company-owned subquery into a Class T outer
+query, pin the outer one yourself — `forCompany()` on a company-owned outer, or
+an explicit company predicate on a Class T outer. A correlation is not a
+substitute for scoping the query you are writing.
 
 The no-join condition is the whole safety argument, not a detail. A
 column-to-column predicate against a table this query can see is a join
@@ -368,6 +467,13 @@ Being honest about the edges:
   what an unqualified column refers to. That is a deliberate failure rather
   than a gap, because `Skill::query()->fromSub(…)` reads to an author like it
   is still inside the guarded model.
+- **A union.** `union()` and `unionAll()` are refused on the same grounds: the
+  arm is a separate SELECT the guard never inspects, so a pinned base says
+  nothing whatever about what the arm returns.
+- **A correlated subquery whose enclosing query is not itself pinned.** The
+  correlation rule below binds each inner row to one outer row; it inherits
+  the outer query's scoping and cannot add any. Read from an unguarded Class T
+  outer, that is no company boundary at all. Stated in full under the rule.
 - **Class D tables in the Connector module.** They are classified above but
   their models do not yet carry the trait, because adopting it there means
   changing the identity, checkpoint, and reconciliation stores while those are
@@ -424,6 +530,27 @@ forces good-faith authors into the escape hatch is a guard that gets routed
 around — with its companion asserting that an `orWhere` appended to that same
 relation is still refused, for both reads and writes.
 
+The relation escapes and the union hole have their own regressions, written
+against a fixture that holds two companies in one tenant **and** a second
+tenant, because both attacks crossed both axes:
+
+- the appended `orWhere`, as a read, an `update()` and a `delete()`, with the
+  sibling company's row and the other tenant's row checked afterwards for name
+  and existence;
+- `$category->skills()` and `$level->scale()` raising `BadMethodCallException`,
+  so the attack fails at the language level rather than by instruction;
+- `skillCount()` ignoring a cross-company skill written straight through
+  `Skill::create()`, which is exactly the row the old relation would have
+  surfaced;
+- lazy `$skill->category` refusing, and the pinned eager load working;
+- six union variants — `union`, `unionAll`, an unpinned base, an arm that is a
+  pinned Eloquent builder for the sibling company, a Class D base, and the
+  aggregate path — all refused, with the sibling and cross-tenant rows checked
+  intact;
+- the Class D exception message naming `scale_id` and no longer sending its
+  reader to `forCompany()`, which raised a `LogicException` telling them not to
+  call it.
+
 The same class provides `twoCompaniesInOneTenant()` — the fixture the
 repository never had, provisioned the way an adapter will: workforce entity,
 external identity, company projection, one platform company each.
@@ -444,7 +571,10 @@ original cases fail, and the rename step succeeds exactly as the reviewer
 reproduced it. With the guard alone removed — the interim convention, without
 the mechanism — eleven still fail. Restoring the guard's two original
 weaknesses, the loose column qualifier and the accepted raw expression, fails
-the three bypass tests and nothing else.
+the three bypass tests and nothing else. Putting the escape back on
+`SkillCategory::skills()`, `Skill::category()` or
+`ProficiencyScaleLevel::scale()` fails the relation regressions; deleting the
+three-line union refusal fails the union regression.
 
 ---
 

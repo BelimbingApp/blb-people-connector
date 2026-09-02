@@ -269,11 +269,20 @@ class Index extends Component
             ->get();
     }
 
+    /**
+     * Skill::category() carries no escape, so the eager load has to pin the
+     * company itself — which costs nothing here, because this method was
+     * handed the company it is allowed to act for. A category belonging to
+     * anyone else simply does not load, and the view renders a blank cell
+     * rather than another company's category name.
+     */
     private function skills(int $companyEntityId)
     {
+        $tenantId = app(TenantContext::class)->requireTenantId();
+
         return Skill::query()
-            ->forCompany(app(TenantContext::class)->requireTenantId(), $companyEntityId)
-            ->with('category')
+            ->forCompany($tenantId, $companyEntityId)
+            ->with(['category' => fn ($query) => $query->forCompany($tenantId, $companyEntityId)])
             ->orderBy('code')
             ->get();
     }

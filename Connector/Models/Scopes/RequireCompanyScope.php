@@ -38,8 +38,23 @@ final class RequireCompanyScope implements Scope
             throw MissingCompanyScopeException::forDerivedTable($model::class);
         }
 
+        // A union is a second SELECT this scope never sees. Laravel keeps the
+        // arms in $query->unions and compiles them alongside the base, so
+        // Skill::query()->forCompany(...)->union(fn ($q) => $q->from($skills))
+        // pinned the base perfectly and still returned — hydrated as Skill —
+        // every other company's rows and every other tenant's rows. Refused
+        // for the same reason fromSub() and fromRaw() are: the query looks
+        // like it is still inside the guarded model and is not.
+        if (($query->unions ?? []) !== []) {
+            throw MissingCompanyScopeException::forUnion($model::class);
+        }
+
         if ($columns === [] || ! $this->pinsACompany($query, $columns, $baseTables)) {
-            throw MissingCompanyScopeException::for($model::class, $columns);
+            throw MissingCompanyScopeException::for(
+                $model::class,
+                $columns,
+                forCompanyIsAvailable: $model->companyOwnerColumn() !== null,
+            );
         }
     }
 
@@ -103,9 +118,19 @@ final class RequireCompanyScope implements Scope
     }
 
     /**
-     * A correlated subquery pins each row to exactly one row of an enclosing
-     * query, which is the same strength as pinning to one literal parent id —
-     * so it counts.
+     * A correlated subquery pins each row of this query to exactly one row of
+     * an enclosing query — so it counts.
+     *
+     * Read the promise carefully, because an earlier version of this comment
+     * over-claimed it. The correlation is as strong as the enclosing query's
+     * own scoping and no stronger: it *inherits* a boundary, it does not
+     * create one. From a parent that is itself company-owned — which is the
+     * case this rule exists for — the parent could not have run without being
+     * pinned, so the correlation is as good as a literal parent id. From an
+     * unguarded Class T outer such as WorkforceEntity it is worth nothing, and
+     * a correlated addSelect will read every company in the tenant. The guard
+     * cannot see the enclosing query, so it cannot tell the two apart; the
+     * contract states the limit rather than pretending it is absent.
      *
      * This is what makes has(), whereHas(), withCount() and doesntHave() usable
      * on a company-owned model. Laravel links those to the parent with a

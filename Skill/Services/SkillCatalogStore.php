@@ -133,7 +133,11 @@ class SkillCatalogStore
     {
         $skill = $this->requireSkill($companyEntityId, $skillId);
 
-        if (! $skill->category()->first()?->active) {
+        $category = SkillCategory::query()
+            ->forCompany((int) $skill->tenant_id, $companyEntityId)
+            ->find($skill->category_id);
+
+        if (! $category?->active) {
             throw new InvalidSkillCatalogException('Reactivate the skill category before reactivating its skills.');
         }
 
@@ -149,7 +153,7 @@ class SkillCatalogStore
     {
         $category = $this->requireCategory($companyEntityId, $categoryId);
 
-        if ($category->skills()->where('active', true)->exists()) {
+        if ($category->hasActiveSkills()) {
             throw new InvalidSkillCatalogException(
                 "Skill category [{$category->code}] still has active skills; deactivate or recategorize them first.",
             );

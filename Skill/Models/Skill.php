@@ -45,21 +45,30 @@ class Skill extends TenantOwnedModel
     }
 
     /**
-     * The escape is needed because a belongsTo constrains the parent's primary
-     * key, which is not SkillCategory's company column. It is safe for the
-     * relation as written: the skill was resolved for its company, and the
-     * store refuses a category_id from any other one — though the database
-     * does not, since the key is (category_id, tenant_id).
+     * No escape here, deliberately.
      *
-     * The escape covers whatever a caller appends to this relation, including
-     * an unbracketed orWhere. Do not append one.
+     * A belongsTo constrains the parent's primary key, which is not
+     * SkillCategory's company column, so this relation does not satisfy the
+     * guard on its own. It used to carry an escape saying so — but an escape
+     * covers the whole query including whatever a caller appends, and
+     * `$skill->category()->orWhere('id', $otherId)` therefore read and wrote
+     * another company's category. Leaving the guard on turns that into a
+     * refusal.
+     *
+     * The cost, stated plainly: **lazy `$skill->category` throws.** Load it
+     * with the company pinned instead, which every caller can do because every
+     * caller already knows the company it is acting for:
+     *
+     *     Skill::query()->forCompany($tenantId, $companyEntityId)
+     *         ->with(['category' => fn ($q) => $q->forCompany($tenantId, $companyEntityId)])
+     *
+     * That is one line longer and it cannot silently cross the boundary.
      *
      * @return BelongsTo<SkillCategory, $this>
      */
     public function category(): BelongsTo
     {
-        return $this->belongsTo(SkillCategory::class, 'category_id')
-            ->withoutCompanyScope('Constrains the category primary key, which is not its company column; the skill was resolved for its company and the store refuses a category from another one.');
+        return $this->belongsTo(SkillCategory::class, 'category_id');
     }
 
     public function isCritical(): bool

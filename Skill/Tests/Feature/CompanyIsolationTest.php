@@ -8,12 +8,14 @@ use App\Domains\PeopleConnector\Skill\Data\ProficiencyLevelDraft;
 use App\Domains\PeopleConnector\Skill\Data\SkillDraft;
 use App\Domains\PeopleConnector\Skill\Enums\AssessmentMethod;
 use App\Domains\PeopleConnector\Skill\Enums\SkillScope;
+use App\Domains\PeopleConnector\Skill\Exceptions\PublishedScaleImmutableException;
 use App\Domains\PeopleConnector\Skill\Models\ProficiencyScale;
 use App\Domains\PeopleConnector\Skill\Models\ProficiencyScaleLevel;
 use App\Domains\PeopleConnector\Skill\Models\Skill;
 use App\Domains\PeopleConnector\Skill\Models\SkillCategory;
 use App\Domains\PeopleConnector\Skill\Services\ProficiencyScaleStore;
 use App\Domains\PeopleConnector\Skill\Services\SkillCatalogStore;
+use Illuminate\Support\Facades\DB;
 
 /**
  * The test that would have caught it. Every isolation test in this repository
@@ -207,4 +209,231 @@ test('an appended orWhere on a relation cannot read or write past the parent', f
     expect(ProficiencyScaleLevel::query()->where('scale_id', $betaScale->id)->pluck('name')->all())
         ->toBe(['Not trained', 'Competent'])
         ->and($alphaScale->levels()->count())->toBe(2);
+});
+
+/**
+ * Two companies in one tenant, plus a whole second tenant, with one skill each.
+ * The appended-orWhere and union attacks both reach across *both* axes, so a
+ * fixture that stops at the company boundary would under-report them.
+ *
+ * @return array{0: TwoCompanyTenant, 1: SkillCategory, 2: Skill, 3: SkillCategory, 4: Skill, 5: Skill}
+ */
+function companyIsolationCatalogs(): array
+{
+    $fixture = companyIsolationTenant();
+    $catalog = app(SkillCatalogStore::class);
+
+    $alphaCategory = $catalog->defineCategory($fixture->alphaCompanyEntityId, 'safety', 'Alpha Safety');
+    $alphaSkill = $catalog->defineSkill(
+        $fixture->alphaCompanyEntityId,
+        companyIsolationSkillDraft((int) $alphaCategory->id, 'alpha.lockout', 'Alpha Lockout'),
+    );
+
+    $betaCategory = $catalog->defineCategory($fixture->betaCompanyEntityId, 'process', 'Beta Process');
+    $betaSkill = $catalog->defineSkill(
+        $fixture->betaCompanyEntityId,
+        companyIsolationSkillDraft((int) $betaCategory->id, 'beta.secret.process', 'Beta Secret Process'),
+    );
+
+    // A second tenant entirely. `skills()` was a plain hasMany on category_id
+    // and TenantOwnedModel carries no global tenant scope, so the SQL the
+    // relation emitted had no tenant_id predicate at all.
+    app(TenantContext::class)->clear();
+    $other = CompanyIsolationContract::twoCompaniesInOneTenant('Gamma Ltd', 'Delta Ltd');
+    app(TenantContext::class)->set($other->tenantId);
+    $gammaCategory = $catalog->defineCategory($other->alphaCompanyEntityId, 'safety', 'Gamma Safety');
+    $gammaSkill = $catalog->defineSkill(
+        $other->alphaCompanyEntityId,
+        companyIsolationSkillDraft((int) $gammaCategory->id, 'gamma.secret', 'Gamma Secret'),
+    );
+    app(TenantContext::class)->clear();
+    app(TenantContext::class)->set($fixture->tenantId);
+
+    return [$fixture, $alphaCategory, $alphaSkill, $betaCategory, $betaSkill, $gammaSkill];
+}
+
+test('a category hands out no skills builder for a caller to widen', function (): void {
+    [$fixture, $alphaCategory, $alphaSkill, , $betaSkill, $gammaSkill] = companyIsolationCatalogs();
+
+    // SkillCategory::skills() carried withoutCompanyScope(), and an escape
+    // covers whatever a caller appends. The emitted SQL was
+    //   where category_id = ? and category_id is not null or id = ?
+    // which pins neither company nor tenant, so this read, updated and deleted
+    // both a sibling company's row and another tenant's row. The relation is
+    // gone, so the attack no longer type-checks.
+    expect(fn () => $alphaCategory->skills())->toThrow(BadMethodCallException::class)
+        ->and(method_exists($alphaCategory, 'skills'))->toBeFalse();
+
+    // The same predicate written out by hand is refused by the guard's first
+    // rule instead: a top-level orWhere disqualifies the query.
+    $attack = fn () => Skill::query()
+        ->forCompany($fixture->tenantId, $fixture->alphaCompanyEntityId)
+        ->where('category_id', $alphaCategory->id)
+        ->orWhere('id', $betaSkill->id)
+        ->orWhere('id', $gammaSkill->id);
+
+    expect(fn () => $attack()->get())->toThrow(MissingCompanyScopeException::class)
+        ->and(fn () => $attack()->update(['name' => 'DEFACED BY ALPHA']))->toThrow(MissingCompanyScopeException::class)
+        ->and(fn () => $attack()->delete())->toThrow(MissingCompanyScopeException::class);
+
+    // Nothing was read, renamed or removed on either axis.
+    expect(DB::table('people_connector_skill_skills')->where('id', $betaSkill->id)->value('name'))
+        ->toBe('Beta Secret Process')
+        ->and(DB::table('people_connector_skill_skills')->where('id', $gammaSkill->id)->value('name'))
+        ->toBe('Gamma Secret')
+        ->and(DB::table('people_connector_skill_skills')->count())->toBe(3)
+        ->and($alphaSkill->refresh()->name)->toBe('Alpha Lockout');
+});
+
+test('what replaced the relation counts only the category own company skills', function (): void {
+    [$fixture, $alphaCategory] = companyIsolationCatalogs();
+
+    expect($alphaCategory->skillCount())->toBe(1)
+        ->and($alphaCategory->hasActiveSkills())->toBeTrue();
+
+    // A cross-company link is possible: Model::create() builds its insert
+    // without scopes, and skills.category_id is keyed on (category_id,
+    // tenant_id) rather than on the company. The store refuses this; the
+    // database does not. The old relation constrained category_id alone, so it
+    // would have surfaced this row. The replacements pin the company too.
+    Skill::query()->create([
+        'tenant_id' => $fixture->tenantId,
+        'company_entity_id' => $fixture->betaCompanyEntityId,
+        'category_id' => $alphaCategory->id,
+        'code' => 'beta.smuggled',
+        'name' => 'Beta Smuggled',
+        'definition' => 'Written past the store on purpose.',
+        'scope' => 'shared',
+        'default_assessment_method' => 'direct_observation',
+        'active' => true,
+    ]);
+
+    expect($alphaCategory->skillCount())->toBe(1)
+        ->and(Skill::query()->forCompany($fixture->tenantId, $fixture->betaCompanyEntityId)
+            ->where('category_id', $alphaCategory->id)->count())->toBe(1);
+});
+
+test('a level hands out no scale builder for a caller to widen', function (): void {
+    $fixture = companyIsolationTenant();
+    $scales = app(ProficiencyScaleStore::class);
+
+    $alphaScale = $scales->draft($fixture->alphaCompanyEntityId, 'standard', 'Alpha Standard', companyIsolationLevels());
+    $betaScale = $scales->draft($fixture->betaCompanyEntityId, 'standard', 'Beta Standard', companyIsolationLevels());
+    $alphaLevel = ProficiencyScaleLevel::query()->where('scale_id', $alphaScale->id)->firstOrFail();
+
+    // scale() was a belongsTo carrying withoutCompanyScope(), so
+    // $level->scale()->orWhere(...) read and wrote the sibling company's
+    // scale. The escape is genuinely unavoidable — a level names its scale
+    // only by primary key — so it survives, but behind a private method
+    // returning a model. There is no builder to append to.
+    expect(fn () => $alphaLevel->scale())->toThrow(BadMethodCallException::class)
+        ->and((new ReflectionClass(ProficiencyScaleLevel::class))->getMethod('owningScale')->isPrivate())
+        ->toBeTrue();
+
+    // And the immutability check that method exists for still works.
+    $scales->publish($fixture->alphaCompanyEntityId, (int) $alphaScale->id);
+    expect(fn () => ProficiencyScaleLevel::query()
+        ->where('scale_id', $alphaScale->id)
+        ->where('level', 1)
+        ->firstOrFail()
+        ->update(['name' => 'Renamed after publication']))
+        ->toThrow(PublishedScaleImmutableException::class);
+
+    expect(DB::table('people_connector_skill_proficiency_scales')->where('id', $betaScale->id)->value('name'))
+        ->toBe('Beta Standard');
+});
+
+test('a skill category cannot be lazily loaded across the company boundary', function (): void {
+    [$fixture, $alphaCategory, $alphaSkill] = companyIsolationCatalogs();
+
+    // Removing the escape from Skill::category() has one honest cost: a lazy
+    // load no longer satisfies the guard, because a belongsTo constrains the
+    // parent primary key and that is not the category company column. It
+    // refuses rather than reading whatever the key points at.
+    expect(fn () => $alphaSkill->fresh()->category)->toThrow(MissingCompanyScopeException::class);
+
+    // The pinned eager load is what callers use instead, and it costs them
+    // nothing because they already know their company.
+    $tenantId = $fixture->tenantId;
+    $company = $fixture->alphaCompanyEntityId;
+
+    $loaded = Skill::query()
+        ->forCompany($tenantId, $company)
+        ->with(['category' => fn ($query) => $query->forCompany($tenantId, $company)])
+        ->get();
+
+    expect($loaded)->toHaveCount(1)
+        ->and($loaded->first()->category?->name)->toBe('Alpha Safety')
+        ->and($alphaCategory->refresh()->name)->toBe('Alpha Safety');
+});
+
+test('a union cannot smuggle a second select past the guard', function (): void {
+    [$fixture, , , , $betaSkill, $gammaSkill] = companyIsolationCatalogs();
+    $skills = (new Skill)->getTable();
+    $levels = (new ProficiencyScaleLevel)->getTable();
+
+    // The guard read wheres, from and joins, and never unions. A union arm is
+    // a separate SELECT, so pinning the base did nothing to it: this returned
+    // the sibling company's row AND the other tenant's row, hydrated as Skill,
+    // and reported itself compliant. Ordinary Eloquent — no DB:: facade, no
+    // raw SQL.
+    $pinned = fn () => Skill::query()->forCompany($fixture->tenantId, $fixture->alphaCompanyEntityId);
+
+    expect(fn () => $pinned()->union(fn ($query) => $query->from($skills))->get())
+        ->toThrow(MissingCompanyScopeException::class, 'carries a union')
+        ->and(fn () => $pinned()->unionAll(fn ($query) => $query->from($skills))->get())
+        ->toThrow(MissingCompanyScopeException::class, 'carries a union')
+        ->and(fn () => $pinned()->union(fn ($query) => $query->from($skills))->count())
+        ->toThrow(MissingCompanyScopeException::class, 'carries a union')
+        ->and(fn () => $pinned()->union(fn ($query) => $query->from($skills))->first())
+        ->toThrow(MissingCompanyScopeException::class, 'carries a union');
+
+    // An unpinned base with a union arm, and an arm that is itself a pinned
+    // Eloquent builder for the sibling company — refused either way, because
+    // the guard cannot vouch for an arm it never inspects.
+    expect(fn () => Skill::query()->union(fn ($query) => $query->from($skills))->get())
+        ->toThrow(MissingCompanyScopeException::class)
+        ->and(fn () => $pinned()->union(
+            Skill::query()->forCompany($fixture->tenantId, $fixture->betaCompanyEntityId),
+        )->get())->toThrow(MissingCompanyScopeException::class, 'carries a union');
+
+    // Class D is guarded on the same rule.
+    expect(fn () => ProficiencyScaleLevel::query()
+        ->where('scale_id', 1)
+        ->union(fn ($query) => $query->from($levels))
+        ->get())->toThrow(MissingCompanyScopeException::class, 'carries a union');
+
+    expect(Skill::query()->forCompany($fixture->tenantId, $fixture->alphaCompanyEntityId)->pluck('code')->all())
+        ->toBe(['alpha.lockout'])
+        ->and(DB::table('people_connector_skill_skills')->whereIn('id', [$betaSkill->id, $gammaSkill->id])->count())
+        ->toBe(2);
+});
+
+test('the guidance a Class D author is given does not contradict itself', function (): void {
+    $fixture = companyIsolationTenant();
+
+    // The message used to say "Use forCompany($tenantId, $companyEntityId)",
+    // and doing exactly that raised a LogicException telling the author not
+    // to. It already prints the right answer, [scale_id], in its own first
+    // sentence.
+    try {
+        ProficiencyScaleLevel::query()->forTenant($fixture->tenantId)->get();
+        $message = '';
+    } catch (MissingCompanyScopeException $e) {
+        $message = $e->getMessage();
+    }
+
+    expect($message)->toContain('[scale_id]')
+        ->and($message)->toContain('inherits its company from a parent row')
+        ->and($message)->not->toContain('Use forCompany(');
+
+    // A Class C model still gets sent to forCompany(), because there it works.
+    try {
+        Skill::query()->forTenant($fixture->tenantId)->get();
+        $classC = '';
+    } catch (MissingCompanyScopeException $e) {
+        $classC = $e->getMessage();
+    }
+
+    expect($classC)->toContain('Use forCompany($tenantId, $companyEntityId)');
 });
