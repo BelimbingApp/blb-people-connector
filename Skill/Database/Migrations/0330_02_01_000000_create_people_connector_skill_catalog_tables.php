@@ -156,19 +156,31 @@ return new class extends Migration
             ." BEGIN SELECT RAISE(ABORT, 'proficiency scale has been published and cannot be deleted'); END",
         );
 
-        $notDraft = static fn (string $row): string => "(SELECT status FROM people_connector_skill_proficiency_scales WHERE id = $row.scale_id) != 'draft'";
-        foreach ([
-            'INSERT' => $notDraft('NEW'),
-            'UPDATE' => $notDraft('NEW').' OR '.$notDraft('OLD'),
-            'DELETE' => $notDraft('OLD'),
-        ] as $operation => $condition) {
-            DB::statement(
-                'CREATE TRIGGER pcs_level_'.strtolower($operation).'_guard'
-                ." BEFORE $operation ON people_connector_skill_proficiency_scale_levels"
-                ." WHEN $condition"
-                ." BEGIN SELECT RAISE(ABORT, 'proficiency scale is not draft; its levels are immutable'); END",
-            );
-        }
+        // Written out one statement per trigger rather than built in a loop.
+        // The schema-drift verifier reads migration source statically, and it
+        // cannot fold strtolower($operation), so a name assembled at runtime
+        // makes the statement unresolvable -- and an unresolvable statement
+        // could be anything, so it is reported unreadable and the whole run
+        // comes back INCOMPLETE. The SQL below is byte-identical to what the
+        // loop produced; only its readability to the parser changed.
+        DB::statement(
+            'CREATE TRIGGER pcs_level_insert_guard'
+            .' BEFORE INSERT ON people_connector_skill_proficiency_scale_levels'
+            ." WHEN (SELECT status FROM people_connector_skill_proficiency_scales WHERE id = NEW.scale_id) != 'draft'"
+            ." BEGIN SELECT RAISE(ABORT, 'proficiency scale is not draft; its levels are immutable'); END",
+        );
+        DB::statement(
+            'CREATE TRIGGER pcs_level_update_guard'
+            .' BEFORE UPDATE ON people_connector_skill_proficiency_scale_levels'
+            ." WHEN (SELECT status FROM people_connector_skill_proficiency_scales WHERE id = NEW.scale_id) != 'draft' OR (SELECT status FROM people_connector_skill_proficiency_scales WHERE id = OLD.scale_id) != 'draft'"
+            ." BEGIN SELECT RAISE(ABORT, 'proficiency scale is not draft; its levels are immutable'); END",
+        );
+        DB::statement(
+            'CREATE TRIGGER pcs_level_delete_guard'
+            .' BEFORE DELETE ON people_connector_skill_proficiency_scale_levels'
+            ." WHEN (SELECT status FROM people_connector_skill_proficiency_scales WHERE id = OLD.scale_id) != 'draft'"
+            ." BEGIN SELECT RAISE(ABORT, 'proficiency scale is not draft; its levels are immutable'); END",
+        );
 
         DB::statement(
             'CREATE TRIGGER pcs_skill_code_guard BEFORE UPDATE ON people_connector_skill_skills'
