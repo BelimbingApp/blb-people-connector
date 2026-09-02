@@ -207,3 +207,63 @@ test('a company merge carries a published scale too, and only a merge may move i
             ->update(['company_entity_id' => $stranger->id])))
         ->toThrow(QueryException::class);
 });
+
+/**
+ * The exemption on a non-draft scale is exactly "owner only, from an entity
+ * already recorded as merged into the new owner". Each case below is run at
+ * the database layer with raw SQL, which bypasses everything but the trigger,
+ * so the plpgsql function and the SQLite WHEN clause are tested against the
+ * same list; the model layer is checked where it adds a different message.
+ */
+test('the non-draft scale exemption is no wider than the merge', function (): void {
+    [$tenantId, $connectionId, $a, $b] = companyMergeFixture();
+    $scales = app(ProficiencyScaleStore::class);
+    $published = $scales->publish($a, (int) $scales->draft($a, 'core', 'Core', companyMergeLevels())->id);
+    $retired = $scales->retire($a, (int) $scales->publish($a, (int) $scales->draft($a, 'aux', 'Aux', companyMergeLevels())->id)->id);
+    $c = (int) WorkforceEntity::query()->create([
+        'tenant_id' => $tenantId,
+        'resource_type' => WorkforceResourceType::Company->value,
+        'state' => WorkforceEntity::STATE_ACTIVE,
+        'first_seen_at' => now(),
+    ])->id;
+    $table = $published->getTable();
+    $raw = fn (int $scaleId, array $set): int => DB::table($table)->where('id', $scaleId)->update($set);
+    // Two BEFORE UPDATE triggers sit on this table and fire in an order the
+    // drivers do not agree on, so the message is asserted only where the
+    // owner guard permits the write and the scale guard alone must refuse.
+    // Savepoint-wrapped: a trigger abort poisons the test transaction on Postgres.
+    $refused = function (callable $write, ?string $because = null): void {
+        expect(fn () => DB::transaction($write))->toThrow(QueryException::class, $because);
+    };
+    $owner = fn (int $scaleId): int => (int) DB::table($table)->where('id', $scaleId)->value('company_entity_id');
+
+    // Before any merged state is written: owner-only moves are refused in
+    // both directions, at both layers.
+    $refused(fn () => $raw((int) $published->id, ['company_entity_id' => $b]));
+    $refused(fn () => $raw((int) $published->id, ['company_entity_id' => $c]));
+    expect(fn () => $published->movingCompany('boundary check')->forceFill(['company_entity_id' => $b])->save())
+        ->toThrow(PublishedScaleImmutableException::class);
+
+    // A is recorded as merged into C. A move to B — the wrong survivor — is
+    // refused; owner and content together are refused; owner alone to C is
+    // permitted, for the published and the retired scale alike.
+    WorkforceEntity::query()->whereKey($a)->update(['state' => WorkforceEntity::STATE_MERGED, 'merged_into_entity_id' => $c]);
+    $refused(fn () => $raw((int) $published->id, ['company_entity_id' => $b]));
+    $refused(fn () => $raw((int) $published->id, ['company_entity_id' => $c, 'name' => 'Renamed']), 'immutable');
+    $refused(fn () => $raw((int) $published->id, ['company_entity_id' => $c, 'status' => 'retired']), 'immutable');
+    expect(fn () => $published->fresh()->movingCompany('boundary check')->forceFill(['company_entity_id' => $c, 'name' => 'Renamed'])->save())
+        ->toThrow(PublishedScaleImmutableException::class);
+    expect($raw((int) $published->id, ['company_entity_id' => $c]))->toBe(1)
+        ->and($raw((int) $retired->id, ['company_entity_id' => $c]))->toBe(1)
+        ->and($owner((int) $published->id))->toBe($c)
+        ->and($owner((int) $retired->id))->toBe($c);
+
+    // The reverse move afterwards is refused: C is not merged into A.
+    $refused(fn () => $raw((int) $published->id, ['company_entity_id' => $a]));
+    $refused(fn () => $raw((int) $retired->id, ['company_entity_id' => $a]));
+
+    // Content stays immutable at C, so the exemption bought nothing else.
+    $refused(fn () => $raw((int) $published->id, ['name' => 'Renamed']), 'immutable');
+    expect($owner((int) $published->id))->toBe($c)
+        ->and((string) DB::table($table)->where('id', $published->id)->value('name'))->toBe('Core');
+});
