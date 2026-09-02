@@ -53,7 +53,8 @@ class RequirementResolver
             ->with('selectors')
             ->get();
 
-        $lastFailureExplanation = null;
+        $bestFailureExplanation = null;
+        $hadPartialMatch = false;
 
         foreach ($profiles as $profile) {
             $matchResult = $this->matchesProfile($profile, $employeeData);
@@ -65,12 +66,15 @@ class RequirementResolver
                 ];
             }
 
-            $lastFailureExplanation = $matchResult['explanation'];
+            if ($matchResult['partial_match']) {
+                $hadPartialMatch = true;
+                $bestFailureExplanation = $matchResult['explanation'];
+            }
         }
 
         return [
             'profile' => null,
-            'explanation' => $lastFailureExplanation ?? 'No published requirement profile matches this employee\'s attributes.',
+            'explanation' => $hadPartialMatch ? $bestFailureExplanation : 'No published requirement profile matches this employee\'s attributes.',
             'matched_selectors' => [],
         ];
     }
