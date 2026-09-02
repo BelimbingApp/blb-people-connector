@@ -144,10 +144,51 @@ test('a viewer can read the catalog but every manage action is refused', functio
         ->assertSee('Expert / Authoriser')
         ->assertDontSee('New skill');
 
-    expect(fn () => Livewire::actingAs($viewer)->test(Index::class)->call('installStarterPack'))
-        ->toThrow(AuthorizationDeniedException::class);
-    expect(fn () => Livewire::actingAs($viewer)->test(Index::class)->call('startSkill'))
-        ->toThrow(AuthorizationDeniedException::class);
+    // authorizedCompanyForManage() has two halves: the manage capability and
+    // the company check. Pinning only the company half leaves a view-only HOD
+    // able to write to their OWN company's catalog, which the company half
+    // permits. Both halves need every action driven through them.
+    //
+    // Real ids from the viewer's own company, so that with authorizeManage()
+    // removed the action would genuinely succeed rather than throw a
+    // not-found from the store and satisfy a laxer expectation.
+    $category = SkillCategory::query()
+        ->forCompany($tenantId, $companyEntityId)->where('code', 'quality')->sole();
+    $scale = ProficiencyScale::query()
+        ->forCompany($tenantId, $companyEntityId)->where('code', SkillCatalogDefaults::SCALE_CODE)->sole();
+    $skill = app(SkillCatalogStore::class)->defineSkill($companyEntityId, new SkillDraft(
+        code: 'viewer.probe.skill',
+        name: 'Viewer Probe Skill',
+        definition: 'Exists so a viewer has a real id to fail against.',
+        categoryId: (int) $category->id,
+    ));
+
+    // Captured before anything is driven: if an action did slip through, a
+    // value read afterwards would already be the changed one.
+    $scaleStatusBefore = $scale->status;
+
+    $refused = function (string $action, array $args = []) use ($viewer, $companyEntityId): void {
+        expect(fn () => Livewire::actingAs($viewer)->test(Index::class)
+            ->set('companyEntityId', $companyEntityId)
+            ->call($action, ...$args))
+            ->toThrow(AuthorizationDeniedException::class);
+    };
+
+    $refused('installStarterPack');
+    $refused('startSkill');
+    $refused('saveSkill');
+    $refused('saveCategory');
+    $refused('toggleSkillActive', [(int) $skill->id]);
+    $refused('renameCategory', [(int) $category->id, 'Renamed By Viewer']);
+    $refused('toggleCategoryActive', [(int) $category->id]);
+    $refused('publishScale', [(int) $scale->id]);
+    $refused('draftNewScaleVersion', [(int) $scale->id]);
+
+    expect($skill->refresh()->active)->toBeTrue()
+        ->and($category->refresh()->name)->not->toBe('Renamed By Viewer')
+        ->and($category->active)->toBeTrue()
+        ->and($scale->refresh()->status)->toBe($scaleStatusBefore)
+        ->and(ProficiencyScale::query()->forCompany($tenantId, $companyEntityId)->count())->toBe(1);
 });
 
 test('the page never leaks another tenant catalog', function (): void {
@@ -278,6 +319,11 @@ test('every mutating catalog action refuses a company the actor may not act for'
         categoryId: (int) $betaCategory->id,
     ));
 
+    // Captured BEFORE, because refresh() reloads in place and returns $this --
+    // comparing $scale->refresh()->status to $scale->status compares a value
+    // to itself and passes whatever happened.
+    $betaScaleStatusBefore = $betaScale->status;
+
     // Beta's REAL ids, deliberately. With a made-up id the action would 404
     // from its own not-found check even with the funnel removed, and this
     // test would pass while proving nothing.
@@ -301,6 +347,6 @@ test('every mutating catalog action refuses a company the actor may not act for'
         ->and($betaSkill->name)->toBe('Beta Secret Process')
         ->and($betaCategory->refresh()->name)->not->toBe('Renamed By Alpha')
         ->and($betaCategory->active)->toBeTrue()
-        ->and($betaScale->refresh()->status)->toBe($betaScale->status)
+        ->and($betaScale->refresh()->status)->toBe($betaScaleStatusBefore)
         ->and(ProficiencyScale::query()->forCompany($tenantId, $betaEntity)->count())->toBe(1);
 });
