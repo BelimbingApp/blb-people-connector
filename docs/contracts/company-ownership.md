@@ -575,10 +575,13 @@ Being honest about the edges:
   assumes the base model is company-owned, so at least the base table is
   pinned. When the base is Class T — `WorkforceEntity`, say — the guard is not
   partial, it never runs at all. `RequireCompanyScope` is registered per model
-  by the `CompanyOwned` trait, and a query built from an unguarded base never
-  constructs the guarded model's builder, so nothing inspects it and nothing
-  is raised. `WorkforceEntity::query()->join(<a company-owned table>, …)`
-  reads every company's rows. This is the join analogue of the correlated
+  by the `CompanyOwned` trait, and joining a company-owned table *by name*
+  never constructs that model's builder, so nothing inspects the query and
+  nothing is raised: `WorkforceEntity::query()->join(<a company-owned table>,
+  …)` reads every company's rows, and does so even with no tenant predicate.
+  (`joinSub()` handed the guarded model's Eloquent builder is the exception —
+  `toBase()` applies scopes, so that sub-select is guarded on its own.
+  `joinSub(…->getQuery())` is not.) This is the join analogue of the correlated
   subquery bullet below and has the same root: the guard reads the query it
   is attached to, and here it is attached to nothing. Pin the company
   yourself in the `ON` clause or a `where`, or start from the guarded model
@@ -606,7 +609,7 @@ Being honest about the edges:
   arm is a separate SELECT the guard never inspects, so a pinned base says
   nothing whatever about what the arm returns.
 - **A correlated subquery whose enclosing query is not itself pinned.** The
-  correlation rule below binds each inner row to one outer row; it inherits
+  correlation rule above binds each inner row to one outer row; it inherits
   the outer query's scoping and cannot add any. Read from an unguarded Class T
   outer, that is no company boundary at all. Stated in full under the rule.
 - **Class D tables in the Connector module.** They are classified above but
@@ -629,6 +632,23 @@ Being honest about the edges:
   value. Worse, auto-filling silently *changes* results, so a sync run that
   legitimately spans companies would quietly write half its rows. Refusing is
   loud; guessing is not.
+- **A guard on the outer query**, refusing to join a company-owned table
+  unless the outer query pins a company, would catch the Class T join listed
+  above. It does not need the connection layer and does not need to parse SQL:
+  `$query->joins` is a structured array, this scope already walks the equally
+  structured `$query->wheres`, and `CompanyOwnedModels` is a derived registry
+  of which models are company-owned. It is rejected on two other grounds.
+  First, it matches join targets **by table name**, and a name-matching check
+  in this document has already failed open once — a schema-qualified
+  `public.categories` did not match a bare `categories`, and the guard
+  accepted. A security check that silently does nothing on a naming variation
+  is worse than none, because it licenses confidence. Second, it would be
+  switched off: legitimate cross-company reads — merges, reconciliation,
+  reporting — would trip it constantly, and each one becomes a
+  `withoutCompanyScope()` at a call site, which is the failure this whole
+  mechanism is shaped to avoid. Class T models are unguarded on purpose, and
+  the honest answer for a join out of one is the bullet above, not a guard
+  that fails open on a qualified name.
 - **A guard in the database connection layer** would also catch raw queries,
   but it has to parse SQL text, cannot see the author's intent, and produces
   false positives on joins and subqueries. Higher cost, lower precision.
