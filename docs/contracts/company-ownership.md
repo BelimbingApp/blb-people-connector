@@ -571,6 +571,18 @@ Being honest about the edges:
   model only. Joining a second company-owned table pins the base table but not
   the joined one, so a join whose `ON` clause correlates loosely can still read
   columns from another company's rows on the joined side. Scope joins yourself.
+- **A company-owned table joined into an _unguarded_ query.** The bullet above
+  assumes the base model is company-owned, so at least the base table is
+  pinned. When the base is Class T — `WorkforceEntity`, say — the guard is not
+  partial, it never runs at all. `RequireCompanyScope` is registered per model
+  by the `CompanyOwned` trait, and a query built from an unguarded base never
+  constructs the guarded model's builder, so nothing inspects it and nothing
+  is raised. `WorkforceEntity::query()->join(<a company-owned table>, …)`
+  reads every company's rows. This is the join analogue of the correlated
+  subquery bullet below and has the same root: the guard reads the query it
+  is attached to, and here it is attached to nothing. Pin the company
+  yourself in the `ON` clause or a `where`, or start from the guarded model
+  and join back toward the Class T table.
 - **Cross-company parent links written outside a store.** `skills.category_id`
   has a composite foreign key on `(category_id, tenant_id)`, not on the
   company, so a write that bypasses `SkillCatalogStore` can point a skill at
