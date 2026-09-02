@@ -4,6 +4,8 @@ use App\Base\Tenancy\Contracts\TenantContext;
 use App\Domains\PeopleConnector\Connector\Data\ExternalReference;
 use App\Domains\PeopleConnector\Connector\Data\ProviderScope;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceCompany;
+use App\Domains\PeopleConnector\Connector\Data\WorkforceEmployee;
+use App\Domains\PeopleConnector\Connector\Data\WorkforceOrganizationUnit;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceProvenance;
 use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
 use App\Domains\PeopleConnector\Connector\Exceptions\WorkforceMergeConflictException;
@@ -266,4 +268,66 @@ test('the non-draft scale exemption is no wider than the merge', function (): vo
     $refused(fn () => $raw((int) $published->id, ['name' => 'Renamed']), 'immutable');
     expect($owner((int) $published->id))->toBe($c)
         ->and((string) DB::table($table)->where('id', $published->id)->value('name'))->toBe('Core');
+});
+
+/**
+ * @return array{int, int, int, int, Skill} [tenantId, connectionId, departmentEntityId, ownerEntityId, skill]
+ */
+function companyMergeSkillWithReferences(): array
+{
+    [$tenantId, $connectionId, $old, $new] = companyMergeFixture();
+    $projections = app(WorkforceProjectionStore::class);
+    $identities = app(WorkforceIdentityStore::class);
+    $observedAt = new DateTimeImmutable('2026-08-30T09:00:00+00:00');
+    $company = companyMergeCompanyReference('COMPANY-OLD');
+    $unit = fn (string $id): ExternalReference => new ExternalReference('test.people', WorkforceResourceType::OrganizationUnit, $id);
+    $employee = fn (string $id): ExternalReference => new ExternalReference('test.people', WorkforceResourceType::Employee, $id);
+
+    foreach (['UNIT-OLD', 'UNIT-NEW'] as $id) {
+        $projections->upsert($connectionId, new WorkforceOrganizationUnit($unit($id), $company, $id, true, $observedAt, $observedAt));
+    }
+    foreach (['EMP-OLD', 'EMP-NEW'] as $id) {
+        $projections->upsert($connectionId, new WorkforceEmployee($employee($id), $company, $id, true, $observedAt, $observedAt));
+    }
+
+    $department = (int) $identities->resolve($connectionId, $unit('UNIT-OLD'))->id;
+    $owner = (int) $identities->resolve($connectionId, $employee('EMP-OLD'))->id;
+    $catalog = app(SkillCatalogStore::class);
+    $category = $catalog->defineCategory($old, 'safety', 'Safety');
+    $skill = $catalog->defineSkill($old, new SkillDraft(
+        code: 'forklift.operation',
+        name: 'Forklift Operation',
+        definition: 'Operates a counterbalance forklift to the approved standard.',
+        categoryId: (int) $category->id,
+        scope: SkillScope::Department,
+        criticalClassification: null,
+        evidenceGuide: null,
+        defaultAssessmentMethod: AssessmentMethod::DirectObservation,
+        defaultReassessmentMonths: 12,
+        departmentEntityId: $department,
+        ownerEmployeeEntityId: $owner,
+    ));
+
+    return [$tenantId, $connectionId, $department, $owner, $skill];
+}
+
+test('merging an organization unit or an employee carries the skill references that point at it', function (): void {
+    [, $connectionId, $department, $owner, $skill] = companyMergeSkillWithReferences();
+    $identities = app(WorkforceIdentityStore::class);
+    $unit = fn (string $id): ExternalReference => new ExternalReference('test.people', WorkforceResourceType::OrganizationUnit, $id);
+    $employee = fn (string $id): ExternalReference => new ExternalReference('test.people', WorkforceResourceType::Employee, $id);
+    $provenance = new WorkforceProvenance('identity_merge', 'reference-merge-review');
+
+    // Reproduced first (review of #34, blb-people-connector#35): with the
+    // hand-listed branches, both columns kept pointing at the merged entity.
+    $identities->merge($connectionId, $unit('UNIT-OLD'), $unit('UNIT-NEW'), new DateTimeImmutable('2026-08-30T10:00:00+00:00'), $provenance);
+    $identities->merge($connectionId, $employee('EMP-OLD'), $employee('EMP-NEW'), new DateTimeImmutable('2026-08-30T11:00:00+00:00'), $provenance);
+
+    $newDepartment = (int) $identities->resolve($connectionId, $unit('UNIT-NEW'))->id;
+    $newOwner = (int) $identities->resolve($connectionId, $employee('EMP-NEW'))->id;
+
+    expect($newDepartment)->not->toBe($department)
+        ->and($newOwner)->not->toBe($owner)
+        ->and((int) $skill->refresh()->department_entity_id)->toBe($newDepartment)
+        ->and((int) $skill->owner_employee_entity_id)->toBe($newOwner);
 });

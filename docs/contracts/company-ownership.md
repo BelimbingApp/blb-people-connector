@@ -314,7 +314,13 @@ are two, and they are the only two the domain knows of:
   unique catalog key in the survivor is refused whole with
   `WorkforceMergeConflictException`; nothing moves until a person resolves
   the duplicate. Class D rows follow their parent; a company projection is
-  the entity itself and is retired rather than rewritten. A **published or
+  the entity itself and is retired rather than rewritten. The other branches
+  — a merged organization unit, position, employee or user — are derived the
+  same way, from `WorkforceReference` declarations on the models that carry
+  a column pointing at that kind of entity (`ReferencesWorkforceEntities`),
+  and `WorkforceReferenceContractTest` fails the suite when a `*_entity_id`
+  column exists on any model's table and is not declared, or is declared and
+  does not exist (blb-people-connector#35). A **published or
   retired proficiency scale** is carried too: its immutability guard (model
   and trigger) exempts a change of owner alone, from an entity already marked
   merged into the new owner, and nothing else — content and lifecycle stay
