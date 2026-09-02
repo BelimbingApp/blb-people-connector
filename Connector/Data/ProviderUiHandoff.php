@@ -25,7 +25,7 @@ final readonly class ProviderUiHandoff
             }
         }
 
-        if ($oneTimeHandle === '' || $expiresAt <= new DateTimeImmutable()) {
+        if ($oneTimeHandle === '' || $expiresAt <= new DateTimeImmutable) {
             throw new \InvalidArgumentException('Provider UI hand-offs require a non-empty, unexpired one-time handle.');
         }
     }

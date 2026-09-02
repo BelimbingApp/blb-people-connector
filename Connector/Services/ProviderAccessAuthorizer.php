@@ -12,6 +12,7 @@ use App\Domains\PeopleConnector\Connector\Contracts\WritableProviderPort;
 use App\Domains\PeopleConnector\Connector\Data\ProviderScope;
 use App\Domains\PeopleConnector\Connector\Enums\PeopleCapability;
 use App\Domains\PeopleConnector\Connector\Exceptions\ProviderAuthorizationException;
+use App\Domains\PeopleConnector\Connector\Models\ProviderConnection;
 
 final class ProviderAccessAuthorizer
 {
@@ -19,6 +20,7 @@ final class ProviderAccessAuthorizer
         private readonly AuthorizationService $authorization,
         private readonly TenantContext $tenantContext,
         private readonly ProviderPortResolver $ports,
+        private readonly ProviderConnectionStore $connections,
     ) {}
 
     /**
@@ -28,7 +30,8 @@ final class ProviderAccessAuthorizer
      * never gets a chance to run when the connector-side actor/scope check fails.
      *
      * @template TPort of ReadableProviderPort
-     * @param class-string<TPort> $contract
+     *
+     * @param  class-string<TPort>  $contract
      * @return TPort
      */
     public function read(
@@ -47,7 +50,8 @@ final class ProviderAccessAuthorizer
      * Authorize the BLB actor before asking the provider to resolve a write port.
      *
      * @template TPort of WritableProviderPort
-     * @param class-string<TPort> $contract
+     *
+     * @param  class-string<TPort>  $contract
      * @return TPort
      */
     public function write(
@@ -78,6 +82,21 @@ final class ProviderAccessAuthorizer
                 providerId: $descriptor->id,
                 operation: 'authorize_provider_access',
                 message: 'Provider access requires an actor and scope inside the current tenant and company boundary.',
+                context: [
+                    'tenant_id' => $tenantId,
+                    'scope' => $scope->key(),
+                    'permission' => $permission,
+                ],
+            );
+        }
+
+        $active = $this->connections->active($scope);
+        if ($active === null || (string) $active->provider_id !== $descriptor->id
+            || (string) $active->status !== ProviderConnection::STATUS_ACTIVE) {
+            throw new ProviderAuthorizationException(
+                providerId: $descriptor->id,
+                operation: 'authorize_provider_access',
+                message: 'Provider access requires the adapter selected for the requested scope.',
                 context: [
                     'tenant_id' => $tenantId,
                     'scope' => $scope->key(),

@@ -36,7 +36,8 @@ final class PrivilegedSupportService
 
         if ($requester->id === $approver->id || trim($purpose) === '' || $expiresAt <= $issuedAt
             || $expiresAt->getTimestamp() - $issuedAt->getTimestamp() > 3600
-            || $capabilities === []) {
+            || $capabilities === []
+            || array_filter($capabilities, static fn (string $capability): bool => preg_match('/^[a-z0-9][a-z0-9._:-]{0,127}$/', $capability) !== 1) !== []) {
             throw new ProviderAuthorizationException(
                 providerId: 'connector',
                 operation: 'issue_break_glass',
@@ -83,16 +84,22 @@ final class PrivilegedSupportService
     public function recordAction(
         PrivilegedSupportGrant $grant,
         Actor $actor,
+        string $capability,
         string $action,
         string $outcome,
         array $context = [],
         ?DateTimeImmutable $occurredAt = null,
     ): PrivilegedSupportAction {
         $tenantId = $this->tenantContext->requireTenantId();
-        $this->assertActor($actor, $tenantId, $grant->company_id === null ? ProviderScope::tenant() : ProviderScope::company((int) $grant->company_id));
+        $grant = $this->currentGrant($grant, $tenantId);
+        $scope = $grant->company_id === null ? ProviderScope::tenant() : ProviderScope::company((int) $grant->company_id);
+        $this->assertGrantActor($actor, $grant);
+        $this->assertActor($actor, $tenantId, $scope);
+        $this->authorizeSupport($actor, $grant, $tenantId, $scope);
         $occurredAt ??= new DateTimeImmutable;
 
-        if (! $grant->isActive($occurredAt) || trim($action) === '' || trim($outcome) === '') {
+        if (! in_array($capability, $grant->capabilities ?? [], true)
+            || ! $grant->isActive($occurredAt) || trim($action) === '' || trim($outcome) === '') {
             throw new ProviderAuthorizationException(
                 providerId: 'connector',
                 operation: 'record_break_glass_action',
@@ -114,8 +121,12 @@ final class PrivilegedSupportService
     public function revoke(PrivilegedSupportGrant $grant, Actor $actor, ?DateTimeImmutable $revokedAt = null): void
     {
         $tenantId = $this->tenantContext->requireTenantId();
-        $this->assertActor($actor, $tenantId, $grant->company_id === null ? ProviderScope::tenant() : ProviderScope::company((int) $grant->company_id));
+        $grant = $this->currentGrant($grant, $tenantId);
+        $scope = $grant->company_id === null ? ProviderScope::tenant() : ProviderScope::company((int) $grant->company_id);
+        $this->assertGrantActor($actor, $grant);
+        $this->assertActor($actor, $tenantId, $scope);
         $revokedAt ??= new DateTimeImmutable;
+        $this->authorizeSupport($actor, $grant, $tenantId, $scope);
 
         DB::transaction(function () use ($grant, $actor, $revokedAt, $tenantId): void {
             if (! $grant->isActive($revokedAt)) {
@@ -145,5 +156,43 @@ final class PrivilegedSupportService
                 message: 'Break-glass access requires actors inside the current tenant and company boundary.',
             );
         }
+    }
+
+    private function currentGrant(PrivilegedSupportGrant $grant, int $tenantId): PrivilegedSupportGrant
+    {
+        return PrivilegedSupportGrant::query()
+            ->forTenant($tenantId)
+            ->whereKey($grant->getKey())
+            ->first()
+            ?? throw new ProviderAuthorizationException(
+                providerId: 'connector',
+                operation: 'load_break_glass',
+                message: 'The break-glass grant is missing or outside the current tenant.',
+            );
+    }
+
+    private function assertGrantActor(Actor $actor, PrivilegedSupportGrant $grant): void
+    {
+        if (! in_array($actor->id, [(int) $grant->requested_by_user_id, (int) $grant->approved_by_user_id], true)) {
+            throw new ProviderAuthorizationException(
+                providerId: 'connector',
+                operation: 'authorize_break_glass',
+                message: 'Only the named requester or approver may mutate a break-glass grant.',
+            );
+        }
+    }
+
+    private function authorizeSupport(Actor $actor, PrivilegedSupportGrant $grant, int $tenantId, ProviderScope $scope): void
+    {
+        $this->authorization->authorize(
+            $actor,
+            'people-connector.support.break-glass',
+            new ResourceContext(
+                type: 'people-connector.support',
+                id: $grant->getKey(),
+                companyId: $scope->companyId,
+                tenantId: $tenantId,
+            ),
+        );
     }
 }

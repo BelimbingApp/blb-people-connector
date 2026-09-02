@@ -27,6 +27,7 @@ final class ProviderCredentialStore
 
         if ((int) $connection->tenant_id !== $tenantId
             || (int) $connection->id !== $request->connectionId
+            || (string) $connection->status !== ProviderConnection::STATUS_ACTIVE
             || (string) $connection->provider_id === '') {
             throw new ProviderAuthenticationException(
                 providerId: (string) $connection->provider_id,
@@ -35,7 +36,7 @@ final class ProviderCredentialStore
             );
         }
 
-        if ($keyId === '' || ! str_starts_with($secretReference, 'base-integration:')) {
+        if ($keyId === '' || preg_match('/^base-integration:[a-z0-9._:-]+$/', $secretReference) !== 1) {
             throw new ProviderAuthenticationException(
                 providerId: (string) $connection->provider_id,
                 operation: 'issue_credential',
@@ -43,10 +44,21 @@ final class ProviderCredentialStore
             );
         }
 
+        $credentialId = 'pcred_'.str()->lower(str()->random(26));
+        $publicCredential = new ProviderCredential(
+            credentialId: $credentialId,
+            keyId: $keyId,
+            providerId: (string) $connection->provider_id,
+            audience: $request->audience,
+            scopes: $request->scopes,
+            issuedAt: $issuedAt,
+            expiresAt: $expiresAt,
+        );
         $credential = new ProviderCredentialRecord([
             'tenant_id' => $tenantId,
             'connection_id' => $connection->id,
             'provider_id' => $connection->provider_id,
+            'credential_id' => $credentialId,
             'key_id' => $keyId,
             'secret_reference' => $secretReference,
             'audience' => $request->audience,
@@ -56,7 +68,7 @@ final class ProviderCredentialStore
         ]);
         $credential->save();
 
-        return $credential->toCredential();
+        return $publicCredential;
     }
 
     public function rotate(
@@ -99,6 +111,7 @@ final class ProviderCredentialStore
     {
         $credential = ProviderCredentialRecord::query()
             ->forTenant($this->tenantContext->requireTenantId())
+            ->where('connection_id', $request->connectionId)
             ->usable($request->audience, $request->scopes[0] ?? '', $at)
             ->latest('issued_at')
             ->first();
