@@ -53,6 +53,8 @@ class RequirementResolver
             ->with('selectors')
             ->get();
 
+        $lastFailureExplanation = null;
+
         foreach ($profiles as $profile) {
             $matchResult = $this->matchesProfile($profile, $employeeData);
             if ($matchResult['matches']) {
@@ -62,11 +64,13 @@ class RequirementResolver
                     'matched_selectors' => $matchResult['matched_selectors'],
                 ];
             }
+
+            $lastFailureExplanation = $matchResult['explanation'];
         }
 
         return [
             'profile' => null,
-            'explanation' => 'No published requirement profile matches this employee\'s attributes.',
+            'explanation' => $lastFailureExplanation ?? 'No published requirement profile matches this employee\'s attributes.',
             'matched_selectors' => [],
         ];
     }
