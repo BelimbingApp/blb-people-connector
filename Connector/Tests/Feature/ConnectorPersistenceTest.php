@@ -906,7 +906,7 @@ test('a deactivated workforce identity can be reactivated for a re-hire without 
     expect($identity->refresh()->state)->toBe(ExternalIdentity::STATE_INACTIVE)
         ->and($identity->effective_to->getTimestamp())->toBe($leftAt->getTimestamp())
         ->and($entity->refresh()->state)->toBe(WorkforceEntity::STATE_INACTIVE)
-        ->and(WorkforceEmployeeProjection::query()->where('workforce_entity_id', $entity->id)->value('active'))->toBeFalse();
+        ->and(WorkforceEmployeeProjection::query()->withoutCompanyScope('Asserts the sync outcome for one canonical workforce entity, not a company-wide read.')->where('workforce_entity_id', $entity->id)->value('active'))->toBeFalse();
 
     // Without reactivation this is where a re-hire dead-ends: every later
     // upsert for the same reference is rejected, permanently.
@@ -936,7 +936,7 @@ test('a deactivated workforce identity can be reactivated for a re-hire without 
         ->and($entity->deactivated_at)->toBeNull()
         // Reactivation restores the reference, not the person's facts: the
         // retired projection waits for the provider to restate them.
-        ->and(WorkforceEmployeeProjection::query()->where('workforce_entity_id', $entity->id)->value('active'))->toBeFalse();
+        ->and(WorkforceEmployeeProjection::query()->withoutCompanyScope('Asserts the sync outcome for one canonical workforce entity, not a company-wide read.')->where('workforce_entity_id', $entity->id)->value('active'))->toBeFalse();
 
     // Calling it again on an already active identity is a no-op, not a failure.
     expect($identities->reactivate((int) $connection->id, $employee, $reHiredAt->modify('+1 minute'), $feed)->id)
@@ -953,6 +953,7 @@ test('a deactivated workforce identity can be reactivated for a re-hire without 
     ));
 
     $projection = WorkforceEmployeeProjection::query()
+        ->withoutCompanyScope('Asserts the sync outcome for one canonical workforce entity, not a company-wide read.')
         ->forTenant((int) $tenant->id)
         ->where('workforce_entity_id', $entity->id)
         ->sole();
