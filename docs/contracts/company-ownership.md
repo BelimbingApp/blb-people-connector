@@ -304,7 +304,17 @@ are two, and they are the only two the domain knows of:
   provider truth, and this is where it is allowed to change.
 - **A company merge.** `WorkforceIdentityStore::merge()` rewrites every row
   owned by the superseded company entity to its survivor, in the same
-  transaction that marks the superseded entity merged.
+  transaction that marks the superseded entity merged. The set of tables it
+  rewrites is **derived** from the models declaring `CompanyOwned` with
+  `company_entity_id` as their owner column (`CompanyOwnedModels`), not
+  listed by hand: a hand-kept list was three tables short by the time it was
+  checked (blb-people-connector#29), and every row it missed did not become
+  wrong but invisible, because a query pinned to the survivor cannot see a
+  row still pointing at the merged entity. A merge that would collide on a
+  unique catalog key in the survivor is refused whole with
+  `WorkforceMergeConflictException`; nothing moves until a person resolves
+  the duplicate. Class D rows follow their parent; a company projection is
+  the entity itself and is retired rather than rewritten.
 
 `CompanyIsolationContract` runs the whole route list against every
 company-owned model — fourteen builder routes and three model routes, plus the
@@ -313,14 +323,18 @@ model whose save was halted — so a route that is added to Eloquent later, or
 a model added to the domain later, fails the suite rather than the tenant.
 
 **Where the database also refuses.** The Skill module's catalog rows —
-categories, skills, proficiency scales — never legitimately change company: no
-sync writes them and no merge rewrites them. So there the backstop is the same
-class of thing the tenant axis has: a `BEFORE UPDATE` trigger on each table, on
-both drivers, that aborts when `company_entity_id` changes. The model-layer
-refusal gives the author a message; the trigger stands when the model layer is
-bypassed. Projection tables get no trigger, because the database cannot tell a
-transfer from a mistake; there the named escape is the mechanism, and the
-sync store is the one caller.
+categories, skills, proficiency scales — change company in exactly one case:
+a company merge, which carries them to the survivor. No sync writes them. So
+there the backstop is the same class of thing the tenant axis has: a
+`BEFORE UPDATE` trigger on each table, on both drivers, that aborts when
+`company_entity_id` changes *unless* the old owner is a workforce entity in
+state `merged` whose `merged_into_entity_id` is the new owner — which is what
+the merge records, in the same transaction, before it rewrites anything. That
+is the actual rule, expressed where the model layer cannot be bypassed. The
+model-layer refusal gives the author a message; the trigger stands when the
+model layer is stepped around. Projection tables get no trigger, because the
+database cannot tell a provider-side transfer from a mistake; there the named
+escape is the mechanism, and the sync store is the one caller.
 
 ### What the guard accepts
 

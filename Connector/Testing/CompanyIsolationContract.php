@@ -7,7 +7,7 @@ use App\Core\Company\Models\Company;
 use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
 use App\Domains\PeopleConnector\Connector\Exceptions\CompanyMoveRefusedException;
 use App\Domains\PeopleConnector\Connector\Exceptions\MissingCompanyScopeException;
-use App\Domains\PeopleConnector\Connector\Models\Concerns\CompanyOwned;
+use App\Domains\PeopleConnector\Connector\Models\CompanyOwnedModels;
 use App\Domains\PeopleConnector\Connector\Models\ExternalIdentity;
 use App\Domains\PeopleConnector\Connector\Models\ProviderConnection;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceCompanyProjection;
@@ -38,40 +38,15 @@ final class CompanyIsolationContract
      */
     private const UNUSED_TENANT_ID = 999_999_999;
 
-    /** @var list<class-string<Model>>|null */
-    private static ?array $discovered = null;
-
     /**
-     * Every model in this domain that declares itself company-owned.
-     *
-     * Resolved once per process, so the dataset a test is parameterized with
-     * and the list the test body sees can never disagree.
+     * Every model in this domain that declares itself company-owned — the
+     * same list the company merge rewrites, so the two cannot disagree.
      *
      * @return list<class-string<Model>>
      */
     public static function companyOwnedModels(): array
     {
-        if (self::$discovered !== null) {
-            return self::$discovered;
-        }
-
-        $models = [];
-
-        foreach (self::modelFiles() as $file) {
-            $class = self::classIn($file);
-
-            if ($class === null || ! class_exists($class)) {
-                continue;
-            }
-
-            if (is_subclass_of($class, Model::class) && in_array(CompanyOwned::class, class_uses_recursive($class), true)) {
-                $models[] = $class;
-            }
-        }
-
-        sort($models);
-
-        return self::$discovered = array_values(array_unique($models));
+        return CompanyOwnedModels::all();
     }
 
     /**
@@ -483,20 +458,6 @@ final class CompanyIsolationContract
      *
      * @return list<\SplFileInfo>
      */
-    private static function modelFiles(): array
-    {
-        $domainRoot = dirname(__DIR__, 2);
-        $files = [];
-
-        foreach (self::phpFiles($domainRoot) as $file) {
-            if (str_contains(str_replace('\\', '/', $file->getPath()), '/Models')) {
-                $files[] = $file;
-            }
-        }
-
-        return $files;
-    }
-
     /**
      * Lines calling Laravel's own scope-removal methods, found by tokenizing
      * rather than by matching text — a comment or a docblock that names the
@@ -544,24 +505,5 @@ final class CompanyIsolationContract
         }
 
         return $files;
-    }
-
-    /** @return class-string|null */
-    private static function classIn(\SplFileInfo $file): ?string
-    {
-        $source = (string) file_get_contents($file->getPathname());
-
-        if (preg_match('/^namespace\s+([^;]+);/m', $source, $namespace) !== 1) {
-            return null;
-        }
-
-        if (preg_match('/^(?:final\s+|abstract\s+)?(?:readonly\s+)?class\s+(\w+)/m', $source, $class) !== 1) {
-            return null;
-        }
-
-        /** @var class-string $fqcn */
-        $fqcn = trim($namespace[1]).'\\'.$class[1];
-
-        return $fqcn;
     }
 }

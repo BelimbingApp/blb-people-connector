@@ -140,7 +140,14 @@ return new class extends Migration
 
             CREATE OR REPLACE FUNCTION pcs_company_owner_guard() RETURNS trigger AS $$
             BEGIN
-                IF NEW.company_entity_id IS DISTINCT FROM OLD.company_entity_id THEN
+                IF NEW.company_entity_id IS DISTINCT FROM OLD.company_entity_id
+                    AND NOT EXISTS (
+                        SELECT 1 FROM people_connector_connector_workforce_entities
+                        WHERE id = OLD.company_entity_id
+                            AND tenant_id = OLD.tenant_id
+                            AND state = 'merged'
+                            AND merged_into_entity_id = NEW.company_entity_id
+                    ) THEN
                     RAISE EXCEPTION 'catalog row % belongs to company entity % and cannot move to another company', OLD.id, OLD.company_entity_id;
                 END IF;
                 RETURN NEW;
@@ -224,21 +231,32 @@ return new class extends Migration
 
         // The company axis has no database backstop of its own: the composite
         // foreign key accepts any entity in the tenant, so a pinned UPDATE can
-        // move a catalog row to a sibling company and nothing objects. Catalog
-        // rows never legitimately change company, so the database refuses.
+        // move a catalog row to a sibling company and nothing objects. The one
+        // move a catalog row may make is to the survivor of a company merge,
+        // and the merge marks the old entity merged-into the survivor before
+        // it rewrites anything, so that is the rule the database checks.
         DB::statement(
             'CREATE TRIGGER pcs_category_company_owner_guard BEFORE UPDATE ON people_connector_skill_categories'
-            .' WHEN NEW.company_entity_id != OLD.company_entity_id'
+            .' WHEN NEW.company_entity_id != OLD.company_entity_id AND NOT EXISTS ('
+            .' SELECT 1 FROM people_connector_connector_workforce_entities'
+            .' WHERE id = OLD.company_entity_id AND tenant_id = OLD.tenant_id'
+            ." AND state = 'merged' AND merged_into_entity_id = NEW.company_entity_id)"
             ." BEGIN SELECT RAISE(ABORT, 'catalog row belongs to its company entity and cannot move to another company'); END",
         );
         DB::statement(
             'CREATE TRIGGER pcs_skill_company_owner_guard BEFORE UPDATE ON people_connector_skill_skills'
-            .' WHEN NEW.company_entity_id != OLD.company_entity_id'
+            .' WHEN NEW.company_entity_id != OLD.company_entity_id AND NOT EXISTS ('
+            .' SELECT 1 FROM people_connector_connector_workforce_entities'
+            .' WHERE id = OLD.company_entity_id AND tenant_id = OLD.tenant_id'
+            ." AND state = 'merged' AND merged_into_entity_id = NEW.company_entity_id)"
             ." BEGIN SELECT RAISE(ABORT, 'catalog row belongs to its company entity and cannot move to another company'); END",
         );
         DB::statement(
             'CREATE TRIGGER pcs_scale_company_owner_guard BEFORE UPDATE ON people_connector_skill_proficiency_scales'
-            .' WHEN NEW.company_entity_id != OLD.company_entity_id'
+            .' WHEN NEW.company_entity_id != OLD.company_entity_id AND NOT EXISTS ('
+            .' SELECT 1 FROM people_connector_connector_workforce_entities'
+            .' WHERE id = OLD.company_entity_id AND tenant_id = OLD.tenant_id'
+            ." AND state = 'merged' AND merged_into_entity_id = NEW.company_entity_id)"
             ." BEGIN SELECT RAISE(ABORT, 'catalog row belongs to its company entity and cannot move to another company'); END",
         );
     }
