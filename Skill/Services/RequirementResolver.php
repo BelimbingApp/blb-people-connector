@@ -40,12 +40,21 @@ class RequirementResolver
         $profiles = RequirementProfile::query()
             ->forCompany($tenantId, (int) $companyEntityId)
             ->whereIn('status', [RequirementProfileStatus::Published->value, RequirementProfileStatus::Retired->value])
-            ->whereDate('published_at', '<=', $asOf)
+            ->where(function ($query) use ($asOf): void {
+                $query->where(function ($q) use ($asOf): void {
+                    $q->whereNotNull('effective_date')
+                        ->whereDate('effective_date', '<=', $asOf);
+                })
+                    ->orWhere(function ($q) use ($asOf): void {
+                        $q->whereNull('effective_date')
+                            ->whereDate('published_at', '<=', $asOf);
+                    });
+            })
             ->where(function ($query) use ($asOf): void {
                 $query->whereNull('retired_at')
                     ->orWhereDate('retired_at', '>=', $asOf);
             })
-            ->orderBy('published_at', 'desc')
+            ->orderByRaw('COALESCE(effective_date, published_at) DESC')
             ->orderBy('version', 'desc')
             ->get();
 
