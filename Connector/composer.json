@@ -1,0 +1,22 @@
+{
+    "name": "blb/people-connector",
+    "type": "blb-module",
+    "description": "Provider-neutral People adapter contracts, discovery, health, and compatibility.",
+    "license": "MIT",
+    "autoload": {
+        "psr-4": {
+            "App\\Domains\\PeopleConnector\\Connector\\": ""
+        }
+    },
+    "extra": {
+        "blb": {
+            "module": "people-connector/connector",
+            "version": "0.1.0",
+            "description": "People Connector provider contract and adapter registry.",
+            "requires-modules": {},
+            "optional-modules": {},
+            "publishes-events": [],
+            "consumes-events": []
+        }
+    }
+}
