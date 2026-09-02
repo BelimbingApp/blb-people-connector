@@ -9,8 +9,8 @@ use App\Domains\PeopleConnector\Skill\Exceptions\PublishedRequirementImmutableEx
 
 /**
  * One target selector for a requirement profile. Selectors determine which
- * employee cohort the profile applies to. A selector inherits its company
- * from its profile, so profile_id is what pins a query here.
+ * employee cohort the profile applies to. A selector has explicit tenant_id
+ * and company_entity_id for isolation, copied from its profile.
  */
 class RequirementProfileSelector extends TenantOwnedModel
 {
@@ -20,13 +20,7 @@ class RequirementProfileSelector extends TenantOwnedModel
 
     public function companyOwnerColumn(): ?string
     {
-        return null;
-    }
-
-    /** @return list<string> */
-    public function companyScopeColumns(): array
-    {
-        return ['profile_id'];
+        return 'company_entity_id';
     }
 
     protected function casts(): array
@@ -55,14 +49,19 @@ class RequirementProfileSelector extends TenantOwnedModel
 
     /**
      * The owning profile, as a model — deliberately not a relation.
-     * A selector names its profile only by the profile's primary key, so the
-     * escape here is unavoidable. The builder is consumed in the same
-     * expression and returns a model, so there is nothing to append to.
+     * Pin tenant and company to prevent cross-company profile access.
      */
     private function owningProfile(): ?RequirementProfile
     {
+        $tenantId = $this->tenant_id;
+        $companyEntityId = $this->company_entity_id;
+
+        if ($tenantId === null || $companyEntityId === null) {
+            return null;
+        }
+
         return RequirementProfile::query()
-            ->withoutCompanyScope('A selector names its profile only by the profile primary key, which is not the profile company column; the selector itself was reached through a query already pinned to that profile.')
+            ->forCompany($tenantId, $companyEntityId)
             ->whereKey($this->profile_id)
             ->first();
     }

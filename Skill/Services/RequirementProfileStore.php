@@ -33,13 +33,9 @@ class RequirementProfileStore
 
     private const WEIGHT_TOLERANCE = 0.0001;
 
-    public function __construct(
-        private readonly TenantContext $tenantContext,
-    ) {}
-
     public function draft(int $companyEntityId, RequirementProfileDraft $draft): RequirementProfile
     {
-        $tenantId = $this->tenantContext->requireTenantId();
+        $tenantId = app(TenantContext::class)->requireTenantId();
 
         if (preg_match(self::CODE_PATTERN, $draft->code) !== 1) {
             throw new InvalidRequirementProfileException(
@@ -87,7 +83,7 @@ class RequirementProfileStore
 
     public function newDraftFrom(int $companyEntityId, int $profileId): RequirementProfile
     {
-        $tenantId = $this->tenantContext->requireTenantId();
+        $tenantId = app(TenantContext::class)->requireTenantId();
         $source = $this->requireProfile($tenantId, $companyEntityId, $profileId);
 
         $selectors = $source->selectors()->get()
@@ -124,7 +120,7 @@ class RequirementProfileStore
 
     public function publish(int $companyEntityId, int $profileId): RequirementProfile
     {
-        $tenantId = $this->tenantContext->requireTenantId();
+        $tenantId = app(TenantContext::class)->requireTenantId();
 
         return DB::transaction(function () use ($tenantId, $companyEntityId, $profileId): RequirementProfile {
             $profile = $this->requireProfile($tenantId, $companyEntityId, $profileId);
@@ -163,7 +159,7 @@ class RequirementProfileStore
 
     public function retire(int $companyEntityId, int $profileId): RequirementProfile
     {
-        $tenantId = $this->tenantContext->requireTenantId();
+        $tenantId = app(TenantContext::class)->requireTenantId();
         $profile = $this->requireProfile($tenantId, $companyEntityId, $profileId);
 
         if ($profile->status !== RequirementProfileStatus::Published) {
@@ -189,7 +185,7 @@ class RequirementProfileStore
 
     public function discardDraft(int $companyEntityId, int $profileId): void
     {
-        $tenantId = $this->tenantContext->requireTenantId();
+        $tenantId = app(TenantContext::class)->requireTenantId();
 
         DB::transaction(function () use ($tenantId, $companyEntityId, $profileId): void {
             $profile = $this->requireProfile($tenantId, $companyEntityId, $profileId);
@@ -206,7 +202,7 @@ class RequirementProfileStore
 
     public function currentProfile(int $companyEntityId, string $code): ?RequirementProfile
     {
-        return $this->publishedOf($this->tenantContext->requireTenantId(), $companyEntityId, $code);
+        return $this->publishedOf(app(TenantContext::class)->requireTenantId(), $companyEntityId, $code);
     }
 
     private function requireProfile(int $tenantId, int $companyEntityId, int $profileId): RequirementProfile
@@ -241,6 +237,7 @@ class RequirementProfileStore
         foreach ($selectors as $selector) {
             RequirementProfileSelector::query()->create([
                 'tenant_id' => $profile->tenant_id,
+                'company_entity_id' => $profile->company_entity_id,
                 'profile_id' => $profile->getKey(),
                 'selector_type' => $selector->selectorType,
                 'selector_value' => $selector->selectorValue,
@@ -257,6 +254,7 @@ class RequirementProfileStore
         foreach ($items as $item) {
             RequirementItem::query()->create([
                 'tenant_id' => $profile->tenant_id,
+                'company_entity_id' => $profile->company_entity_id,
                 'profile_id' => $profile->getKey(),
                 'skill_id' => $item->skillId,
                 'sequence' => $item->sequence,

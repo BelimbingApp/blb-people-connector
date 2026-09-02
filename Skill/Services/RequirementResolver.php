@@ -16,10 +16,6 @@ use DateTimeInterface;
  */
 class RequirementResolver
 {
-    public function __construct(
-        private readonly TenantContext $tenantContext,
-    ) {}
-
     /**
      * Resolve the active requirement profile for an employee at a given date.
      * Returns the profile and an explanation of how it matched.
@@ -29,7 +25,7 @@ class RequirementResolver
      */
     public function resolve(array $employeeData, ?DateTimeInterface $asOf = null): array
     {
-        $tenantId = $this->tenantContext->requireTenantId();
+        $tenantId = app(TenantContext::class)->requireTenantId();
         $asOf = $asOf ?? now();
 
         $companyEntityId = $employeeData['company_entity_id'] ?? null;
@@ -46,9 +42,9 @@ class RequirementResolver
             ->whereIn('status', [RequirementProfileStatus::Published->value, RequirementProfileStatus::Retired->value])
             ->where(function ($query) use ($asOf): void {
                 $query->whereNull('effective_date')
-                    ->orWhere('effective_date', '<=', $asOf);
+                    ->orWhereDate('effective_date', '<=', $asOf);
             })
-            ->orderBy('effective_date', 'desc')
+            ->orderByRaw('COALESCE(effective_date, published_at) DESC')
             ->orderBy('version', 'desc')
             ->with('selectors')
             ->get();
@@ -66,7 +62,7 @@ class RequirementResolver
                 ];
             }
 
-            if ($matchResult['partial_match']) {
+            if ($matchResult['partial_match'] ?? false) {
                 $hadPartialMatch = true;
                 $bestFailureExplanation = $matchResult['explanation'];
             }
