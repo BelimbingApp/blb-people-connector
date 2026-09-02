@@ -355,10 +355,7 @@ class RequirementProfileStore
      */
     private function assertPublishableItems(array $items): void
     {
-        $totalWeight = array_sum(array_map(
-            fn (RequirementItem $item): float => (float) $item->weight_percent,
-            $items,
-        ));
+        $totalWeight = array_sum(array_map(fn (RequirementItem $item): float => (float) $item->weight_percent, $items));
 
         if (abs($totalWeight - 100.0) > self::WEIGHT_TOLERANCE) {
             throw new InvalidRequirementProfileException(

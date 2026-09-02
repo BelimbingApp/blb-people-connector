@@ -7,6 +7,7 @@ use App\Domains\PeopleConnector\Connector\Models\WorkforceEntity;
 use App\Domains\PeopleConnector\Skill\Data\RequirementItemDraft;
 use App\Domains\PeopleConnector\Skill\Data\RequirementProfileDraft;
 use App\Domains\PeopleConnector\Skill\Data\RequirementSelectorDraft;
+use App\Domains\PeopleConnector\Skill\Data\SkillDraft;
 use App\Domains\PeopleConnector\Skill\Enums\AssessmentMethod;
 use App\Domains\PeopleConnector\Skill\Enums\CriticalClassification;
 use App\Domains\PeopleConnector\Skill\Enums\RequirementCriticality;
@@ -54,7 +55,7 @@ function requirementFixture(string $tenantName = 'Requirements Tenant'): array
     $catalogStore = app(SkillCatalogStore::class);
     $category = $catalogStore->defineCategory((int) $company->id, 'safety', 'Safety');
 
-    $skillA = $catalogStore->defineSkill((int) $company->id, new \App\Domains\PeopleConnector\Skill\Data\SkillDraft(
+    $skillA = $catalogStore->defineSkill((int) $company->id, new SkillDraft(
         code: 'forklift',
         name: 'Forklift Operation',
         definition: 'Operates a counterbalance forklift',
@@ -64,7 +65,7 @@ function requirementFixture(string $tenantName = 'Requirements Tenant'): array
         defaultAssessmentMethod: AssessmentMethod::DirectObservation,
     ));
 
-    $skillB = $catalogStore->defineSkill((int) $company->id, new \App\Domains\PeopleConnector\Skill\Data\SkillDraft(
+    $skillB = $catalogStore->defineSkill((int) $company->id, new SkillDraft(
         code: 'packing',
         name: 'Product Packing',
         definition: 'Packs products to specification',
