@@ -25,7 +25,8 @@ final class ProviderCredentialStore
     ): ProviderCredential {
         $tenantId = $this->tenantContext->requireTenantId();
 
-        if ((int) $connection->tenant_id !== $tenantId
+        if ($request->tenantId !== $tenantId
+            || (int) $connection->tenant_id !== $tenantId
             || (int) $connection->id !== $request->connectionId
             || (string) $connection->status !== ProviderConnection::STATUS_ACTIVE
             || (string) $connection->provider_id === '') {
@@ -109,8 +110,17 @@ final class ProviderCredentialStore
 
     public function requireUsable(ProviderAuthenticationRequest $request, DateTimeImmutable $at): ProviderCredential
     {
+        $tenantId = $this->tenantContext->requireTenantId();
+        if ($request->tenantId !== $tenantId) {
+            throw new ProviderAuthenticationException(
+                providerId: 'unknown',
+                operation: 'resolve_credential',
+                message: 'Provider credential requests cannot cross the current tenant boundary.',
+            );
+        }
+
         $credential = ProviderCredentialRecord::query()
-            ->forTenant($this->tenantContext->requireTenantId())
+            ->forTenant($tenantId)
             ->where('connection_id', $request->connectionId)
             ->usable($request->audience, $request->scopes[0] ?? '', $at)
             ->latest('issued_at')

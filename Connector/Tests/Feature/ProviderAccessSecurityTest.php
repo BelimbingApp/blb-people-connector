@@ -160,6 +160,36 @@ test('provider access rejects a cross-tenant or cross-company actor before autho
     ))->toThrow(ProviderAuthorizationException::class);
 });
 
+test('provider access rejects an installed adapter that is not active for the scope', function (): void {
+    app(TenantContext::class)->set(1);
+    $authorization = Mockery::mock(AuthorizationService::class);
+    $authorization->shouldNotReceive('authorize');
+    app()->instance(AuthorizationService::class, $authorization);
+    $connections = Mockery::mock(ProviderConnectionStore::class);
+    $connections->shouldReceive('active')->once()->andReturn(new ProviderConnection([
+        'tenant_id' => 1,
+        'company_id' => 10,
+        'scope_key' => 'company:10',
+        'provider_id' => 'other.provider',
+        'status' => ProviderConnection::STATUS_ACTIVE,
+    ]));
+    app()->instance(ProviderConnectionStore::class, $connections);
+
+    $provider = Mockery::mock(ProviderAdapter::class);
+    $provider->shouldReceive('descriptor')->andReturn(new ProviderDescriptor(
+        'test.provider', 'Test Provider', '1.0.0', '1.0.0',
+    ));
+    $provider->shouldNotReceive('capabilities');
+
+    expect(fn () => app(ProviderAccessAuthorizer::class)->read(
+        peopleConnectorTestActor(),
+        $provider,
+        PeopleCapability::EmployeeDirectory,
+        BootstrapsWorkforce::class,
+        ProviderScope::company(10),
+    ))->toThrow(ProviderAuthorizationException::class);
+});
+
 test('credential claims contain rotation metadata but never a secret', function (): void {
     $issuedAt = new DateTimeImmutable('2026-09-02T00:00:00+00:00');
     $credential = new ProviderCredential(
