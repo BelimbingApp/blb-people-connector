@@ -50,7 +50,7 @@ final class ProviderPortResolver
             throw new \InvalidArgumentException('Readable provider resolution requires a readable port interface.');
         }
 
-        $authorization = $this->authorizeActor($actor, $provider, $scope, 'people-connector.provider.read', $capability, $contract, 'read');
+        $authorization = $this->authorizeActor($actor, $provider, $scope, $capability, $contract, 'read');
 
         /** @var TPort */
         return $this->resolve(
@@ -81,7 +81,7 @@ final class ProviderPortResolver
             throw new \InvalidArgumentException('Writable provider resolution requires a writable port interface.');
         }
 
-        $authorization = $this->authorizeActor($actor, $provider, $scope, 'people-connector.provider.write', $capability, $contract, 'write');
+        $authorization = $this->authorizeActor($actor, $provider, $scope, $capability, $contract, 'write');
 
         /** @var TPort */
         return $this->resolve(
@@ -103,7 +103,6 @@ final class ProviderPortResolver
         Actor $actor,
         ProviderAdapter $provider,
         ProviderScope $scope,
-        string $permission,
         PeopleCapability $capability,
         string $contract,
         string $direction,
@@ -115,7 +114,6 @@ final class ProviderPortResolver
             $actor,
             $provider,
             $scope,
-            $permission,
             $capability,
             $contract,
             $direction,
@@ -167,7 +165,7 @@ final class ProviderPortResolver
             $descriptor->id,
             $this->tenantContext->requireTenantId(),
             $scope->key(),
-            'people-connector.provider.'.$direction,
+            ProviderPortAuthorization::permissionFor($capability, $direction),
             $capability->value,
             $direction,
             $contract,
