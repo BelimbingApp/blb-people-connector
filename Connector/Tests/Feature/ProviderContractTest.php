@@ -225,7 +225,7 @@ test('workforce pages separate page continuation from durable resume checkpoints
 });
 
 test('provider conformance exercises only the narrow ports an adapter declares', function (): void {
-    $provider = Mockery::mock(ProviderAdapter::class);
+    $provider = Mockery::mock(ProviderAdapter::class, ResolvesProviderPorts::class);
     $source = Mockery::mock(WorkforceSource::class);
 
     $provider->shouldReceive('descriptor')->andReturn(
@@ -256,7 +256,7 @@ test('provider conformance exercises only the narrow ports an adapter declares',
 });
 
 test('snapshot-only adapters are not forced to provide incremental or reconciliation ports', function (): void {
-    $provider = Mockery::mock(ProviderAdapter::class);
+    $provider = Mockery::mock(ProviderAdapter::class, ResolvesProviderPorts::class);
     $bootstrap = Mockery::mock(BootstrapsWorkforce::class);
 
     $provider->shouldReceive('descriptor')->andReturn(

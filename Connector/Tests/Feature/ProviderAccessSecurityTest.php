@@ -14,6 +14,8 @@ use App\Domains\PeopleConnector\Connector\Models\ProviderCredentialRecord;
 use App\Domains\PeopleConnector\Connector\Services\PrivilegedSupportService;
 use App\Domains\PeopleConnector\Connector\Services\ProviderConnectionStore;
 use App\Domains\PeopleConnector\Connector\Services\ProviderCredentialStore;
+use Illuminate\Database\QueryException;
+use Illuminate\Support\Facades\DB;
 
 function peopleConnectorTestActor(int $tenantId = 1, int $companyId = 10, int $id = 20): Actor
 {
@@ -161,18 +163,18 @@ test('break-glass actions and revocation reject an unlisted actor or capability'
         'employee_directory:read',
         'provider_health_read',
         'completed',
-    ))->toThrow(ProviderAuthorizationException::class)
+    ))->toThrow('Only the named requester or approver may mutate a break-glass grant')
         ->and(fn () => $service->recordAction(
             $grant,
             peopleConnectorTestActor((int) $tenant->id, (int) $company->id, 40),
             'employee_directory:write',
             'provider_write',
             'completed',
-        ))->toThrow(ProviderAuthorizationException::class)
+        ))->toThrow('Expired or revoked break-glass grants cannot perform or record actions')
         ->and(fn () => $service->revoke(
             $grant,
             peopleConnectorTestActor((int) $tenant->id, (int) $company->id, 42),
-        ))->toThrow(ProviderAuthorizationException::class)
+        ))->toThrow('Only the named requester or approver may mutate a break-glass grant')
         ->and($grant->refresh()->revoked_at)->toBeNull();
 });
 
@@ -202,10 +204,12 @@ test('break-glass action records resist builder updates and deletes', function (
         'completed',
     );
 
-    expect(fn () => PrivilegedSupportAction::query()->whereKey($action->id)->update(['outcome' => 'tampered']))
-        ->toThrow(Throwable::class)
-        ->and(fn () => PrivilegedSupportAction::query()->whereKey($action->id)->delete())
-        ->toThrow(Throwable::class)
+    $bypass = fn (callable $write): callable => fn () => DB::transaction($write);
+
+    expect($bypass(fn () => PrivilegedSupportAction::query()->whereKey($action->id)->update(['outcome' => 'tampered'])))
+        ->toThrow(QueryException::class)
+        ->and($bypass(fn () => PrivilegedSupportAction::query()->whereKey($action->id)->delete()))
+        ->toThrow(QueryException::class)
         ->and(PrivilegedSupportAction::query()->findOrFail($action->id)->outcome)->toBe('completed');
 });
 
@@ -235,5 +239,5 @@ test('expired break-glass access cannot record a provider action', function (): 
         'provider_health_read',
         'completed',
         occurredAt: new DateTimeImmutable('2026-09-02T00:00:00+00:00'),
-    ))->toThrow(ProviderAuthorizationException::class);
+    ))->toThrow('Expired or revoked break-glass grants cannot perform or record actions');
 });
