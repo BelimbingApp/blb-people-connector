@@ -294,16 +294,21 @@ test('a company-owned table joined into an unguarded Class T query is not guarde
     $skills = (new Skill)->getTable();
     $entities = (new WorkforceEntity)->getTable();
 
-    $joinOnOwner = fn (string $table) => fn ($join) => $join
-        ->on($table.'.company_entity_id', '=', $entities.'.id')
-        ->on($table.'.tenant_id', '=', $entities.'.tenant_id');
+    $joinOnOwner = fn ($join) => $join
+        ->on($skills.'.company_entity_id', '=', $entities.'.id')
+        ->on($skills.'.tenant_id', '=', $entities.'.tenant_id');
 
     // A. RequireCompanyScope is registered per model by the CompanyOwned
     // trait. WorkforceEntity is Class T and does not use it, so a query
     // built from that base never constructs Skill's builder: nothing
     // inspects the query and both companies come back.
+    //
+    // This asserts a LEAK. If it ever fails, the guard has grown to cover
+    // this case and that is good news -- fix the bullet in
+    // docs/contracts/company-ownership.md in the same change rather than
+    // deleting the test.
     $fromClassT = WorkforceEntity::query()
-        ->join($skills, $joinOnOwner($skills))
+        ->join($skills, $joinOnOwner)
         ->where($entities.'.tenant_id', $fixture->tenantId)
         ->pluck($skills.'.name')->all();
 
@@ -314,7 +319,7 @@ test('a company-owned table joined into an unguarded Class T query is not guarde
     // Without this, A shows only that a query returning rows can be
     // written -- it would read identically if the guard had been deleted.
     expect(fn () => Skill::query()
-        ->join($entities, $joinOnOwner($skills))
+        ->join($entities, $joinOnOwner)
         ->where($skills.'.tenant_id', $fixture->tenantId)
         ->pluck($skills.'.name')->all())
         ->toThrow(MissingCompanyScopeException::class);
@@ -323,7 +328,7 @@ test('a company-owned table joined into an unguarded Class T query is not guarde
     // so the guard is not merely refusing everything.
     expect(Skill::query()
         ->forCompany($fixture->tenantId, $fixture->alphaCompanyEntityId)
-        ->join($entities, $joinOnOwner($skills))
+        ->join($entities, $joinOnOwner)
         ->pluck($skills.'.name')->all())->toBe([$alphaSkill->name]);
 });
 
@@ -331,24 +336,29 @@ test('joinSub is guarded through the Eloquent builder and not through getQuery',
     $fixture = CompanyIsolationContract::twoCompaniesInOneTenant();
     app(TenantContext::class)->set($fixture->tenantId);
 
-    [, $betaSkill] = companyIsolationRivalSkills($fixture);
+    [$alphaSkill, $betaSkill] = companyIsolationRivalSkills($fixture);
     $entities = (new WorkforceEntity)->getTable();
 
-    // D. parseSub() resolves an Eloquent builder through toBase(), which
-    // applies global scopes -- so this sub-select IS guarded, even though
-    // the outer query is Class T. This is the exception the contract
-    // states, and it is one method call away from E.
+    // D. parseSub() calls toSql() on the sub-builder. Eloquent\Builder does
+    // not define toSql, 'tosql' is in its $passthru list, and __call routes
+    // a passthru method through toBase() -- which applies global scopes. So
+    // this sub-select IS guarded even though the outer query is Class T.
+    // The exception documented in docs/contracts/company-ownership.md, one
+    // method call away from E.
     expect(fn () => WorkforceEntity::query()
         ->joinSub(Skill::query(), 's', fn ($join) => $join->on('s.company_entity_id', '=', $entities.'.id'))
         ->where($entities.'.tenant_id', $fixture->tenantId)
         ->pluck('s.name')->all())
         ->toThrow(MissingCompanyScopeException::class);
 
-    // E. ->getQuery() leaves Eloquent, and the scopes with it.
+    // E. ->getQuery() leaves Eloquent, and the scopes with it. Asserts a
+    // LEAK, like A: a failure here means the guard improved and the
+    // contract needs updating, not that this test is broken.
     $leaked = WorkforceEntity::query()
         ->joinSub(Skill::query()->getQuery(), 's', fn ($join) => $join->on('s.company_entity_id', '=', $entities.'.id'))
         ->where($entities.'.tenant_id', $fixture->tenantId)
         ->pluck('s.name')->all();
 
-    expect($leaked)->toContain($betaSkill->name);
+    expect($leaked)->toContain($alphaSkill->name)
+        ->and($leaked)->toContain($betaSkill->name);
 });
