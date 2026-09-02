@@ -292,9 +292,10 @@ escape on a relation, which covered everything appended to it.
 
 The reason is required for the same purpose as on `withoutCompanyScope()`:
 `grep -rn movingCompany` is the complete list of places a row may leave its
-company, and it is complete because every route that could move one without
-that marker is refused. Today there are two, and they are the only two the
-domain knows of:
+company **through Eloquent**, and it is complete because every Eloquent route
+that could move one without that marker is refused. `DB::table()` is not
+Eloquent and is not covered; see "What the guard does not cover". Today there
+are two, and they are the only two the domain knows of:
 
 - **A sync pass.** `WorkforceProjectionStore` writes the provider's payload as
   observed, and the company an employee, position or unit belongs to is part of
@@ -306,7 +307,7 @@ domain knows of:
   transaction that marks the superseded entity merged.
 
 `CompanyIsolationContract` runs the whole route list against every
-company-owned model — fourteen builder routes and four model routes, plus the
+company-owned model — fourteen builder routes and three model routes, plus the
 one-write rule on the same builder, on a clone taken while armed, and on a
 model whose save was halted — so a route that is added to Eloquent later, or
 a model added to the domain later, fails the suite rather than the tenant.

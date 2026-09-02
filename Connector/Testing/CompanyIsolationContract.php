@@ -14,6 +14,7 @@ use App\Domains\PeopleConnector\Connector\Models\WorkforceCompanyProjection;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceEntity;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
 /**
@@ -250,12 +251,23 @@ final class CompanyIsolationContract
             'get_query_update' => fn () => $pinned()->getQuery()->update([$column => 2]),
         ];
 
+        $exercised = 0;
+
         foreach ($routes as $route => $write) {
+            $exercised++;
+
             try {
                 $write();
                 $violations[] = "{$route}_moves_a_company_column";
             } catch (CompanyMoveRefusedException) {
                 // Expected: the row would have left its company.
+            } catch (\Throwable $past) {
+                // Anything else means the write got past the refusal and hit
+                // the database (or a route that no longer exists). Recorded
+                // against the route, never allowed to abort the loop: a loop
+                // that stops early reports exactly like one that finished
+                // (#32), and the count below makes that impossible to miss.
+                $violations[] = "{$route}_moves_a_company_column:".$past::class;
             }
         }
 
@@ -289,6 +301,33 @@ final class CompanyIsolationContract
             }
         }
 
+        // A statement covers one write even when that write is an
+        // updateOrInsert() that never reaches update(): the insert branch,
+        // an empty value list, or a throw (#31). Here every attempt throws
+        // against the unused tenant, which is the hardest of the three.
+        foreach ([
+            'update_or_insert_that_throws' => fn (Builder $armed) => $armed->updateOrInsert(['id' => 1], [$column => 2]),
+            'update_or_insert_with_empty_values' => fn (Builder $armed) => $armed->updateOrInsert(['id' => 1], []),
+        ] as $label => $attempt) {
+            $armed = $pinned()->movingCompany('Contract check: a stated updateOrInsert must spend the statement whatever branch it takes.');
+
+            try {
+                // Savepoint-wrapped: the failed INSERT would otherwise poison
+                // the test transaction on Postgres and every later statement
+                // in this check would fail for that reason instead of its own.
+                DB::transaction(fn () => $attempt($armed));
+            } catch (\Throwable) {
+                // The write itself may fail; the grant must be gone regardless.
+            }
+
+            try {
+                $armed->update([$column => 2]);
+                $violations[] = "grant_survives_{$label}";
+            } catch (CompanyMoveRefusedException) {
+                // Expected: spent.
+            }
+        }
+
         // Model routes, with events silenced: a concrete model's own
         // listeners may refuse a bare instance for their own reasons before
         // the write is built, and events are not the mechanism here — the
@@ -310,6 +349,8 @@ final class CompanyIsolationContract
         ];
 
         foreach ($modelRoutes as $route => $write) {
+            $exercised++;
+
             try {
                 $write();
                 $violations[] = "{$route}_moves_a_company_column";
@@ -337,7 +378,7 @@ final class CompanyIsolationContract
         });
 
         try {
-            $instance->save();
+            DB::transaction(fn () => $instance->save());
         } catch (\Throwable) {
             // Whatever a halted save does, the grant must be gone afterwards.
         }
@@ -350,6 +391,12 @@ final class CompanyIsolationContract
             // Expected.
         } catch (\Throwable $past) {
             $violations[] = 'model_grant_survives_a_halted_save:'.$past::class;
+        }
+
+        $expected = count($routes) + count($modelRoutes);
+
+        if ($exercised !== $expected) {
+            $violations[] = "routes_exercised:{$exercised}_of_{$expected}";
         }
 
         return $violations;
