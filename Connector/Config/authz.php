@@ -8,5 +8,7 @@ return [
     'capabilities' => [
         'people-connector.connection.list',
         'people-connector.connection.manage',
+        'people-connector.provider.read',
+        'people-connector.provider.write',
     ],
 ];
