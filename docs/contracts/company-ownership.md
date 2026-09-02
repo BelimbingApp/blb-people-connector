@@ -165,6 +165,10 @@ that a Class C or Class D model uses. It does three things:
    just before it runs. If no top-level `AND` predicate constrains one of the
    declared columns, it throws `MissingCompanyScopeException` instead of
    executing.
+4. Refuses a write that would change the owning column — a builder `update()`
+   or `upsert()` naming it, or a `save()` with it dirty — unless the writer
+   first said `movingCompany($reason)`. It throws `CompanyMoveRefusedException`.
+   See "Moving a row between companies" below.
 
 The result is that `Skill::query()->forTenant($tenantId)->get()` — the exact
 line all three lanes wrote — now raises an error naming the model and the
@@ -235,6 +239,60 @@ honest uses on models that are not company-owned, and a check that flags those
 gets argued down until it means nothing. It belongs in the same category as
 `DB::table()`: you have left Eloquent, and the rule below about raw queries
 applies. Do not reach for it on a company-owned table.
+
+### Moving a row between companies
+
+The scope guard checks a query's *predicates*. It cannot check its *values*,
+and that leaves one write it accepts which is still wrong: a correctly pinned
+update that sets `company_entity_id` to a sibling company's id.
+
+```php
+Skill::query()->forCompany($tenantId, $alpha)->update(['company_entity_id' => $beta]);
+```
+
+Both axes are pinned, on the base table, with real values — the exact shape
+the guard is written to accept. And the database accepts it too, which is the
+asymmetry that made this worth its own rule (blb-people-connector#18): the
+tenant axis has a foreign key, so moving a row to a tenant that does not exist
+fails, but the company axis has only a composite key to
+`workforce_entities (id, tenant_id)`, and `$beta` *is* a real entity in the
+same tenant. The write is valid; it is only wrong. Afterwards the row is not
+visible as a leak. It looks like data that was never there.
+
+So changing the owning column is refused unless it is stated:
+
+```php
+$projection->movingCompany('why this row may change company')->fill($values)->save();
+Model::query()->movingCompany('why')->forCompany(…)->update([…]);
+```
+
+The reason is required for the same purpose as on `withoutCompanyScope()`:
+`grep -rn movingCompany` is the complete list of places a row may leave its
+company. Today there are two, and they are the only two the domain knows of:
+
+- **A sync pass.** `WorkforceProjectionStore` writes the provider's payload as
+  observed, and the company an employee, position or unit belongs to is part of
+  that payload. An employee transferring between two companies in HR2000
+  arrives as exactly this update. The company axis on a projection table is
+  provider truth, and this is where it is allowed to change.
+- **A company merge.** `WorkforceIdentityStore::merge()` rewrites every row
+  owned by the superseded company entity to its survivor, in the same
+  transaction that marks the superseded entity merged.
+
+`CompanyIsolationContract` checks, for every company-owned model with an
+owning column, that a pinned update of that column is refused, that the
+qualified column name is refused too, that a stated move runs, that an empty
+reason is refused, and that a `save()` with the column dirty is refused.
+
+**Where the database also refuses.** The Skill module's catalog rows —
+categories, skills, proficiency scales — never legitimately change company: no
+sync writes them and no merge rewrites them. So there the backstop is the same
+class of thing the tenant axis has: a `BEFORE UPDATE` trigger on each table, on
+both drivers, that aborts when `company_entity_id` changes. The model-layer
+refusal gives the author a message; the trigger stands when the model layer is
+bypassed. Projection tables get no trigger, because the database cannot tell a
+transfer from a mistake; there the named escape is the mechanism, and the
+sync store is the one caller.
 
 ### What the guard accepts
 
@@ -462,7 +520,8 @@ Being honest about the edges:
   The store refuses this; the database does not.
 - **Saving or deleting a model you already hold.** Eloquent addresses those by
   primary key without scopes. That is correct: you obtained the instance
-  through a guarded query.
+  through a guarded query. The one thing a held model may not do silently is
+  change its owning column; see "Moving a row between companies".
 - **Raw `DB::table()` queries, and `->getQuery()`.** Both leave Eloquent, and
   global scopes with it. Do not use either on a company-owned table.
 - **A derived or raw `from`.** `fromSub()` and `fromRaw()` are *refused*, not

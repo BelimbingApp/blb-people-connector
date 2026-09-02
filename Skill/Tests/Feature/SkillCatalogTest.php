@@ -1,6 +1,7 @@
 <?php
 
 use App\Base\Tenancy\Contracts\TenantContext;
+use App\Domains\PeopleConnector\Connector\Exceptions\CompanyMoveRefusedException;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceEntity;
 use App\Domains\PeopleConnector\Skill\Data\SkillDraft;
 use App\Domains\PeopleConnector\Skill\Enums\AssessmentMethod;
@@ -200,6 +201,37 @@ test('company axis: a sibling company in the same tenant cannot address this cat
 
     expect($skillA->refresh()->name)->toBe('Forklift Operation')
         ->and($skillA->active)->toBeTrue();
+});
+
+test('a pinned update cannot move a catalog row to a sibling company at the model or database layer', function (): void {
+    [$tenantId, $companyEntityId, $category] = skillCatalogFixture('Owner Guard Tenant');
+    $skill = app(SkillCatalogStore::class)->defineSkill($companyEntityId, skillCatalogDraft($category));
+    $sibling = (int) skillCatalogEntity($tenantId, 'company')->id;
+
+    // The scope guard is satisfied: both axes are pinned, on the base table.
+    // The composite foreign key is satisfied too: the sibling is a real entity
+    // in the same tenant. Only the value check stands between the row and a
+    // silent move.
+    foreach ([
+        fn () => Skill::query()->forCompany($tenantId, $companyEntityId)->update(['company_entity_id' => $sibling]),
+        fn () => SkillCategory::query()->forCompany($tenantId, $companyEntityId)->update(['company_entity_id' => $sibling]),
+        fn () => $skill->fill(['company_entity_id' => $sibling])->save(),
+        fn () => $skill->forceFill(['company_entity_id' => $sibling])->save(),
+    ] as $move) {
+        expect($move)->toThrow(CompanyMoveRefusedException::class, 'would leave its company');
+    }
+
+    // Savepoint-wrapped: a trigger abort poisons the test transaction on Postgres.
+    foreach ([Skill::class, SkillCategory::class] as $model) {
+        expect(fn () => DB::transaction(fn () => $model::query()
+            ->movingCompany('Deliberately bypasses the model layer to prove the database trigger stands on its own.')
+            ->forCompany($tenantId, $companyEntityId)
+            ->update(['company_entity_id' => $sibling])))
+            ->toThrow(QueryException::class, 'cannot move to another company');
+    }
+
+    expect((int) $skill->refresh()->company_entity_id)->toBe($companyEntityId)
+        ->and((int) $category->refresh()->company_entity_id)->toBe($companyEntityId);
 });
 
 test('skill codes are immutable at the model and database layers, not only in the store', function (): void {

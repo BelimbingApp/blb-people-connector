@@ -686,13 +686,19 @@ final class WorkforceIdentityStore
             // open attribution question in
             // docs/contracts/company-ownership.md; query scoping cannot
             // answer it.
-            if (! in_array($column, (new $projectionModel)->companyScopeColumns(), true)) {
+            $rewritesOwner = in_array($column, (new $projectionModel)->companyScopeColumns(), true);
+
+            if (! $rewritesOwner) {
                 $query->withoutCompanyScope('A merge rewrites every inbound reference to the superseded entity, and a shared manager or user entity may be referenced from more than one company.');
             }
 
             $projections = $query->get();
 
             foreach ($projections as $projection) {
+                if ($rewritesOwner) {
+                    $projection->movingCompany('A company merge moves every row owned by the superseded company entity to its survivor; the superseded entity was marked merged into the survivor in this same transaction.');
+                }
+
                 $selfReferentialHierarchy = in_array(
                     $column,
                     ['parent_entity_id', 'manager_entity_id', 'department_head_entity_id'],

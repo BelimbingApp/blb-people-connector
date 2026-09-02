@@ -5,6 +5,7 @@ namespace App\Domains\PeopleConnector\Connector\Testing;
 use App\Base\Tenancy\Models\Tenant;
 use App\Core\Company\Models\Company;
 use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
+use App\Domains\PeopleConnector\Connector\Exceptions\CompanyMoveRefusedException;
 use App\Domains\PeopleConnector\Connector\Exceptions\MissingCompanyScopeException;
 use App\Domains\PeopleConnector\Connector\Models\Concerns\CompanyOwned;
 use App\Domains\PeopleConnector\Connector\Models\ExternalIdentity;
@@ -111,6 +112,8 @@ final class CompanyIsolationContract
             } catch (MissingCompanyScopeException) {
                 $violations[] = 'for_company_does_not_satisfy_the_guard';
             }
+
+            $violations = array_merge($violations, self::ownerColumnViolations($model, $instance->companyOwnerColumn()));
         }
 
         try {
@@ -205,6 +208,71 @@ final class CompanyIsolationContract
         ]);
 
         return (int) $entity->id;
+    }
+
+    /**
+     * A correctly pinned write must still not be able to move the row to a
+     * sibling company without saying so (blb-people-connector#18). The pin
+     * is the exact shape the scope guard accepts, so this is the one write it
+     * cannot refuse; the builder and the model refuse the *value* instead.
+     *
+     * @param  class-string<Model>  $model
+     * @return list<string>
+     */
+    private static function ownerColumnViolations(string $model, string $column): array
+    {
+        $violations = [];
+
+        try {
+            $model::query()->forCompany(self::UNUSED_TENANT_ID, 1)->update([$column => 2]);
+            $violations[] = 'pinned_update_moves_the_owner_column';
+        } catch (CompanyMoveRefusedException) {
+            // Expected: the row would have left its company.
+        }
+
+        try {
+            $model::query()->forCompany(self::UNUSED_TENANT_ID, 1)->update([$model::query()->qualifyColumn($column) => 2]);
+            $violations[] = 'pinned_update_moves_the_qualified_owner_column';
+        } catch (CompanyMoveRefusedException) {
+            // Expected.
+        }
+
+        try {
+            $model::query()
+                ->movingCompany('Contract check: the stated move must actually be allowed to run.')
+                ->forCompany(self::UNUSED_TENANT_ID, 1)
+                ->update([$column => 2]);
+        } catch (CompanyMoveRefusedException) {
+            $violations[] = 'stated_move_is_refused';
+        }
+
+        try {
+            $model::query()->movingCompany('   ')->forCompany(self::UNUSED_TENANT_ID, 1)->update([$column => 2]);
+            $violations[] = 'move_accepts_an_empty_reason';
+        } catch (CompanyMoveRefusedException $exception) {
+            if (! str_contains($exception->getMessage(), 'reason')) {
+                $violations[] = 'move_accepts_an_empty_reason';
+            }
+        }
+
+        $instance = new $model;
+        $instance->setAttribute($column, 1);
+        $instance->syncOriginal();
+        $instance->exists = true;
+        $instance->setAttribute($column, 2);
+
+        try {
+            $instance->save();
+            $violations[] = 'model_save_moves_the_owner_column';
+        } catch (CompanyMoveRefusedException) {
+            // Expected.
+        } catch (\Throwable) {
+            // Anything past the refusal (a query against a row that does not
+            // exist) means the guard let the move through.
+            $violations[] = 'model_save_moves_the_owner_column';
+        }
+
+        return $violations;
     }
 
     /**
