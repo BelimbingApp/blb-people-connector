@@ -18,13 +18,13 @@ return new class extends Migration
         });
 
         DB::update(
-            'UPDATE people_connector_skill_requirement_profile_selectors s'
-            .' SET company_entity_id = (SELECT company_entity_id FROM people_connector_skill_requirement_profiles p WHERE p.id = s.profile_id)'
+            'UPDATE people_connector_skill_requirement_profile_selectors'
+            .' SET company_entity_id = (SELECT company_entity_id FROM people_connector_skill_requirement_profiles WHERE id = people_connector_skill_requirement_profile_selectors.profile_id)'
         );
 
         DB::update(
-            'UPDATE people_connector_skill_requirement_items i'
-            .' SET company_entity_id = (SELECT company_entity_id FROM people_connector_skill_requirement_profiles p WHERE p.id = i.profile_id)'
+            'UPDATE people_connector_skill_requirement_items'
+            .' SET company_entity_id = (SELECT company_entity_id FROM people_connector_skill_requirement_profiles WHERE id = people_connector_skill_requirement_items.profile_id)'
         );
 
         Schema::table('people_connector_skill_requirement_profile_selectors', function (Blueprint $table): void {
