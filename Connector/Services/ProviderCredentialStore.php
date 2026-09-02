@@ -29,12 +29,15 @@ final class ProviderCredentialStore
     ): ProviderCredential {
         $tenantId = $this->tenantContext->requireTenantId();
         $connection = $this->activeConnection($request, $connection, $tenantId);
+        $securityNow = new DateTimeImmutable(now()->toISOString());
 
-        if ((string) $connection->provider_id === '') {
+        if ((string) $connection->provider_id === ''
+            || $issuedAt > $securityNow->modify('+5 seconds')
+            || $expiresAt > $securityNow->modify('+305 seconds')) {
             throw new ProviderAuthenticationException(
                 providerId: (string) $connection->provider_id,
                 operation: 'issue_credential',
-                message: 'Provider credentials cannot cross the current tenant or connection boundary.',
+                message: 'Provider credentials require a current connection and a server-bounded issuance window.',
             );
         }
 
@@ -98,6 +101,7 @@ final class ProviderCredentialStore
         DB::transaction(function () use ($credentialId, $revokedAt): void {
             $tenantId = $this->tenantContext->requireTenantId();
             $credential = ProviderCredentialRecord::query()
+                ->withoutCompanyScope('Credential revocation first resolves the credential owner connection.')
                 ->forTenant($tenantId)
                 ->where('credential_id', $credentialId)
                 ->whereNull('revoked_at')

@@ -3,14 +3,28 @@
 namespace App\Domains\PeopleConnector\Connector\Models;
 
 use App\Domains\PeopleConnector\Connector\Data\ProviderCredential;
+use App\Domains\PeopleConnector\Connector\Models\Concerns\CompanyOwned;
 use DateTimeImmutable;
 use Illuminate\Database\Eloquent\Builder;
 
 final class ProviderCredentialRecord extends TenantOwnedModel
 {
+    use CompanyOwned;
+
     protected $table = 'people_connector_connector_provider_credentials';
 
     protected $hidden = ['secret_reference'];
+
+    public function companyOwnerColumn(): ?string
+    {
+        return null;
+    }
+
+    /** @return list<string> */
+    public function companyScopeColumns(): array
+    {
+        return ['connection_id'];
+    }
 
     protected static function booted(): void
     {

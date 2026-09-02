@@ -4,6 +4,7 @@ use App\Base\Authz\Contracts\AuthorizationService;
 use App\Base\Authz\DTO\Actor;
 use App\Base\Authz\Enums\PrincipalType;
 use App\Base\Tenancy\Contracts\TenantContext;
+use App\Core\Company\Models\Company;
 use App\Domains\PeopleConnector\Connector\Data\ProviderAuthenticationRequest;
 use App\Domains\PeopleConnector\Connector\Data\ProviderCredential;
 use App\Domains\PeopleConnector\Connector\Data\ProviderScope;
@@ -56,6 +57,31 @@ test('provider UI handoffs reject credential-like URL parameters', function (): 
     ))->toThrow(InvalidArgumentException::class);
 });
 
+test('provider UI handoffs are HTTPS, handle-bound, fragment-free, and server-bounded', function (): void {
+    $handle = 'opaque-one-time-handle';
+
+    expect(fn () => new ProviderUiHandoff(
+        'http://provider.example.test/sso?handle='.$handle,
+        new DateTimeImmutable('+4 minutes'),
+        $handle,
+    ))->toThrow(InvalidArgumentException::class)
+        ->and(fn () => new ProviderUiHandoff(
+            'https://provider.example.test/sso?handle='.$handle.'#access_token=reusable',
+            new DateTimeImmutable('+4 minutes'),
+            $handle,
+        ))->toThrow(InvalidArgumentException::class)
+        ->and(fn () => new ProviderUiHandoff(
+            'https://provider.example.test/sso?handle='.$handle,
+            new DateTimeImmutable('+6 minutes'),
+            $handle,
+        ))->toThrow(InvalidArgumentException::class)
+        ->and((new ProviderUiHandoff(
+            'https://provider.example.test/sso?handle='.$handle,
+            new DateTimeImmutable('+4 minutes'),
+            $handle,
+        ))->oneTimeHandle)->toBe($handle);
+});
+
 test('credential resolution rejects a credential after its connection is deactivated', function (): void {
     [$tenant, $company] = createTenantWithCompany(['name' => 'Credential Revocation Tenant']);
     $tenantId = (int) $tenant->id;
@@ -80,6 +106,59 @@ test('credential resolution rejects a credential after its connection is deactiv
         ->toThrow(ProviderAuthenticationException::class);
 });
 
+test('credential resolution cannot cross companies or accept a forged request tenant', function (): void {
+    [$tenant, $companyA] = createTenantWithCompany(['name' => 'Credential Axis Tenant']);
+    $tenantId = (int) $tenant->id;
+    $companyAId = (int) $companyA->id;
+    $companyBId = (int) Company::factory()->create(['tenant_id' => $tenantId, 'name' => 'Credential Axis Company B'])->id;
+    peopleConnectorTestActivateConnection($tenantId, $companyAId, 'test.provider');
+    peopleConnectorTestActivateConnection($tenantId, $companyBId, 'test.provider');
+    $connections = app(ProviderConnectionStore::class);
+    $connectionA = $connections->active(ProviderScope::company($companyAId));
+    $connectionB = $connections->active(ProviderScope::company($companyBId));
+    $issuedAt = new DateTimeImmutable;
+    $store = app(ProviderCredentialStore::class);
+    $store->issue(
+        new ProviderAuthenticationRequest($tenantId, (int) $connectionA->id, 'blb-people-connector', ['employee_directory:read']),
+        $connectionA,
+        'key-2026-09',
+        'base-integration:test-provider',
+        $issuedAt,
+        $issuedAt->modify('+5 minutes'),
+    );
+
+    expect(fn () => $store->requireUsable(
+        new ProviderAuthenticationRequest($tenantId, (int) $connectionB->id, 'blb-people-connector', ['employee_directory:read']),
+        $issuedAt->modify('+1 minute'),
+    ))->toThrow(ProviderAuthenticationException::class)
+        ->and(fn () => $store->issue(
+            new ProviderAuthenticationRequest($tenantId + 1000, (int) $connectionA->id, 'blb-people-connector', ['employee_directory:read']),
+            $connectionA,
+            'key-2026-09',
+            'base-integration:test-provider',
+            $issuedAt,
+            $issuedAt->modify('+5 minutes'),
+        ))->toThrow(ProviderAuthenticationException::class);
+});
+
+test('credential issuance rejects a future server window', function (): void {
+    [$tenant, $company] = createTenantWithCompany(['name' => 'Credential Clock Tenant']);
+    $tenantId = (int) $tenant->id;
+    $companyId = (int) $company->id;
+    peopleConnectorTestActivateConnection($tenantId, $companyId, 'test.provider');
+    $connection = app(ProviderConnectionStore::class)->active(ProviderScope::company($companyId));
+    $issuedAt = new DateTimeImmutable('+10 minutes');
+
+    expect(fn () => app(ProviderCredentialStore::class)->issue(
+        new ProviderAuthenticationRequest($tenantId, (int) $connection->id, 'blb-people-connector', ['employee_directory:read']),
+        $connection,
+        'key-2026-09',
+        'base-integration:test-provider',
+        $issuedAt,
+        $issuedAt->modify('+5 minutes'),
+    ))->toThrow('server-bounded issuance window');
+});
+
 test('invalid credential lifetimes never persist a credential record', function (): void {
     [$tenant, $company] = createTenantWithCompany(['name' => 'Credential Lifetime Tenant']);
     $tenantId = (int) $tenant->id;
@@ -102,7 +181,9 @@ test('invalid credential lifetimes never persist a credential record', function 
         $issuedAt,
         $issuedAt->modify('+6 minutes'),
     ))->toThrow(InvalidArgumentException::class)
-        ->and(ProviderCredentialRecord::query()->count())->toBe(0);
+        ->and(ProviderCredentialRecord::query()
+            ->withoutCompanyScope('This assertion intentionally counts all tenant credential rows after rejected issuance.')
+            ->count())->toBe(0);
 });
 
 test('break-glass access requires a separate approver and records its actions', function (): void {
@@ -176,6 +257,31 @@ test('break-glass actions and revocation reject an unlisted actor or capability'
             peopleConnectorTestActor((int) $tenant->id, (int) $company->id, 42),
         ))->toThrow('Only the named requester or approver may mutate a break-glass grant')
         ->and($grant->refresh()->revoked_at)->toBeNull();
+});
+
+test('a hydrated break-glass grant cannot cross the tenant boundary', function (): void {
+    [$tenantA, $companyA] = createTenantWithCompany(['name' => 'Support Tenant A']);
+    [$tenantB, $companyB] = createTenantWithCompany(['name' => 'Support Tenant B']);
+    app(TenantContext::class)->set((int) $tenantA->id);
+    $authorization = Mockery::mock(AuthorizationService::class);
+    $authorization->shouldReceive('authorize')->twice()->andReturnNull();
+    app()->instance(AuthorizationService::class, $authorization);
+    $issuedAt = new DateTimeImmutable;
+    $grant = app(PrivilegedSupportService::class)->issue(
+        peopleConnectorTestActor((int) $tenantA->id, (int) $companyA->id, 60),
+        peopleConnectorTestActor((int) $tenantA->id, (int) $companyA->id, 61),
+        ProviderScope::company((int) $companyA->id),
+        ['employee_directory:read'],
+        'Reject cross-tenant hydrated grants',
+        $issuedAt,
+        $issuedAt->modify('+15 minutes'),
+    );
+    app(TenantContext::class)->set((int) $tenantB->id);
+
+    expect(fn () => app(PrivilegedSupportService::class)->revoke(
+        $grant,
+        peopleConnectorTestActor((int) $tenantB->id, (int) $companyB->id, 60),
+    ))->toThrow('The break-glass grant is missing or outside the current tenant');
 });
 
 test('break-glass action records resist builder updates and deletes', function (): void {

@@ -36,6 +36,8 @@ final class PrivilegedSupportService
 
         if ($requester->id === $approver->id || trim($purpose) === '' || $expiresAt <= $issuedAt
             || $expiresAt->getTimestamp() - $issuedAt->getTimestamp() > 3600
+            || $issuedAt > (new DateTimeImmutable(now()->toISOString()))->modify('+5 seconds')
+            || $expiresAt > (new DateTimeImmutable(now()->toISOString()))->modify('+3605 seconds')
             || $capabilities === []
             || array_filter($capabilities, static fn (string $capability): bool => preg_match('/^[a-z0-9][a-z0-9._:-]{0,127}$/', $capability) !== 1) !== []) {
             throw new ProviderAuthorizationException(
