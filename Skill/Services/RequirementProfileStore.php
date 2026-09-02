@@ -233,7 +233,7 @@ class RequirementProfileStore
     }
 
     /**
-     * @param list<RequirementSelectorDraft> $selectors
+     * @param  list<RequirementSelectorDraft>  $selectors
      */
     private function writeSelectors(RequirementProfile $profile, array $selectors): void
     {
@@ -249,7 +249,7 @@ class RequirementProfileStore
     }
 
     /**
-     * @param list<RequirementItemDraft> $items
+     * @param  list<RequirementItemDraft>  $items
      */
     private function writeItems(RequirementProfile $profile, array $items): void
     {
@@ -271,7 +271,7 @@ class RequirementProfileStore
     }
 
     /**
-     * @param list<RequirementSelectorDraft> $selectors
+     * @param  list<RequirementSelectorDraft>  $selectors
      */
     private function assertSelectors(int $tenantId, array $selectors): void
     {
@@ -303,7 +303,7 @@ class RequirementProfileStore
     }
 
     /**
-     * @param list<RequirementItemDraft> $items
+     * @param  list<RequirementItemDraft>  $items
      */
     private function assertItems(int $tenantId, int $companyEntityId, array $items): void
     {
@@ -351,7 +351,7 @@ class RequirementProfileStore
     }
 
     /**
-     * @param array<RequirementItem> $items
+     * @param  array<RequirementItem>  $items
      */
     private function assertPublishableItems(array $items): void
     {

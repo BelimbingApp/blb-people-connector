@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 use App\Base\Tenancy\Contracts\TenantContext;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceEntity;
 use App\Domains\PeopleConnector\Skill\Data\RequirementItemDraft;

@@ -10,10 +10,6 @@ use DateTimeInterface;
  */
 final readonly class RequirementProfileDraft
 {
-    /**
-     * @param list<RequirementSelectorDraft> $selectors
-     * @param list<RequirementItemDraft> $items
-     */
     public function __construct(
         public string $code,
         public string $name,
