@@ -86,6 +86,23 @@ function catalogPageViewer(int $companyId): User
     return $viewer;
 }
 
+/**
+ * A draft scale on a code of its OWN, not a new version of the standard one.
+ *
+ * newDraftFrom() opens a draft on the SAME code, and draft()'s open-draft rule
+ * is per code -- so it would leave draftNewScaleVersion unable to write even
+ * fully un-funnelled, killing the count assertion that is its only detector
+ * (#47, measured by opus-5-review-z). A separate code keeps both live.
+ */
+function catalogPageProbeDraft(int $companyEntityId): ProficiencyScale
+{
+    return app(ProficiencyScaleStore::class)->draft($companyEntityId, 'probe', 'Probe', [
+        new ProficiencyLevelDraft(0, 'None', 'No demonstrated capability.', 'None.'),
+        new ProficiencyLevelDraft(1, 'Basic', 'Works with supervision.', 'Supervised.'),
+        new ProficiencyLevelDraft(2, 'Full', 'Works unsupervised.', 'Authorised.'),
+    ]);
+}
+
 test('the catalog page states honestly that no company is synchronized yet', function (): void {
     $admin = createAdminUser();
 
@@ -295,23 +312,6 @@ test('a single-company tenant with a tenant-scoped provider stays visible, then 
         ->assertViewHas('companies', []);
 });
 
-/**
- * A draft scale on a code of its OWN, not a new version of the standard one.
- *
- * newDraftFrom() opens a draft on the SAME code, and draft()'s open-draft rule
- * is per code -- so it would leave draftNewScaleVersion unable to write even
- * fully un-funnelled, killing the count assertion that is its only detector
- * (#47, measured by opus-5-review-z). A separate code keeps both live.
- */
-function catalogPageProbeDraft(int $companyEntityId): ProficiencyScale
-{
-    return app(ProficiencyScaleStore::class)->draft($companyEntityId, 'probe', 'Probe', [
-        new ProficiencyLevelDraft(0, 'None', 'No demonstrated capability.', 'None.'),
-        new ProficiencyLevelDraft(1, 'Basic', 'Works with supervision.', 'Supervised.'),
-        new ProficiencyLevelDraft(2, 'Full', 'Works unsupervised.', 'Authorised.'),
-    ]);
-}
-
 test('every mutating catalog action refuses a company the actor may not act for', function (): void {
     // The component documents authorizedCompanyForManage() as "the single
     // authorization funnel for every mutating action". Nothing failed if an
@@ -337,10 +337,11 @@ test('every mutating catalog action refuses a company the actor may not act for'
         categoryId: (int) $betaCategory->id,
     ));
 
-    // install() leaves the standard scale already published, so publishScale
-    // driven at it could never move anything (#47). A draft on its own code
-    // gives publishScale something to publish AND leaves the standard scale
-    // free for draftNewScaleVersion, so both assertions below stay live.
+    // A draft on its own code: publishScale has something to publish, and
+    // the standard scale stays free for draftNewScaleVersion, so both
+    // assertions below detect their own leak. (install() leaves the standard
+    // scale published, and a draft of the same code would block the other
+    // action -- either way one assertion goes dead. See #47.)
     $betaDraft = catalogPageProbeDraft($betaEntity);
 
     // Beta's REAL ids, deliberately. With a made-up id the action would 404

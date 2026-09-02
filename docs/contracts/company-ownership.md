@@ -499,7 +499,7 @@ legitimate is lost by refusing to tell the two apart when one is present.
 
 An earlier version tried to tell them apart, by naming the tables the query
 could see and accepting the correlation when the other side was *absent* from
-that list. See the next section for why that was the wrong shape of rule.
+that list. See the next section for why that was the wrong kind of rule.
 
 `whereIn('company_entity_id', [$a, $b])` is accepted, by design. The guard
 proves the column is constrained to *named* companies. It does not prove there
@@ -532,6 +532,13 @@ under precisely the condition that matters. So:
 > recognise.** An inclusion test fails closed when a name does not match. An
 > exclusion test fails open on the identical mismatch, and every unfamiliar
 > spelling becomes an attack.
+
+What decides which of those a test is, is not the question it asks but **which
+way its match points**. An inclusion test fails closed because a match means
+*permit*, so a mismatch refuses. A test that **refuses** on a match permits on
+a mismatch, and is an exclusion test wearing an inclusion test's shape however
+its condition reads. The outer-query guard under "Why this shape and not
+another" is refused on exactly that ground.
 
 When a question genuinely needs an exclusion — "is this name absent" — the
 answer is usually to find a condition that removes the question instead. Here
@@ -572,20 +579,18 @@ Being honest about the edges:
   the joined one, so a join whose `ON` clause correlates loosely can still read
   columns from another company's rows on the joined side. Scope joins yourself.
 - **A company-owned table joined into an _unguarded_ query.** The bullet above
-  assumes the base model is company-owned, so at least the base table is
-  pinned. When the base is Class T — `WorkforceEntity`, say — the guard is not
-  partial, it never runs at all. `RequireCompanyScope` is registered per model
-  by the `CompanyOwned` trait, and joining a company-owned table *by name*
-  never constructs that model's builder, so nothing inspects the query and
-  nothing is raised: `WorkforceEntity::query()->join(<a company-owned table>,
-  …)` reads every company's rows, and does so even with no tenant predicate.
+  assumes a company-owned base, so at least that table is pinned. When the
+  base is Class T — `WorkforceEntity`, say — the guard is not partial, it
+  never runs: `RequireCompanyScope` is registered per model by `CompanyOwned`,
+  and joining a company-owned table *by name* never constructs that model's
+  builder. `WorkforceEntity::query()->join(<a company-owned table>, …)` reads
+  every company's rows, with no tenant predicate needed.
   (`joinSub()` handed the guarded model's Eloquent builder is the exception —
   `toBase()` applies scopes, so that sub-select is guarded on its own.
-  `joinSub(…->getQuery())` is not.) This is the join analogue of the correlated
-  subquery bullet below and has the same root: the guard reads the query it
-  is attached to, and here it is attached to nothing. Pin the company
-  yourself in the `ON` clause or a `where`, or start from the guarded model
-  and join back toward the Class T table.
+  `joinSub(…->getQuery())` is not.) Same root as the correlated subquery
+  bullet below: the guard reads the query it is attached to, and here it is
+  attached to nothing. Pin the company yourself in the `ON` clause or a
+  `where`, or start from the guarded model and join back.
 - **Cross-company parent links written outside a store.** `skills.category_id`
   has a composite foreign key on `(category_id, tenant_id)`, not on the
   company, so a write that bypasses `SkillCatalogStore` can point a skill at
@@ -633,22 +638,23 @@ Being honest about the edges:
   legitimately spans companies would quietly write half its rows. Refusing is
   loud; guessing is not.
 - **A guard on the outer query**, refusing to join a company-owned table
-  unless the outer query pins a company, would catch the Class T join listed
-  above. It does not need the connection layer and does not need to parse SQL:
-  `$query->joins` is a structured array, this scope already walks the equally
-  structured `$query->wheres`, and `CompanyOwnedModels` is a derived registry
-  of which models are company-owned. It is rejected on two other grounds.
-  First, it matches join targets **by table name**, and a name-matching check
-  in this document has already failed open once — a schema-qualified
-  `public.categories` did not match a bare `categories`, and the guard
-  accepted. A security check that silently does nothing on a naming variation
-  is worse than none, because it licenses confidence. Second, it would be
-  switched off: legitimate cross-company reads — merges, reconciliation,
-  reporting — would trip it constantly, and each one becomes a
-  `withoutCompanyScope()` at a call site, which is the failure this whole
-  mechanism is shaped to avoid. Class T models are unguarded on purpose, and
-  the honest answer for a join out of one is the bullet above, not a guard
-  that fails open on a qualified name.
+  unless the outer pins a company, would catch the Class T join above. It is
+  buildable at the Eloquent level — `$query->joins` is structured, this scope
+  already walks `$query->wheres`, and `CompanyOwnedModels` is a derived
+  registry — so the connection-layer objection below does not apply. It is
+  refused on two other grounds.
+  First, it matches join targets **by table name**, and its polarity is the
+  dangerous one. The rule above prefers an inclusion test because a match
+  means *permit*, so an unrecognised spelling refuses. Here a match would mean
+  *refuse*, so an unrecognised spelling permits — the schema-qualified
+  `public.categories` that this document already records as failing open,
+  rebuilt on purpose. A security check that silently does nothing on a naming
+  variation is worse than none, because it licenses confidence. Second, it
+  would be switched off: merges, reconciliation
+  and reporting read across companies legitimately and would trip it
+  constantly, each becoming a `withoutCompanyScope()` at a call site. Class T
+  is unguarded deliberately; the honest answer for a join out of one is the
+  bullet above.
 - **A guard in the database connection layer** would also catch raw queries,
   but it has to parse SQL text, cannot see the author's intent, and produces
   false positives on joins and subqueries. Higher cost, lower precision.
