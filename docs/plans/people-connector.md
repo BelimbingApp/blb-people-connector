@@ -32,6 +32,12 @@ Keeping Skill and Training in one Module would reduce initial wiring but couple 
 
 Adapters publish stable identity, contract and adapter versions, independently composable capability channels, health/freshness, paginated bootstrap data, durable incremental checkpoints, and only the narrow operation ports they actually support. Channel direction is derived from readable/writable port markers rather than trusted metadata; feature code uses `ProviderPortResolver` so undeclared operations fail before adapter invocation and a declared-but-missing port is reported as incompatibility. Final file imports atomically re-inspect the exact hash. Snapshot/file-only providers are not required to fake incremental or reconciliation operations. Provider failures, including rejected input, use structured domain exceptions. All non-LLM remote HTTP transport passes through Base Integration.
 
+### Ownership of the access records
+
+- `people_connector_connector_provider_credentials` is Class D: its company boundary follows `connection_id`, and every read/write resolves the tenant-owned connection before using the credential.
+- `people_connector_connector_privileged_support_grants` is Class T: it carries an optional tenant company scope and requires both actors to validate inside that scope.
+- `people_connector_connector_privileged_support_actions` follows its grant through `(grant_id, tenant_id)` and is append-only at both the model and database layers.
+
 ## Phases
 
 ### Foundation and providers

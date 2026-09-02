@@ -18,7 +18,7 @@ return new class extends Migration
 
     public function up(): void
     {
-        Schema::create($this->tables[0], function (Blueprint $table): void {
+        Schema::create('people_connector_connector_provider_credentials', function (Blueprint $table): void {
             $table->id();
             $table->unsignedBigInteger('tenant_id');
             $table->unsignedBigInteger('connection_id');

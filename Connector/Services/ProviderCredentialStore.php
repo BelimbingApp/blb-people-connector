@@ -82,6 +82,7 @@ final class ProviderCredentialStore
         DateTimeImmutable $expiresAt,
     ): ProviderCredential {
         return DB::transaction(function () use ($request, $connection, $keyId, $secretReference, $issuedAt, $expiresAt): ProviderCredential {
+            $connection = $this->activeConnection($request, $connection, $this->tenantContext->requireTenantId(), true);
             ProviderCredentialRecord::query()
                 ->forTenant($this->tenantContext->requireTenantId())
                 ->where('connection_id', $connection->id)
@@ -94,19 +95,28 @@ final class ProviderCredentialStore
 
     public function revoke(string $credentialId, DateTimeImmutable $revokedAt): void
     {
-        $updated = ProviderCredentialRecord::query()
-            ->forTenant($this->tenantContext->requireTenantId())
-            ->where('credential_id', $credentialId)
-            ->whereNull('revoked_at')
-            ->update(['revoked_at' => $revokedAt]);
+        DB::transaction(function () use ($credentialId, $revokedAt): void {
+            $tenantId = $this->tenantContext->requireTenantId();
+            $credential = ProviderCredentialRecord::query()
+                ->forTenant($tenantId)
+                ->where('credential_id', $credentialId)
+                ->whereNull('revoked_at')
+                ->lockForUpdate()
+                ->first();
 
-        if ($updated === 0) {
-            throw new ProviderAuthenticationException(
-                providerId: 'unknown',
-                operation: 'revoke_credential',
-                message: 'The provider credential is missing, already revoked, or outside the current tenant.',
-            );
-        }
+            if ($credential === null) {
+                throw new ProviderAuthenticationException(
+                    providerId: 'unknown',
+                    operation: 'revoke_credential',
+                    message: 'The provider credential is missing, already revoked, or outside the current tenant.',
+                );
+            }
+
+            // Resolve the connection through the tenant boundary even when it is
+            // already inactive: revocation must remain possible during teardown.
+            $this->connections->get((int) $credential->connection_id, true);
+            $credential->forceFill(['revoked_at' => $revokedAt])->save();
+        });
     }
 
     public function requireUsable(ProviderAuthenticationRequest $request, DateTimeImmutable $at): ProviderCredential
@@ -138,10 +148,12 @@ final class ProviderCredentialStore
             );
         }
 
+        $securityAt = new DateTimeImmutable(now()->toISOString());
+
         $credential = ProviderCredentialRecord::query()
             ->forTenant($tenantId)
             ->where('connection_id', $request->connectionId)
-            ->usable($request->audience, $request->scopes[0] ?? '', $at)
+            ->usable($request->audience, $request->scopes[0] ?? '', $securityAt)
             ->latest('issued_at')
             ->first();
 
@@ -155,7 +167,7 @@ final class ProviderCredentialStore
 
         $result = $credential->toCredential();
         foreach ($request->scopes as $scope) {
-            if (! $result->allows($request->audience, $scope, $at)) {
+            if (! $result->allows($request->audience, $scope, $securityAt)) {
                 throw new ProviderAuthenticationException(
                     providerId: $result->providerId,
                     operation: 'resolve_credential',
@@ -171,9 +183,10 @@ final class ProviderCredentialStore
         ProviderAuthenticationRequest $request,
         ProviderConnection $suppliedConnection,
         int $tenantId,
+        bool $forUpdate = false,
     ): ProviderConnection {
         try {
-            $connection = $this->connections->get($request->connectionId);
+            $connection = $this->connections->get($request->connectionId, $forUpdate);
         } catch (ConnectorRecordNotFoundException) {
             throw new ProviderAuthenticationException(
                 providerId: (string) $suppliedConnection->provider_id,

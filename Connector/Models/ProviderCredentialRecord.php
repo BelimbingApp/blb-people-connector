@@ -10,6 +10,8 @@ final class ProviderCredentialRecord extends TenantOwnedModel
 {
     protected $table = 'people_connector_connector_provider_credentials';
 
+    protected $hidden = ['secret_reference'];
+
     protected static function booted(): void
     {
         self::creating(function (self $credential): void {

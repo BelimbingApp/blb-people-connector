@@ -4,6 +4,7 @@ use App\Base\Database\Concerns\IncubatingSchema;
 use App\Base\Database\Concerns\RegistersTables;
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
@@ -19,7 +20,7 @@ return new class extends Migration
 
     public function up(): void
     {
-        Schema::create($this->tables[0], function (Blueprint $table): void {
+        Schema::create('people_connector_connector_privileged_support_grants', function (Blueprint $table): void {
             $table->id();
             $table->unsignedBigInteger('tenant_id');
             $table->unsignedBigInteger('company_id')->nullable();
@@ -41,7 +42,7 @@ return new class extends Migration
                 ->references(['id', 'tenant_id'])->on('companies')->restrictOnDelete();
         });
 
-        Schema::create($this->tables[1], function (Blueprint $table): void {
+        Schema::create('people_connector_connector_privileged_support_actions', function (Blueprint $table): void {
             $table->id();
             $table->unsignedBigInteger('tenant_id');
             $table->unsignedBigInteger('grant_id');
@@ -64,13 +65,65 @@ return new class extends Migration
         foreach ($this->tables as $table) {
             $this->registerTable($table);
         }
+
+        $this->createImmutableActionGuards();
     }
 
     public function down(): void
     {
+        $this->dropImmutableActionGuards();
+
         foreach (array_reverse($this->tables) as $table) {
             $this->unregisterTable($table);
             Schema::dropIfExists($table);
+        }
+    }
+
+    private function createImmutableActionGuards(): void
+    {
+        $driver = Schema::getConnection()->getDriverName();
+
+        if ($driver === 'pgsql') {
+            DB::unprepared(<<<'SQL'
+                CREATE FUNCTION people_connector_support_action_immutable() RETURNS trigger
+                LANGUAGE plpgsql
+                AS $function$
+                BEGIN
+                    RAISE EXCEPTION 'Privileged support actions are append-only';
+                END;
+                $function$;
+                CREATE TRIGGER people_connector_support_action_no_update
+                BEFORE UPDATE OR DELETE ON people_connector_connector_privileged_support_actions
+                FOR EACH ROW EXECUTE FUNCTION people_connector_support_action_immutable();
+                SQL);
+
+            return;
+        }
+
+        if ($driver !== 'sqlite') {
+            return;
+        }
+
+        DB::statement("CREATE TRIGGER people_connector_support_action_no_update BEFORE UPDATE ON people_connector_connector_privileged_support_actions BEGIN SELECT RAISE(ABORT, 'Privileged support actions are append-only'); END");
+        DB::statement("CREATE TRIGGER people_connector_support_action_no_delete BEFORE DELETE ON people_connector_connector_privileged_support_actions BEGIN SELECT RAISE(ABORT, 'Privileged support actions are append-only'); END");
+    }
+
+    private function dropImmutableActionGuards(): void
+    {
+        $driver = Schema::getConnection()->getDriverName();
+
+        if ($driver === 'pgsql') {
+            DB::unprepared(<<<'SQL'
+                DROP TRIGGER IF EXISTS people_connector_support_action_no_update ON people_connector_connector_privileged_support_actions;
+                DROP FUNCTION IF EXISTS people_connector_support_action_immutable();
+                SQL);
+
+            return;
+        }
+
+        if ($driver === 'sqlite') {
+            DB::statement('DROP TRIGGER IF EXISTS people_connector_support_action_no_update');
+            DB::statement('DROP TRIGGER IF EXISTS people_connector_support_action_no_delete');
         }
     }
 };

@@ -92,8 +92,9 @@ final class PrivilegedSupportService
     ): PrivilegedSupportAction {
         $tenantId = $this->tenantContext->requireTenantId();
         $occurredAt ??= new DateTimeImmutable;
+        $securityAt = new DateTimeImmutable(now()->toISOString());
 
-        return DB::transaction(function () use ($grant, $actor, $capability, $action, $outcome, $context, $occurredAt, $tenantId): PrivilegedSupportAction {
+        return DB::transaction(function () use ($grant, $actor, $capability, $action, $outcome, $context, $occurredAt, $securityAt, $tenantId): PrivilegedSupportAction {
             $grant = $this->currentGrant($grant, $tenantId, true);
             $scope = $grant->company_id === null ? ProviderScope::tenant() : ProviderScope::company((int) $grant->company_id);
             $this->assertGrantActor($actor, $grant);
@@ -101,7 +102,7 @@ final class PrivilegedSupportService
             $this->authorizeSupport($actor, $grant, $tenantId, $scope);
 
             if (! in_array($capability, $grant->capabilities ?? [], true)
-                || ! $grant->isActive($occurredAt) || trim($action) === '' || trim($outcome) === '') {
+                || ! $grant->isActive($securityAt) || trim($action) === '' || trim($outcome) === '') {
                 throw new ProviderAuthorizationException(
                     providerId: 'connector',
                     operation: 'record_break_glass_action',
