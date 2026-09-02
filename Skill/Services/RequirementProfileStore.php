@@ -30,6 +30,7 @@ use Illuminate\Support\Facades\DB;
 class RequirementProfileStore
 {
     private const CODE_PATTERN = '/^[a-z0-9][a-z0-9_.\-]{0,79}$/';
+
     private const WEIGHT_TOLERANCE = 0.0001;
 
     public function __construct(
