@@ -9,6 +9,6 @@ git clone https://github.com/BelimbingApp/belimbing
 git clone https://github.com/BelimbingApp/blb-people-connector belimbing/app/Domains/PeopleConnector
 ```
 
-The initial `Connector` Module owns adapter discovery, provider-neutral contracts, capability declarations, health, compatibility, and the deliberately safe disconnected state. Adapters expose only the narrow ports and transports they actually support; channel direction is derived from readable/writable port markers, file imports bind inspection to the exact hash, and page cursors are separate from durable synchronization checkpoints. Connector-owned Skill and Training Modules build on that seam, so provider adapters remain replaceable.
+The initial `Connector` Module owns adapter discovery, provider-neutral contracts, capability declarations, health, compatibility, and the deliberately safe disconnected state. Adapters expose only the narrow ports and transports they actually support; channel direction is derived from readable/writable port markers, and feature code resolves ports through `ProviderPortResolver` so an undeclared read or write fails before the adapter is invoked. File imports bind inspection to the exact hash, and page cursors are separate from durable synchronization checkpoints. Connector-owned Skill and Training Modules build on that seam, so provider adapters remain replaceable.
 
 Licensed under MIT, same as the framework.

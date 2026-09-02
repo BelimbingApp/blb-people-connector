@@ -30,7 +30,7 @@ Keeping Skill and Training in one Module would reduce initial wiring but couple 
 
 ## Public Contract
 
-Adapters publish stable identity, contract and adapter versions, independently composable capability channels, health/freshness, paginated bootstrap data, durable incremental checkpoints, and only the narrow operation ports they actually support. Channel direction is derived from readable/writable port markers rather than trusted metadata; final file imports atomically re-inspect the exact hash. Snapshot/file-only providers are not required to fake incremental or reconciliation operations. Provider failures use structured domain exceptions. All non-LLM remote HTTP transport passes through Base Integration.
+Adapters publish stable identity, contract and adapter versions, independently composable capability channels, health/freshness, paginated bootstrap data, durable incremental checkpoints, and only the narrow operation ports they actually support. Channel direction is derived from readable/writable port markers rather than trusted metadata; feature code uses `ProviderPortResolver` so undeclared operations fail before adapter invocation and a declared-but-missing port is reported as incompatibility. Final file imports atomically re-inspect the exact hash. Snapshot/file-only providers are not required to fake incremental or reconciliation operations. Provider failures, including rejected input, use structured domain exceptions. All non-LLM remote HTTP transport passes through Base Integration.
 
 ## Phases
 
