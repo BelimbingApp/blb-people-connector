@@ -7,6 +7,7 @@ use App\Domains\PeopleConnector\Connector\Contracts\ProviderAdapter;
 use App\Domains\PeopleConnector\Connector\Contracts\ReadsWorkforceChanges;
 use App\Domains\PeopleConnector\Connector\Contracts\ReconcilesWorkforce;
 use App\Domains\PeopleConnector\Connector\Contracts\ResolvesProviderPorts;
+use App\Domains\PeopleConnector\Connector\Data\ProviderPortAuthorization;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceChangeRequest;
 use App\Domains\PeopleConnector\Connector\Data\WorkforcePageRequest;
 
@@ -38,6 +39,8 @@ final class ProviderConformance
             return $violations;
         }
 
+        $conformanceAuthorization = ProviderPortAuthorization::forConformance($descriptor->id);
+
         foreach ($provider->capabilities()->all() as $declaration) {
             foreach ($declaration->portContracts() as $contract) {
                 if (isset($ports[$contract])) {
@@ -45,7 +48,7 @@ final class ProviderConformance
                 }
 
                 try {
-                    $port = $provider->resolvePort($contract);
+                    $port = $provider->resolvePort($contract, $conformanceAuthorization);
                 } catch (\Throwable) {
                     $violations[] = "port_resolution_failed:{$contract}";
 

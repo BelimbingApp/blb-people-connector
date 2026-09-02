@@ -4,19 +4,17 @@ namespace App\Domains\PeopleConnector\Connector\Services;
 
 use App\Base\Authz\Contracts\AuthorizationService;
 use App\Base\Authz\DTO\Actor;
-use App\Base\Authz\DTO\ResourceContext;
 use App\Base\Tenancy\Contracts\TenantContext;
 use App\Domains\PeopleConnector\Connector\Contracts\ProviderAdapter;
 use App\Domains\PeopleConnector\Connector\Contracts\ProviderPort;
 use App\Domains\PeopleConnector\Connector\Contracts\ReadableProviderPort;
 use App\Domains\PeopleConnector\Connector\Contracts\ResolvesProviderPorts;
 use App\Domains\PeopleConnector\Connector\Contracts\WritableProviderPort;
+use App\Domains\PeopleConnector\Connector\Data\ProviderPortAuthorization;
 use App\Domains\PeopleConnector\Connector\Data\ProviderScope;
 use App\Domains\PeopleConnector\Connector\Enums\PeopleCapability;
-use App\Domains\PeopleConnector\Connector\Exceptions\ProviderAuthorizationException;
 use App\Domains\PeopleConnector\Connector\Exceptions\ProviderCompatibilityException;
 use App\Domains\PeopleConnector\Connector\Exceptions\UnsupportedProviderOperation;
-use App\Domains\PeopleConnector\Connector\Models\ProviderConnection;
 
 /**
  * The only way to reach a provider port.
@@ -52,7 +50,7 @@ final class ProviderPortResolver
             throw new \InvalidArgumentException('Readable provider resolution requires a readable port interface.');
         }
 
-        $this->authorizeActor($actor, $provider, $scope, 'people-connector.provider.read');
+        $authorization = $this->authorizeActor($actor, $provider, $scope, 'people-connector.provider.read');
 
         /** @var TPort */
         return $this->resolve(
@@ -61,6 +59,7 @@ final class ProviderPortResolver
             $contract,
             $provider->capabilities()->readPortContracts($capability),
             'read',
+            $authorization,
         );
     }
 
@@ -81,7 +80,7 @@ final class ProviderPortResolver
             throw new \InvalidArgumentException('Writable provider resolution requires a writable port interface.');
         }
 
-        $this->authorizeActor($actor, $provider, $scope, 'people-connector.provider.write');
+        $authorization = $this->authorizeActor($actor, $provider, $scope, 'people-connector.provider.write');
 
         /** @var TPort */
         return $this->resolve(
@@ -90,6 +89,7 @@ final class ProviderPortResolver
             $contract,
             $provider->capabilities()->writePortContracts($capability),
             'write',
+            $authorization,
         );
     }
 
@@ -102,54 +102,15 @@ final class ProviderPortResolver
         ProviderAdapter $provider,
         ProviderScope $scope,
         string $permission,
-    ): void {
-        $tenantId = $this->tenantContext->requireTenantId();
-        $descriptor = $provider->descriptor();
-
-        if (($actor->validate() !== null)
-            || $actor->tenantId !== $tenantId
-            || ($scope->companyId !== null && $actor->companyId !== $scope->companyId)) {
-            throw new ProviderAuthorizationException(
-                providerId: $descriptor->id,
-                operation: 'authorize_provider_access',
-                message: 'Provider access requires an actor and scope inside the current tenant and company boundary.',
-                context: [
-                    'tenant_id' => $tenantId,
-                    'scope' => $scope->key(),
-                    'permission' => $permission,
-                ],
-            );
-        }
-
-        $active = $this->connections->active($scope);
-        if ($active === null || (string) $active->provider_id !== $descriptor->id
-            || (string) $active->status !== ProviderConnection::STATUS_ACTIVE) {
-            throw new ProviderAuthorizationException(
-                providerId: $descriptor->id,
-                operation: 'authorize_provider_access',
-                message: 'Provider access requires the adapter selected for the requested scope.',
-                context: [
-                    'tenant_id' => $tenantId,
-                    'scope' => $scope->key(),
-                    'permission' => $permission,
-                ],
-            );
-        }
-
-        $this->authorization->authorize(
+    ): ProviderPortAuthorization {
+        return ProviderPortAuthorization::authorize(
+            $this->authorization,
+            $this->tenantContext,
+            $this->connections,
             $actor,
+            $provider,
+            $scope,
             $permission,
-            new ResourceContext(
-                type: 'people-connector.provider',
-                id: $descriptor->id,
-                companyId: $scope->companyId,
-                tenantId: $tenantId,
-            ),
-            [
-                'provider_id' => $descriptor->id,
-                'scope' => $scope->key(),
-                'permission' => $permission,
-            ],
         );
     }
 
@@ -166,6 +127,7 @@ final class ProviderPortResolver
         string $contract,
         array $declaredContracts,
         string $direction,
+        ProviderPortAuthorization $authorization,
     ): ProviderPort {
         $descriptor = $provider->descriptor();
         $context = [
@@ -192,7 +154,16 @@ final class ProviderPortResolver
             );
         }
 
-        $port = $provider->resolvePort($contract);
+        if (! $authorization->permits($descriptor->id)) {
+            throw new ProviderCompatibilityException(
+                providerId: $descriptor->id,
+                operation: "resolve_{$direction}_port",
+                message: "Provider '{$descriptor->id}' received authorization evidence for another provider.",
+                context: $context,
+            );
+        }
+
+        $port = $provider->resolvePort($contract, $authorization);
 
         if (! $port instanceof $contract) {
             throw new ProviderCompatibilityException(

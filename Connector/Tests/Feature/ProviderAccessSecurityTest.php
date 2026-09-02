@@ -71,6 +71,16 @@ test('provider UI handoffs are HTTPS, handle-bound, fragment-free, and server-bo
             $handle,
         ))->toThrow(InvalidArgumentException::class)
         ->and(fn () => new ProviderUiHandoff(
+            'https://provider.example.test/sso?%61ccess_token=reusable&handle='.$handle,
+            new DateTimeImmutable('+4 minutes'),
+            $handle,
+        ))->toThrow(InvalidArgumentException::class)
+        ->and(fn () => new ProviderUiHandoff(
+            'https://provider.example.test/sso?handle='.$handle.'&handle='.$handle,
+            new DateTimeImmutable('+4 minutes'),
+            $handle,
+        ))->toThrow(InvalidArgumentException::class)
+        ->and(fn () => new ProviderUiHandoff(
             'https://provider.example.test/sso?handle='.$handle,
             new DateTimeImmutable('+6 minutes'),
             $handle,

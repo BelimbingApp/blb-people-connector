@@ -16,6 +16,7 @@ use App\Domains\PeopleConnector\Connector\Data\CapabilityChannel;
 use App\Domains\PeopleConnector\Connector\Data\CapabilityDeclaration;
 use App\Domains\PeopleConnector\Connector\Data\CapabilitySet;
 use App\Domains\PeopleConnector\Connector\Data\ProviderDescriptor;
+use App\Domains\PeopleConnector\Connector\Data\ProviderPortAuthorization;
 use App\Domains\PeopleConnector\Connector\Data\ProviderScope;
 use App\Domains\PeopleConnector\Connector\Enums\CapabilityDelivery;
 use App\Domains\PeopleConnector\Connector\Enums\PeopleCapability;
@@ -155,7 +156,7 @@ test('a declared port that cannot be resolved is a compatibility failure', funct
         ]),
     ]));
     $provider->shouldReceive('descriptor')->andReturn(providerDescriptor());
-    $provider->shouldReceive('resolvePort')->once()->with(TestEmployeeWriter::class)->andReturnNull();
+    $provider->shouldReceive('resolvePort')->once()->with(TestEmployeeWriter::class, Mockery::type(ProviderPortAuthorization::class))->andReturnNull();
 
     expect(fn () => app(ProviderPortResolver::class)->write(
         $actor,
@@ -178,8 +179,8 @@ test('declared readable and writable ports resolve with their exact type after a
         ]),
     ]));
     $provider->shouldReceive('descriptor')->andReturn(providerDescriptor());
-    $provider->shouldReceive('resolvePort')->once()->with(TestEmployeeReader::class)->andReturn($reader);
-    $provider->shouldReceive('resolvePort')->once()->with(TestEmployeeWriter::class)->andReturn($writer);
+    $provider->shouldReceive('resolvePort')->once()->with(TestEmployeeReader::class, Mockery::type(ProviderPortAuthorization::class))->andReturn($reader);
+    $provider->shouldReceive('resolvePort')->once()->with(TestEmployeeWriter::class, Mockery::type(ProviderPortAuthorization::class))->andReturn($writer);
 
     $resolver = app(ProviderPortResolver::class);
 

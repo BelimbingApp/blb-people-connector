@@ -25,19 +25,23 @@ final readonly class ProviderUiHandoff
             throw new \InvalidArgumentException('Provider UI hand-offs require an absolute URL with a server-side handle.');
         }
 
-        parse_str($query, $parameters);
-        $handle = $parameters['handle'] ?? null;
-        if (! is_string($handle) || ! hash_equals($oneTimeHandle, $handle)) {
-            throw new \InvalidArgumentException('Provider UI hand-offs must bind the URL handle to the returned one-time handle.');
+        $handleValues = [];
+        foreach (preg_split('/[&;]/', $query) ?: [] as $parameter) {
+            [$rawName, $rawValue] = array_pad(explode('=', $parameter, 2), 2, '');
+            $name = urldecode($rawName);
+            $value = urldecode($rawValue);
+
+            if (preg_match('/(?:token|secret|password|credential|access_token|refresh_token|code)/', strtolower($name)) === 1) {
+                throw new \InvalidArgumentException('Provider UI hand-offs must not carry reusable credentials in URL parameters.');
+            }
+
+            if ($name === 'handle') {
+                $handleValues[] = $value;
+            }
         }
 
-        foreach ([$query, $fragment] as $component) {
-            foreach (preg_split('/[&;]/', $component) ?: [] as $parameter) {
-                $name = strtolower((string) (explode('=', $parameter, 2)[0] ?? ''));
-                if (preg_match('/(?:token|secret|password|credential|access_token|refresh_token|code)/', $name) === 1) {
-                    throw new \InvalidArgumentException('Provider UI hand-offs must not carry reusable credentials in URL parameters.');
-                }
-            }
+        if (count($handleValues) !== 1 || ! hash_equals($oneTimeHandle, $handleValues[0])) {
+            throw new \InvalidArgumentException('Provider UI hand-offs must bind the URL handle to the returned one-time handle.');
         }
 
         if ($fragment !== '') {
