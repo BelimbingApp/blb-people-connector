@@ -13,14 +13,4 @@ interface ProviderAdapter
     public function capabilities(): CapabilitySet;
 
     public function health(): ProviderHealth;
-
-    /**
-     * Resolve one provider-neutral port declared by this adapter.
-     *
-     * @template TPort of object
-     *
-     * @param  class-string<TPort>  $contract
-     * @return TPort|null
-     */
-    public function resolvePort(string $contract): ?object;
 }

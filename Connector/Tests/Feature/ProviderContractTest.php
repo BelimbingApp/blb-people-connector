@@ -4,6 +4,7 @@ use App\Domains\PeopleConnector\Connector\Contracts\BootstrapsWorkforce;
 use App\Domains\PeopleConnector\Connector\Contracts\ProviderAdapter;
 use App\Domains\PeopleConnector\Connector\Contracts\ReadsWorkforceChanges;
 use App\Domains\PeopleConnector\Connector\Contracts\ReconcilesWorkforce;
+use App\Domains\PeopleConnector\Connector\Contracts\ResolvesProviderPorts;
 use App\Domains\PeopleConnector\Connector\Contracts\WorkforceSource;
 use App\Domains\PeopleConnector\Connector\Contracts\WritableProviderPort;
 use App\Domains\PeopleConnector\Connector\Data\CapabilityChannel;
@@ -15,6 +16,7 @@ use App\Domains\PeopleConnector\Connector\Data\ProviderFile;
 use App\Domains\PeopleConnector\Connector\Data\ProviderFileImportResult;
 use App\Domains\PeopleConnector\Connector\Data\ProviderFileInspection;
 use App\Domains\PeopleConnector\Connector\Data\ProviderHealth;
+use App\Domains\PeopleConnector\Connector\Data\ProviderPortAuthorization;
 use App\Domains\PeopleConnector\Connector\Data\ReconciliationReport;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceChangePage;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceChangeRequest;
@@ -40,7 +42,7 @@ interface TestEmployeeCommandPort extends WritableProviderPort {}
 
 function conformingPeopleProvider(string $id = 'test.provider', string $contract = '1.0.0'): ProviderAdapter
 {
-    return new class($id, $contract) implements ProviderAdapter
+    return new class($id, $contract) implements ProviderAdapter, ResolvesProviderPorts
     {
         private WorkforceSource $source;
 
@@ -100,7 +102,7 @@ function conformingPeopleProvider(string $id = 'test.provider', string $contract
             return new ProviderHealth(ProviderHealthState::Healthy, new DateTimeImmutable('2026-08-31T00:00:00+00:00'));
         }
 
-        public function resolvePort(string $contract): ?object
+        public function resolvePort(string $contract, ProviderPortAuthorization $authorization): ?object
         {
             return $this->source instanceof $contract ? $this->source : null;
         }
@@ -119,6 +121,16 @@ test('registry accepts one compatible adapter and resolves the configured active
         ->and($registry->active())->toBe($provider)
         ->and($registry->find('test.provider'))->toBe($provider)
         ->and(ProviderConformance::violations($provider))->toBe([]);
+});
+
+test('a registry-returned adapter cannot resolve a port without authorization evidence', function (): void {
+    config()->set('people-connector.active_provider', 'test.provider');
+    $registry = new ProviderRegistry;
+    $registry->register(conformingPeopleProvider());
+    $provider = $registry->find('test.provider');
+
+    expect(fn () => $provider->resolvePort(TestEmployeeCommandPort::class))
+        ->toThrow(ArgumentCountError::class);
 });
 
 test('registry rejects incompatible contract majors and duplicate provider identities', function (): void {
@@ -224,7 +236,7 @@ test('workforce pages separate page continuation from durable resume checkpoints
 });
 
 test('provider conformance exercises only the narrow ports an adapter declares', function (): void {
-    $provider = Mockery::mock(ProviderAdapter::class);
+    $provider = Mockery::mock(ProviderAdapter::class, ResolvesProviderPorts::class);
     $source = Mockery::mock(WorkforceSource::class);
 
     $provider->shouldReceive('descriptor')->andReturn(
@@ -255,7 +267,7 @@ test('provider conformance exercises only the narrow ports an adapter declares',
 });
 
 test('snapshot-only adapters are not forced to provide incremental or reconciliation ports', function (): void {
-    $provider = Mockery::mock(ProviderAdapter::class);
+    $provider = Mockery::mock(ProviderAdapter::class, ResolvesProviderPorts::class);
     $bootstrap = Mockery::mock(BootstrapsWorkforce::class);
 
     $provider->shouldReceive('descriptor')->andReturn(
@@ -271,7 +283,7 @@ test('snapshot-only adapters are not forced to provide incremental or reconcilia
             ]),
         ]),
     );
-    $provider->shouldReceive('resolvePort')->once()->with(BootstrapsWorkforce::class)->andReturn($bootstrap);
+    $provider->shouldReceive('resolvePort')->once()->with(BootstrapsWorkforce::class, Mockery::type(ProviderPortAuthorization::class))->andReturn($bootstrap);
     $bootstrap->shouldReceive('bootstrap')->once()->andReturn(
         new WorkforcePage([], new DateTimeImmutable, resumeCursor: 'file-checksum', complete: true),
     );

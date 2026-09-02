@@ -120,6 +120,9 @@ guessing is how the connector reached three identical defects.
 | `..._sync_checkpoints` | **D** | `connection_id` | A resume cursor for one stream on one connection. Meaningless except through its connection. |
 | `..._sync_checkpoint_events` | **D** | `checkpoint_id` | Append-only history of one checkpoint, which belongs to one connection. |
 | `..._reconciliation_issues` | **D** | `connection_id` | An open problem with one connection's data. |
+| `..._provider_credentials` | **D** | `connection_id` | Short-lived provider credentials inherit the company of their connection; every lookup pins the connection and rejects inactive selections. Credential revocation deliberately uses the documented escape to locate the row before resolving its tenant-owned connection. |
+| `..._privileged_support_grants` | **T** | — | A tenant administration grant may optionally name a platform company scope; its service checks both actors against that scope before issuing or using it. |
+| `..._privileged_support_actions` | **T** | — | Immutable evidence of a tenant administration grant; ownership follows the grant through the composite foreign key, while append-only database guards protect the evidence. |
 
 ### Skill module
 

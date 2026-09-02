@@ -30,7 +30,13 @@ Keeping Skill and Training in one Module would reduce initial wiring but couple 
 
 ## Public Contract
 
-Adapters publish stable identity, contract and adapter versions, independently composable capability channels, health/freshness, paginated bootstrap data, durable incremental checkpoints, and only the narrow operation ports they actually support. Channel direction is derived from readable/writable port markers rather than trusted metadata; feature code uses `ProviderPortResolver` so undeclared operations fail before adapter invocation and a declared-but-missing port is reported as incompatibility. Final file imports atomically re-inspect the exact hash. Snapshot/file-only providers are not required to fake incremental or reconciliation operations. Provider failures, including rejected input, use structured domain exceptions. All non-LLM remote HTTP transport passes through Base Integration.
+Adapters publish stable identity, contract and adapter versions, independently composable capability channels, health/freshness, paginated bootstrap data, durable incremental checkpoints, and only the narrow operation ports they actually support. Channel direction is derived from readable/writable port markers rather than trusted metadata; feature code uses `ProviderPortResolver` so undeclared operations fail before adapter invocation and a declared-but-missing port is reported as incompatibility. Adapter port resolution is an internal seam separate from the public `ProviderAdapter` contract, and requires short-lived evidence bound to the provider, tenant, company scope, permission, capability, direction, and contract; a registry lookup cannot be used to reach a port without those live checks. Final file imports atomically re-inspect the exact hash. Snapshot/file-only providers are not required to fake incremental or reconciliation operations. Provider failures, including rejected input, use structured domain exceptions. All non-LLM remote HTTP transport passes through Base Integration.
+
+### Ownership of the access records
+
+- `people_connector_connector_provider_credentials` is Class D: its company boundary follows `connection_id`, and every read/write resolves the tenant-owned connection before using the credential.
+- `people_connector_connector_privileged_support_grants` is Class T: it carries an optional tenant company scope and requires both actors to validate inside that scope.
+- `people_connector_connector_privileged_support_actions` follows its grant through `(grant_id, tenant_id)` and is append-only at both the model and database layers.
 
 ## Phases
 
@@ -39,6 +45,7 @@ Adapters publish stable identity, contract and adapter versions, independently c
 - [x] Publish provider-neutral DTOs, capability/error vocabulary, registry, conformance helper, disconnected UI, and CI. {codex/gpt-5}
 - [ ] Merge the connector ownership/privacy boundary and `0330` migration allocation proposed in BelimbingApp/belimbing#457.
 - [x] Persist non-secret tenant/company-scoped connections, canonical workforce identities, typed projections, append-only provenance, durable sync checkpoints, and reconciliation issues. {codex/gpt-5.6-sol}
+- [x] Add the connector-side actor/scope authorization gate, short-lived rotatable credential references, revocation, credential-free provider UI hand-offs, and time-boxed two-person support grants with immutable action records. {desktop-luna}
 - [ ] Add the provider-neutral user projection, explicit freshness/stale decisions, and adapter-driven bootstrap/incremental execution over the persistence foundation.
 - [ ] Prove governed export, backup/restore, privacy-aware deletion/tombstones, and full synchronization recovery for connector-owned records.
 - [ ] Add authentication/SSO and privileged-access controls without exposing secrets.
