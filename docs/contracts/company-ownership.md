@@ -499,7 +499,7 @@ legitimate is lost by refusing to tell the two apart when one is present.
 
 An earlier version tried to tell them apart, by naming the tables the query
 could see and accepting the correlation when the other side was *absent* from
-that list. See the next section for why that was the wrong shape of rule.
+that list. See the next section for why that was the wrong kind of rule.
 
 `whereIn('company_entity_id', [$a, $b])` is accepted, by design. The guard
 proves the column is constrained to *named* companies. It does not prove there
@@ -649,7 +649,8 @@ Being honest about the edges:
   *refuse*, so an unrecognised spelling permits — the schema-qualified
   `public.categories` that this document already records as failing open,
   rebuilt on purpose. A security check that silently does nothing on a naming
-  variation is worse than none, because it licenses confidence. Second, it would be switched off: merges, reconciliation
+  variation is worse than none, because it licenses confidence. Second, it
+  would be switched off: merges, reconciliation
   and reporting read across companies legitimately and would trip it
   constantly, each becoming a `withoutCompanyScope()` at a call site. Class T
   is unguarded deliberately; the honest answer for a join out of one is the
