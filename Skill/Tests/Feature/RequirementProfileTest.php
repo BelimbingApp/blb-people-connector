@@ -141,7 +141,7 @@ test('published profiles are immutable and versioning creates new drafts', funct
     $v1 = $store->publish($companyEntityId, (int) $v1->id);
 
     expect(fn () => $v1->update(['name' => 'Renamed']))
-        ->toThrow(PublishedRequirementImmutableException::class, 'immutable');
+        ->toThrow(PublishedRequirementImmutableException::class, 'cannot be modified');
 
     expect(fn () => $v1->items()->first()->update(['required_level' => 5]))
         ->toThrow(PublishedRequirementImmutableException::class);
