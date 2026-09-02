@@ -303,10 +303,9 @@ test('a company-owned table joined into an unguarded Class T query is not guarde
     // built from that base never constructs Skill's builder: nothing
     // inspects the query and both companies come back.
     //
-    // This asserts a LEAK. If it ever fails, the guard has grown to cover
-    // this case and that is good news -- fix the bullet in
-    // docs/contracts/company-ownership.md in the same change rather than
-    // deleting the test.
+    // This asserts a LEAK. If it fails, the guard has grown to cover this
+    // case -- update the bullet in docs/contracts/company-ownership.md in
+    // the same change rather than deleting the test.
     $fromClassT = WorkforceEntity::query()
         ->join($skills, $joinOnOwner)
         ->where($entities.'.tenant_id', $fixture->tenantId)
