@@ -381,7 +381,7 @@ class RequirementProfileStore
     /**
      * @param  \Illuminate\Support\Collection<int, RequirementProfileSelector>  $newSelectors
      */
-    private function assertNoOverlap(int $tenantId, int $companyEntityId, RequirementProfile $newProfile, $newSelectors): void
+    private function assertNoOverlap(int $tenantId, int $companyEntityId, RequirementProfile $newProfile, \Illuminate\Support\Collection $newSelectors): void
     {
         $publishedProfiles = RequirementProfile::query()
             ->forCompany($tenantId, $companyEntityId)
@@ -409,7 +409,7 @@ class RequirementProfileStore
      * @param  \Illuminate\Support\Collection<int, RequirementProfileSelector>  $selectorsA
      * @param  \Illuminate\Support\Collection<int, RequirementProfileSelector>  $selectorsB
      */
-    private function selectorsCanOverlap($selectorsA, $selectorsB): bool
+    private function selectorsCanOverlap(\Illuminate\Support\Collection $selectorsA, \Illuminate\Support\Collection $selectorsB): bool
     {
         $typeMapA = $selectorsA->groupBy('selector_type');
         $typeMapB = $selectorsB->groupBy('selector_type');

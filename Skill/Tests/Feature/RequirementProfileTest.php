@@ -568,12 +568,14 @@ test('multi-selector profiles require all selectors to match', function (): void
 
     $dept = requirementEntity($tenantId, 'organization_unit', $companyEntityId);
 
+    $position = requirementEntity($tenantId, 'position', $companyEntityId);
+
     $multiSelector = new RequirementProfileDraft(
         code: 'multi.selector',
         name: 'Multi Selector Profile',
         selectors: [
             new RequirementSelectorDraft(SelectorType::Department, null, (int) $dept->id),
-            new RequirementSelectorDraft(SelectorType::JobTitle, 'Operator'),
+            new RequirementSelectorDraft(SelectorType::Position, null, (int) $position->id),
         ],
         items: [
             new RequirementItemDraft(
@@ -592,7 +594,7 @@ test('multi-selector profiles require all selectors to match', function (): void
     $matchesBoth = $resolver->resolve([
         'company_entity_id' => $companyEntityId,
         'department_entity_id' => (int) $dept->id,
-        'job_title' => 'Operator',
+        'position_entity_id' => (int) $position->id,
     ]);
 
     expect($matchesBoth['profile'])->not->toBeNull()
@@ -601,7 +603,6 @@ test('multi-selector profiles require all selectors to match', function (): void
     $matchesDeptOnly = $resolver->resolve([
         'company_entity_id' => $companyEntityId,
         'department_entity_id' => (int) $dept->id,
-        'job_title' => 'Supervisor',
     ]);
 
     expect($matchesDeptOnly['profile'])->toBeNull()
