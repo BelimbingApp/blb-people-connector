@@ -5,6 +5,7 @@ namespace App\Domains\PeopleConnector\Skill\Services;
 use App\Base\Tenancy\Contracts\TenantContext;
 use App\Domains\PeopleConnector\Skill\Enums\RequirementProfileStatus;
 use App\Domains\PeopleConnector\Skill\Enums\SelectorType;
+use App\Domains\PeopleConnector\Skill\Exceptions\InvalidRequirementProfileException;
 use App\Domains\PeopleConnector\Skill\Models\RequirementProfile;
 use App\Domains\PeopleConnector\Skill\Models\RequirementProfileSelector;
 use DateTimeInterface;
@@ -73,7 +74,7 @@ class RequirementResolver
 
         if (count($matchingProfiles) > 1) {
             $codes = array_map(fn ($m) => "[{$m['profile']->code}] v{$m['profile']->version}", $matchingProfiles);
-            throw new \App\Domains\PeopleConnector\Skill\Exceptions\InvalidRequirementProfileException(
+            throw new InvalidRequirementProfileException(
                 'Multiple published requirement profiles match this employee: '.implode(', ', $codes).'. '
                 .'Overlapping profiles must be retired or refined to prevent ambiguity.'
             );
