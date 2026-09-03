@@ -19,6 +19,7 @@ use App\Domains\PeopleConnector\Skill\Models\RequirementItem;
 use App\Domains\PeopleConnector\Skill\Models\RequirementProfile;
 use App\Domains\PeopleConnector\Skill\Models\RequirementProfileSelector;
 use App\Domains\PeopleConnector\Skill\Models\Skill;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -381,7 +382,7 @@ class RequirementProfileStore
     /**
      * @param  \Illuminate\Support\Collection<int, RequirementProfileSelector>  $newSelectors
      */
-    private function assertNoOverlap(int $tenantId, int $companyEntityId, RequirementProfile $newProfile, \Illuminate\Support\Collection $newSelectors): void
+    private function assertNoOverlap(int $tenantId, int $companyEntityId, RequirementProfile $newProfile, Collection $newSelectors): void
     {
         $publishedProfiles = RequirementProfile::query()
             ->forCompany($tenantId, $companyEntityId)
@@ -411,7 +412,7 @@ class RequirementProfileStore
      * @param  \Illuminate\Support\Collection<int, RequirementProfileSelector>  $selectorsA
      * @param  \Illuminate\Support\Collection<int, RequirementProfileSelector>  $selectorsB
      */
-    private function selectorsCanOverlap(\Illuminate\Support\Collection $selectorsA, \Illuminate\Support\Collection $selectorsB): bool
+    private function selectorsCanOverlap(Collection $selectorsA, Collection $selectorsB): bool
     {
         $typeMapA = $selectorsA->groupBy('selector_type');
         $typeMapB = $selectorsB->groupBy('selector_type');
