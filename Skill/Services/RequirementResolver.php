@@ -70,6 +70,7 @@ class RequirementResolver
 
         if (count($matchingProfiles) > 1) {
             $codes = array_map(fn ($m) => "[{$m['profile']->code}] v{$m['profile']->version}", $matchingProfiles);
+
             throw new InvalidRequirementProfileException(
                 'Multiple published requirement profiles match this employee: '.implode(', ', $codes).'. '
                 .'Overlapping profiles must be retired or refined to prevent ambiguity.'
@@ -78,6 +79,7 @@ class RequirementResolver
 
         if (count($matchingProfiles) === 1) {
             $match = $matchingProfiles[0];
+
             return [
                 'profile' => $match['profile'],
                 'explanation' => "Matched profile [{$match['profile']->code}] v{$match['profile']->version}: {$match['explanation']}",
@@ -111,9 +113,11 @@ class RequirementResolver
                 'partial_match' => false,
             ];
         }
+
         $matchedSelectors = [];
         $explanations = [];
         $selectorIndex = 0;
+
         foreach ($selectors as $selector) {
             $selectorMatch = $this->matchesSelector($selector, $employeeData);
             if ($selectorMatch['matches'] === false) {
