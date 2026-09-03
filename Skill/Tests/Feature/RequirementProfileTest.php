@@ -51,12 +51,10 @@ function requirementEntity(int $tenantId, string $type, ?int $companyEntityId = 
     if ($type === 'organization_unit' && $companyEntityId !== null) {
         $connection = ProviderConnection::query()->create([
             'tenant_id' => $tenantId,
-            'provider_id' => 1,
-            'provider' => 'test',
-            'display_name' => 'Test Connection',
+            'provider_id' => 'test-provider',
+            'label' => 'Test Connection',
             'scope_key' => 'tenant',
             'status' => ProviderConnection::STATUS_ACTIVE,
-            'is_enabled' => true,
         ]);
 
         $identity = ExternalIdentity::query()->create([
