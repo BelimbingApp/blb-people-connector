@@ -43,14 +43,10 @@ class RequirementResolver
             ->whereIn('status', [RequirementProfileStatus::Published->value, RequirementProfileStatus::Retired->value])
             ->whereDate('published_at', '<=', $asOf)
             ->where(function ($query) use ($asOf): void {
-                $query->whereNull('effective_date')
-                    ->orWhereDate('effective_date', '<=', $asOf);
-            })
-            ->where(function ($query) use ($asOf): void {
                 $query->whereNull('retired_at')
                     ->orWhereDate('retired_at', '>=', $asOf);
             })
-            ->orderBy('effective_date', 'desc')
+            ->orderBy('published_at', 'desc')
             ->orderBy('version', 'desc')
             ->get();
 
