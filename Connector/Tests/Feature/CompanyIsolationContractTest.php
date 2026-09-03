@@ -126,6 +126,46 @@ test('a user is offered only the workforce company their own platform company co
         ->and(app(CompanyAttribution::class)->mayActFor(null, $fixture->alphaCompanyEntityId))->toBeFalse();
 });
 
+test('company attribution follows the workforce entity state, not the retired projection flag', function (): void {
+    // #15: deactivate retires the company projection; reactivate restores the
+    // entity but leaves the projection retired until the provider restates
+    // facts. Authorizing on projection.active made the skill catalog vanish
+    // for that gap. Attribution must key off the entity being active.
+    $fixture = CompanyIsolationContract::twoCompaniesInOneTenant();
+    app(TenantContext::class)->set($fixture->tenantId);
+    $alphaUser = User::factory()->create(['company_id' => $fixture->alphaCompany->id]);
+    $attribution = app(CompanyAttribution::class);
+
+    expect($attribution->mayActFor($alphaUser, $fixture->alphaCompanyEntityId))->toBeTrue();
+
+    $entity = WorkforceEntity::query()->forTenant($fixture->tenantId)->findOrFail($fixture->alphaCompanyEntityId);
+    $entity->fill([
+        'state' => WorkforceEntity::STATE_INACTIVE,
+        'deactivated_at' => now(),
+    ])->save();
+    WorkforceCompanyProjection::query()
+        ->withoutCompanyScope('Retires the fixture company projection the way deactivate() does.')
+        ->forTenant($fixture->tenantId)
+        ->where('workforce_entity_id', $fixture->alphaCompanyEntityId)
+        ->update(['active' => false]);
+
+    expect($attribution->mayActFor($alphaUser, $fixture->alphaCompanyEntityId))->toBeFalse()
+        ->and(WorkforceCompanyProjection::query()
+            ->withoutCompanyScope('Asserts the retired projection still exists for the company entity.')
+            ->forTenant($fixture->tenantId)
+            ->where('workforce_entity_id', $fixture->alphaCompanyEntityId)
+            ->value('active'))->toBeFalse();
+
+    $entity->fill([
+        'state' => WorkforceEntity::STATE_ACTIVE,
+        'deactivated_at' => null,
+    ])->save();
+
+    expect($attribution->mayActFor($alphaUser, $fixture->alphaCompanyEntityId))->toBeTrue()
+        ->and(array_keys($attribution->allowedCompanyEntities($alphaUser)))
+        ->toBe([$fixture->alphaCompanyEntityId]);
+});
+
 test('archiving a sibling company does not reopen the single-company carve-out', function (): void {
     $fixture = CompanyIsolationContract::twoCompaniesInOneTenant();
     app(TenantContext::class)->set($fixture->tenantId);
