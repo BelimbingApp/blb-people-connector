@@ -2,6 +2,9 @@
 
 namespace App\Domains\PeopleConnector\Skill\Models;
 
+use App\Domains\PeopleConnector\Connector\Contracts\ReferencesWorkforceEntities;
+use App\Domains\PeopleConnector\Connector\Data\WorkforceReference;
+use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
 use App\Domains\PeopleConnector\Connector\Models\Concerns\CompanyOwned;
 use App\Domains\PeopleConnector\Connector\Models\TenantOwnedModel;
 use App\Domains\PeopleConnector\Skill\Enums\SelectorType;
@@ -12,7 +15,7 @@ use App\Domains\PeopleConnector\Skill\Exceptions\PublishedRequirementImmutableEx
  * employee cohort the profile applies to. A selector has explicit tenant_id
  * and company_entity_id for isolation, copied from its profile.
  */
-class RequirementProfileSelector extends TenantOwnedModel
+class RequirementProfileSelector extends TenantOwnedModel implements ReferencesWorkforceEntities
 {
     use CompanyOwned;
 
@@ -21,6 +24,13 @@ class RequirementProfileSelector extends TenantOwnedModel
     public function companyOwnerColumn(): ?string
     {
         return 'company_entity_id';
+    }
+
+    public function workforceReferences(): array
+    {
+        return [
+            new WorkforceReference('selector_entity_id', WorkforceResourceType::OrganizationUnit),
+        ];
     }
 
     protected function casts(): array

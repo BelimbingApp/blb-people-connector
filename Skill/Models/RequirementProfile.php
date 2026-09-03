@@ -2,6 +2,9 @@
 
 namespace App\Domains\PeopleConnector\Skill\Models;
 
+use App\Domains\PeopleConnector\Connector\Contracts\ReferencesWorkforceEntities;
+use App\Domains\PeopleConnector\Connector\Data\WorkforceReference;
+use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
 use App\Domains\PeopleConnector\Connector\Models\Concerns\CompanyOwned;
 use App\Domains\PeopleConnector\Connector\Models\TenantOwnedModel;
 use App\Domains\PeopleConnector\Skill\Enums\RequirementProfileStatus;
@@ -13,11 +16,18 @@ use App\Domains\PeopleConnector\Skill\Exceptions\PublishedRequirementImmutableEx
  * edits produce a new version with an effective date. Employee movement does
  * not rewrite past requirements or assessments.
  */
-class RequirementProfile extends TenantOwnedModel
+class RequirementProfile extends TenantOwnedModel implements ReferencesWorkforceEntities
 {
     use CompanyOwned;
 
     protected $table = 'people_connector_skill_requirement_profiles';
+
+    public function workforceReferences(): array
+    {
+        return [
+            new WorkforceReference('owner_employee_entity_id', WorkforceResourceType::Employee),
+        ];
+    }
 
     protected static function booted(): void
     {
