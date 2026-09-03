@@ -109,7 +109,7 @@ class RequirementProfile extends TenantOwnedModel implements ReferencesWorkforce
         $dirty = $this->getDirty();
         unset($dirty['company_entity_id'], $dirty['updated_at']);
 
-        if ($dirty !== [] || ! $this->isDirty('company_entity_id')) {
+        if ($dirty !== [] || !$this->isDirty('company_entity_id')) {
             return false;
         }
 
