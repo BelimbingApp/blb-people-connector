@@ -138,6 +138,14 @@ final class WorkforceProjectionStore
                 'email' => $record->email,
             ],
             $observedAt,
+            // The adapter's identity resolution can legitimately fail to
+            // confirm a user this pass — e.g. blb-people#25's HR-governed
+            // portal-access confirmation not (yet) active — without that
+            // meaning the platform user link is gone. Rule 9.1 requires a
+            // positive statement before a projection is torn down; "the
+            // adapter didn't reconfirm it this pass" is not one. Only an
+            // explicit non-null value may overwrite an existing link.
+            stickyOnNull: ['user_entity_id'],
         );
     }
 
@@ -146,9 +154,14 @@ final class WorkforceProjectionStore
      *
      * @param  class-string<TProjection>  $model
      * @param  array<string, mixed>  $values
+     * @param  list<string>  $stickyOnNull  attributes that must never be overwritten with
+     *                                      null while an existing projection already holds
+     *                                      a non-null value — see rule 9.1: the adapter
+     *                                      failing to reconfirm a fact is not a positive
+     *                                      statement that the fact is gone.
      * @return TProjection
      */
-    private function persistCurrent(string $model, array $values, \DateTimeInterface $observedAt): TenantOwnedModel
+    private function persistCurrent(string $model, array $values, \DateTimeInterface $observedAt, array $stickyOnNull = []): TenantOwnedModel
     {
         $current = $model::query()
             ->withoutCompanyScope('A sync pass addresses exactly one projection by the canonical workforce entity id it just resolved through this connection, and the company is part of the payload being written.')
@@ -156,6 +169,14 @@ final class WorkforceProjectionStore
             ->where('workforce_entity_id', $values['workforce_entity_id'])
             ->lockForUpdate()
             ->first();
+
+        if ($current !== null) {
+            foreach ($stickyOnNull as $attribute) {
+                if (($values[$attribute] ?? null) === null && $current->getAttribute($attribute) !== null) {
+                    unset($values[$attribute]);
+                }
+            }
+        }
 
         if ($current !== null && $current->observed_at->greaterThan($observedAt)) {
             return $current;

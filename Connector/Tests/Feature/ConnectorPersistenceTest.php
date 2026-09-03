@@ -714,6 +714,50 @@ test('typed workforce projections retain effective and observed facts without re
     )))->toThrow(WorkforceProjectionConflictException::class, 'same provider observation time');
 });
 
+test('a sync pass that cannot reconfirm the linked user never nulls out an already-linked one', function (): void {
+    [$tenant] = createTenantWithCompany(['name' => 'Sticky User Link Tenant']);
+    $connection = connectorPersistenceConnection((int) $tenant->id);
+    $projections = app(WorkforceProjectionStore::class);
+    $observedAt = new DateTimeImmutable('2026-09-03T00:00:00+00:00');
+    $companyReference = connectorPersistenceReference(WorkforceResourceType::Company, 'STICKY-COMPANY');
+    $employeeReference = connectorPersistenceReference(WorkforceResourceType::Employee, 'STICKY-EMP');
+    $userReference = connectorPersistenceReference(WorkforceResourceType::User, 'STICKY-USER');
+
+    $projections->upsert((int) $connection->id, new WorkforceCompany($companyReference, 'Sticky Co', true, $observedAt));
+    $linked = $projections->upsert((int) $connection->id, new WorkforceEmployee(
+        $employeeReference,
+        $companyReference,
+        'Linked Employee',
+        true,
+        $observedAt,
+        $observedAt,
+        employeeNumber: 'STICKY-1',
+        userReference: $userReference,
+        sourceVersion: 'employee-v1',
+    ));
+
+    expect($linked->user_entity_id)->not->toBeNull();
+
+    // A later sync pass reconfirms the employee but, this time, cannot
+    // reconfirm the user link — e.g. blb-people#25's HR-governed
+    // portal-access confirmation is not currently active. That is not a
+    // positive statement that the link is gone (rule 9.1), so it must not
+    // overwrite the previously projected user_entity_id.
+    $unconfirmed = $projections->upsert((int) $connection->id, new WorkforceEmployee(
+        $employeeReference,
+        $companyReference,
+        'Linked Employee',
+        true,
+        $observedAt->modify('+1 day'),
+        $observedAt->modify('+1 day'),
+        employeeNumber: 'STICKY-1',
+        sourceVersion: 'employee-v2',
+    ));
+
+    expect($unconfirmed->id)->toBe($linked->id)
+        ->and($unconfirmed->user_entity_id)->toBe($linked->user_entity_id);
+});
+
 test('sync checkpoints advance only on complete pages and preserve an append-only version history', function (): void {
     [$tenantA] = createTenantWithCompany(['name' => 'Checkpoint Tenant A']);
     [$tenantB] = createTenantWithCompany(['name' => 'Checkpoint Tenant B']);
