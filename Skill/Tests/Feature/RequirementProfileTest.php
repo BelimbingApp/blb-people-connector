@@ -3,6 +3,8 @@
 declare(strict_types=1);
 
 use App\Base\Tenancy\Contracts\TenantContext;
+use App\Domains\PeopleConnector\Connector\Models\ExternalIdentity;
+use App\Domains\PeopleConnector\Connector\Models\ProviderConnection;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceEntity;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceOrganizationUnitProjection;
 use App\Domains\PeopleConnector\Skill\Data\RequirementItemDraft;
@@ -47,19 +49,19 @@ function requirementEntity(int $tenantId, string $type, ?int $companyEntityId = 
     ]);
 
     if ($type === 'organization_unit' && $companyEntityId !== null) {
-        $connection = \App\Domains\PeopleConnector\Connector\Models\ProviderConnection::query()->create([
+        $connection = ProviderConnection::query()->create([
             'tenant_id' => $tenantId,
             'provider' => 'test',
             'display_name' => 'Test Connection',
             'is_enabled' => true,
         ]);
 
-        $identity = \App\Domains\PeopleConnector\Connector\Models\ExternalIdentity::query()->create([
+        $identity = ExternalIdentity::query()->create([
             'tenant_id' => $tenantId,
             'connection_id' => $connection->id,
             'workforce_entity_id' => $entity->id,
             'external_key' => 'test-key-'.$entity->id,
-            'state' => \App\Domains\PeopleConnector\Connector\Models\ExternalIdentity::STATE_ACTIVE,
+            'state' => ExternalIdentity::STATE_ACTIVE,
             'effective_from' => now(),
             'last_observed_at' => now(),
         ]);
