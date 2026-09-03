@@ -379,6 +379,7 @@ test('company isolation: department selector cannot reference sibling company or
 
     $deptEntity = requirementEntity($tenantId, 'organization_unit', $companyAId);
     $deptA = WorkforceOrganizationUnitProjection::query()
+        ->forCompany($tenantId, $companyAId)
         ->where('workforce_entity_id', $deptEntity->id)
         ->first();
 
