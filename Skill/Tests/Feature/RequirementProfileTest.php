@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use App\Base\Tenancy\Contracts\TenantContext;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceEntity;
+use App\Domains\PeopleConnector\Connector\Models\WorkforceOrganizationUnitProjection;
 use App\Domains\PeopleConnector\Skill\Data\RequirementItemDraft;
 use App\Domains\PeopleConnector\Skill\Data\RequirementProfileDraft;
 use App\Domains\PeopleConnector\Skill\Data\RequirementSelectorDraft;
@@ -325,6 +326,44 @@ test('company isolation: sibling company cannot address profiles', function (): 
 
     expect(fn () => $store->discardDraft((int) $companyB->id, (int) $profileA->id))
         ->toThrow(RequirementProfileNotFoundException::class);
+});
+
+test('company isolation: department selector cannot reference sibling company organization unit', function (): void {
+    [$tenantId, $companyAId, $skillA, $skillB] = requirementFixture();
+    $store = app(RequirementProfileStore::class);
+
+    $companyB = requirementEntity($tenantId, 'company');
+
+    $deptA = WorkforceOrganizationUnitProjection::query()->create([
+        'tenant_id' => $tenantId,
+        'workforce_entity_id' => requirementEntity($tenantId, 'organization_unit')->id,
+        'source_identity_id' => 1,
+        'company_entity_id' => $companyAId,
+        'name' => 'Department A',
+        'active' => true,
+        'effective_at' => now(),
+        'observed_at' => now(),
+    ]);
+
+    $crossCompanyProfile = new RequirementProfileDraft(
+        code: 'cross.company',
+        name: 'Cross Company Profile',
+        selectors: [
+            new RequirementSelectorDraft(SelectorType::Department, null, (int) $deptA->workforce_entity_id),
+        ],
+        items: [
+            new RequirementItemDraft(
+                skillId: (int) $skillA->id,
+                sequence: 1,
+                requiredLevel: 3,
+                criticality: RequirementCriticality::Critical,
+                weightPercent: 100.0,
+            ),
+        ],
+    );
+
+    expect(fn () => $store->draft((int) $companyB->id, $crossCompanyProfile))
+        ->toThrow(InvalidRequirementProfileException::class, 'does not belong to this company');
 });
 
 test('tenant isolation: another tenant cannot see or address profiles', function (): void {

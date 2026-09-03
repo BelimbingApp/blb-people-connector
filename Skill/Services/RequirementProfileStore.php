@@ -5,6 +5,7 @@ namespace App\Domains\PeopleConnector\Skill\Services;
 use App\Base\Tenancy\Contracts\TenantContext;
 use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceEntity;
+use App\Domains\PeopleConnector\Connector\Models\WorkforceOrganizationUnitProjection;
 use App\Domains\PeopleConnector\Skill\Data\RequirementItemDraft;
 use App\Domains\PeopleConnector\Skill\Data\RequirementProfileDraft;
 use App\Domains\PeopleConnector\Skill\Data\RequirementSelectorDraft;
@@ -44,7 +45,7 @@ class RequirementProfileStore
         }
 
         $this->assertCompanyEntity($tenantId, $companyEntityId);
-        $this->assertSelectors($tenantId, $draft->selectors);
+        $this->assertSelectors($tenantId, $companyEntityId, $draft->selectors);
         $this->assertItems($tenantId, $companyEntityId, $draft->items);
 
         if ($draft->ownerEmployeeEntityId !== null) {
@@ -281,7 +282,7 @@ class RequirementProfileStore
     /**
      * @param  list<RequirementSelectorDraft>  $selectors
      */
-    private function assertSelectors(int $tenantId, array $selectors): void
+    private function assertSelectors(int $tenantId, int $companyEntityId, array $selectors): void
     {
         if (count($selectors) === 0) {
             throw new InvalidRequirementProfileException('A requirement profile needs at least one target selector.');
@@ -305,6 +306,19 @@ class RequirementProfileStore
                     throw new InvalidRequirementProfileException(
                         'Department selector entity must be an organization_unit.',
                     );
+                }
+
+                if ($selector->selectorType === SelectorType::Department) {
+                    $orgUnit = WorkforceOrganizationUnitProjection::query()
+                        ->forCompany($tenantId, $companyEntityId)
+                        ->where('workforce_entity_id', $selector->selectorEntityId)
+                        ->first();
+
+                    if ($orgUnit === null) {
+                        throw new InvalidRequirementProfileException(
+                            "Department selector entity [{$selector->selectorEntityId}] does not belong to this company.",
+                        );
+                    }
                 }
             }
         }
