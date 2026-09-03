@@ -20,7 +20,7 @@ class RequirementResolver
      * Resolve the active requirement profile for an employee at a given date.
      * Returns the profile and an explanation of how it matched.
      *
-     * @param  array<string, mixed>  $employeeData  Employee attributes: company_entity_id, department_entity_id, job_title, job_grade, workforce_class, position
+     * @param  array<string, mixed>  $employeeData  Employee attributes: company_entity_id, department_entity_id, position_entity_id, job_title, job_grade, workforce_class
      * @return array{profile: RequirementProfile|null, explanation: string, matched_selectors: array<string>}
      */
     public function resolve(array $employeeData, ?DateTimeInterface $asOf = null): array
@@ -40,32 +40,51 @@ class RequirementResolver
         $profiles = RequirementProfile::query()
             ->forCompany($tenantId, (int) $companyEntityId)
             ->whereIn('status', [RequirementProfileStatus::Published->value, RequirementProfileStatus::Retired->value])
-            ->whereDate('published_at', '<=', $asOf)
+            ->where(function ($query) use ($asOf): void {
+                $query->whereNull('effective_date')
+                    ->orWhereDate('effective_date', '<=', $asOf);
+            })
             ->where(function ($query) use ($asOf): void {
                 $query->whereNull('retired_at')
                     ->orWhereDate('retired_at', '>=', $asOf);
             })
-            ->orderBy('published_at', 'desc')
+            ->orderBy('effective_date', 'desc')
             ->orderBy('version', 'desc')
             ->get();
 
+        $matchingProfiles = [];
         $bestFailureExplanation = null;
         $hadPartialMatch = false;
 
         foreach ($profiles as $profile) {
             $matchResult = $this->matchesProfile($profile, $employeeData);
             if ($matchResult['matches']) {
-                return [
+                $matchingProfiles[] = [
                     'profile' => $profile,
-                    'explanation' => "Matched profile [{$profile->code}] v{$profile->version}: {$matchResult['explanation']}",
+                    'explanation' => $matchResult['explanation'],
                     'matched_selectors' => $matchResult['matched_selectors'],
                 ];
-            }
-
-            if ($matchResult['partial_match'] ?? false) {
+            } elseif ($matchResult['partial_match'] ?? false) {
                 $hadPartialMatch = true;
                 $bestFailureExplanation = $matchResult['explanation'];
             }
+        }
+
+        if (count($matchingProfiles) > 1) {
+            $codes = array_map(fn ($m) => "[{$m['profile']->code}] v{$m['profile']->version}", $matchingProfiles);
+            throw new \App\Domains\PeopleConnector\Skill\Exceptions\InvalidRequirementProfileException(
+                'Multiple published requirement profiles match this employee: '.implode(', ', $codes).'. '
+                .'Overlapping profiles must be retired or refined to prevent ambiguity.'
+            );
+        }
+
+        if (count($matchingProfiles) === 1) {
+            $match = $matchingProfiles[0];
+            return [
+                'profile' => $match['profile'],
+                'explanation' => "Matched profile [{$match['profile']->code}] v{$match['profile']->version}: {$match['explanation']}",
+                'matched_selectors' => $match['matched_selectors'],
+            ];
         }
 
         return [
@@ -287,32 +306,32 @@ class RequirementResolver
      */
     private function matchPosition(RequirementProfileSelector $selector, array $employeeData): array
     {
-        $employeePosition = $employeeData['position'] ?? null;
+        $employeePositionEntityId = $employeeData['position_entity_id'] ?? null;
 
-        if ($selector->selector_value === null) {
+        if ($selector->selector_entity_id === null) {
             return [
                 'matches' => false,
-                'explanation' => 'Position selector has no value',
+                'explanation' => 'Position selector has no entity ID',
             ];
         }
 
-        if ($employeePosition === null) {
+        if ($employeePositionEntityId === null) {
             return [
                 'matches' => false,
                 'explanation' => 'Employee has no position',
             ];
         }
 
-        if (strcasecmp((string) $selector->selector_value, (string) $employeePosition) === 0) {
+        if ((int) $selector->selector_entity_id === (int) $employeePositionEntityId) {
             return [
                 'matches' => true,
-                'explanation' => "Position '{$selector->selector_value}'",
+                'explanation' => "Position entity ID {$selector->selector_entity_id}",
             ];
         }
 
         return [
             'matches' => false,
-            'explanation' => "Employee position '{$employeePosition}' does not match '{$selector->selector_value}'",
+            'explanation' => "Employee position {$employeePositionEntityId} does not match {$selector->selector_entity_id}",
         ];
     }
 }

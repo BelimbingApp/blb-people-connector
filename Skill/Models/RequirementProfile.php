@@ -7,6 +7,7 @@ use App\Domains\PeopleConnector\Connector\Data\WorkforceReference;
 use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
 use App\Domains\PeopleConnector\Connector\Models\Concerns\CompanyOwned;
 use App\Domains\PeopleConnector\Connector\Models\TenantOwnedModel;
+use App\Domains\PeopleConnector\Connector\Models\WorkforceEntity;
 use App\Domains\PeopleConnector\Skill\Enums\RequirementProfileStatus;
 use App\Domains\PeopleConnector\Skill\Exceptions\PublishedRequirementImmutableException;
 
@@ -42,6 +43,10 @@ class RequirementProfile extends TenantOwnedModel implements ReferencesWorkforce
             }
 
             if ($original === RequirementProfileStatus::Published && $profile->isRetireOnlyChange()) {
+                return;
+            }
+
+            if ($profile->isCarriedByCompanyMerge()) {
                 return;
             }
 
@@ -91,5 +96,28 @@ class RequirementProfile extends TenantOwnedModel implements ReferencesWorkforce
         unset($dirty['status'], $dirty['retired_at'], $dirty['updated_at']);
 
         return $dirty === [] && $this->status === RequirementProfileStatus::Retired;
+    }
+
+    /**
+     * A company merge changes the owner of a non-draft profile and nothing
+     * else, and only from an entity already recorded as merged into the new
+     * owner. The database trigger applies the same rule; this is the message
+     * before the abort.
+     */
+    private function isCarriedByCompanyMerge(): bool
+    {
+        $dirty = $this->getDirty();
+        unset($dirty['company_entity_id'], $dirty['updated_at']);
+
+        if ($dirty !== [] || ! $this->isDirty('company_entity_id')) {
+            return false;
+        }
+
+        return WorkforceEntity::query()
+            ->forTenant((int) $this->tenant_id)
+            ->whereKey((int) $this->getOriginal('company_entity_id'))
+            ->where('state', WorkforceEntity::STATE_MERGED)
+            ->where('merged_into_entity_id', (int) $this->company_entity_id)
+            ->exists();
     }
 }
