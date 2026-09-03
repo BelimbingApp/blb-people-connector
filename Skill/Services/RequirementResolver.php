@@ -111,11 +111,9 @@ class RequirementResolver
                 'partial_match' => false,
             ];
         }
-
         $matchedSelectors = [];
         $explanations = [];
         $selectorIndex = 0;
-
         foreach ($selectors as $selector) {
             $selectorMatch = $this->matchesSelector($selector, $employeeData);
             if ($selectorMatch['matches'] === false) {
