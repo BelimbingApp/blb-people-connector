@@ -768,22 +768,24 @@ contract (blb-people-connector#53):
 - **A package is instance-level.** It carries every company in the tenant.
   There is no company axis on export today, and no filter that fails when
   omitted; per-company export, if [1004] wants it, is not this mechanism.
-- **The credential reference travels in clear.** The Connector scope
-  includes `provider_credentials`, and the platform's redaction applies only
-  to diagnostic capture ("bulk exports preserve selected tables exactly").
-  The table registry has no way for a module to declare a table
-  non-transferable, so the connector cannot keep that table out of its scope.
-  What leaves is a *reference* into base-integration storage, not key
-  material, and it is useless on another instance; it is still something a
-  package should not carry. The owner's ruling on belimbing#530 is that this
-  is the operator's decision, not the module's: the DataShare UI will warn
-  and let the operator redact any field, with the name-pattern defaults
-  pre-ticked as suggestions rather than guarantees, and with the warning
-  this repository measured — redacting a `NOT NULL` column such as
-  `secret_reference` makes those rows plan as `conflict` and therefore
-  unrestorable at the destination. Until that UI lands, an operator sharing
-  the Connector scope is sharing credential references, and the test above
-  fails the day either side of that changes.
+- **The credential reference travels unless the operator redacts it.** The
+  Connector scope includes `provider_credentials`. The platform does not
+  redact transfer packages on its own (`data_share.php`: bulk exports
+  preserve selected tables exactly), and since belimbing#535 the Share
+  preview offers every column of every selected table for redaction, with
+  the name-pattern matches only *suggested* — nothing starts ticked, per the
+  owner's ruling on belimbing#530 — so the default export still carries
+  `secret_reference` and `key_id` as stored. What this repository adds is
+  the knowledge the operator needs at that moment: `secret_reference` and
+  `credential_id` are suggested by name, `key_id` is not (it names the key
+  used, not key material), and redacting `secret_reference` makes every
+  credential row unrestorable at the destination because the column is
+  `NOT NULL` — the platform's preview says so with the row count, on the
+  strength of the conflict this repository measured. `DataShareRoundTripTest`
+  asserts both halves: the default package still carries the reference, and
+  a redacted one leaves it null and re-plans the row as a conflict. What
+  leaves is a *reference* into base-integration storage, useless on another
+  instance; it is still the operator's decision, made where the columns are.
 
 ## Privacy deletion and retention
 
