@@ -9,6 +9,10 @@ use App\Domains\PeopleConnector\Connector\Data\WorkforceProvenance;
 use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
 use App\Domains\PeopleConnector\Connector\Exceptions\ConnectorRecordNotFoundException;
 use App\Domains\PeopleConnector\Connector\Exceptions\ExternalIdentityCollisionException;
+use App\Domains\PeopleConnector\Connector\Exceptions\WorkforceMergeConflictException;
+use App\Domains\PeopleConnector\Connector\Models\CompanyOwnedModels;
+use App\Domains\PeopleConnector\Connector\Models\Concerns\CompanyOwned;
+use App\Domains\PeopleConnector\Connector\Models\DomainModels;
 use App\Domains\PeopleConnector\Connector\Models\ExternalIdentity;
 use App\Domains\PeopleConnector\Connector\Models\ProviderConnection;
 use App\Domains\PeopleConnector\Connector\Models\TenantOwnedModel;
@@ -17,6 +21,8 @@ use App\Domains\PeopleConnector\Connector\Models\WorkforceEmployeeProjection;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceEntity;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceOrganizationUnitProjection;
 use App\Domains\PeopleConnector\Connector\Models\WorkforcePositionProjection;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Support\Facades\DB;
 
 final class WorkforceIdentityStore
@@ -647,30 +653,31 @@ final class WorkforceIdentityStore
         WorkforceEntity $superseded,
         WorkforceEntity $survivor,
     ): void {
-        $references = match (WorkforceResourceType::from($superseded->resource_type)) {
-            WorkforceResourceType::Company => [
-                [WorkforceOrganizationUnitProjection::class, 'company_entity_id'],
-                [WorkforcePositionProjection::class, 'company_entity_id'],
-                [WorkforceEmployeeProjection::class, 'company_entity_id'],
-            ],
-            WorkforceResourceType::OrganizationUnit => [
-                [WorkforceOrganizationUnitProjection::class, 'parent_entity_id'],
-                [WorkforcePositionProjection::class, 'organization_entity_id'],
-                [WorkforceEmployeeProjection::class, 'organization_entity_id'],
-            ],
-            WorkforceResourceType::Position => [
-                [WorkforceEmployeeProjection::class, 'position_entity_id'],
-            ],
-            WorkforceResourceType::Employee => [
-                [WorkforceEmployeeProjection::class, 'manager_entity_id'],
-                [WorkforceEmployeeProjection::class, 'department_head_entity_id'],
-            ],
-            WorkforceResourceType::User => [
-                [WorkforceEmployeeProjection::class, 'user_entity_id'],
-            ],
-        };
+        // Every branch is derived, none listed. The company branch comes
+        // from the models declaring CompanyOwned through company_entity_id;
+        // every other branch comes from the models declaring a
+        // WorkforceReference of the superseded entity's type. A hand-kept
+        // list here was three tables short on the company axis (#29) and two
+        // columns short on the others (#35); the isolation contract now fails
+        // when a *_entity_id column exists and is not declared, so a new
+        // reference joins the merge in the same diff that adds the column.
+        $type = WorkforceResourceType::from($superseded->resource_type);
+        $references = [];
 
-        foreach ($references as [$projectionModel, $column]) {
+        if ($type === WorkforceResourceType::Company) {
+            foreach (CompanyOwnedModels::owningCompanyThrough('company_entity_id') as $model) {
+                $references[] = [$model, 'company_entity_id', false];
+            }
+        }
+
+        foreach (DomainModels::referencing($type) as [$model, $reference]) {
+            $references[] = [$model, $reference->column, $reference->hierarchy];
+        }
+
+        $selfReferentialHierarchyOf = fn (Model $row, bool $hierarchy): bool => $hierarchy
+            && (int) $row->getAttribute('workforce_entity_id') === (int) $survivor->id;
+
+        foreach ($references as [$projectionModel, $column, $hierarchy]) {
             $query = $projectionModel::query()
                 ->forTenant($this->tenantContext->requireTenantId())
                 ->where($column, $superseded->id)
@@ -686,22 +693,41 @@ final class WorkforceIdentityStore
             // open attribution question in
             // docs/contracts/company-ownership.md; query scoping cannot
             // answer it.
-            if (! in_array($column, (new $projectionModel)->companyScopeColumns(), true)) {
+            // A declaring model need not be company-owned (#36 review): only
+            // a model carrying the trait has a company guard to keep or to
+            // open, and only its owner column counts as the company axis.
+            $companyOwned = in_array(CompanyOwned::class, class_uses_recursive($projectionModel), true);
+            $rewritesOwner = $companyOwned && in_array($column, (new $projectionModel)->companyScopeColumns(), true);
+
+            if ($companyOwned && ! $rewritesOwner) {
                 $query->withoutCompanyScope('A merge rewrites every inbound reference to the superseded entity, and a shared manager or user entity may be referenced from more than one company.');
             }
 
             $projections = $query->get();
 
             foreach ($projections as $projection) {
-                $selfReferentialHierarchy = in_array(
-                    $column,
-                    ['parent_entity_id', 'manager_entity_id', 'department_head_entity_id'],
-                    strict: true,
-                ) && (int) $projection->workforce_entity_id === (int) $survivor->id;
+                if ($rewritesOwner) {
+                    $projection->movingCompany('A company merge moves every row owned by the superseded company entity to its survivor; the superseded entity was marked merged into the survivor in this same transaction.');
+                }
 
-                $projection->setAttribute($column, $selfReferentialHierarchy ? null : $survivor->id);
-                $projection->save();
+                // Under the transaction the merge already holds, so a
+                // collision rolls the whole merge back rather than leaving
+                // half a catalog moved.
+                try {
+                    $this->rewriteReference($projection, $column, $survivor, $selfReferentialHierarchyOf($projection, $hierarchy));
+
+                    continue;
+                } catch (UniqueConstraintViolationException $collision) {
+                    throw WorkforceMergeConflictException::for($projectionModel, (int) $superseded->id, (int) $survivor->id, $collision);
+                }
+
             }
         }
+    }
+
+    private function rewriteReference(Model $row, string $column, WorkforceEntity $survivor, bool $selfReferentialHierarchy): void
+    {
+        $row->setAttribute($column, $selfReferentialHierarchy ? null : $survivor->id);
+        $row->save();
     }
 }

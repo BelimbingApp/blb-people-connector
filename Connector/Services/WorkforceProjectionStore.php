@@ -177,7 +177,10 @@ final class WorkforceProjectionStore
             return $model::query()->create($values);
         }
 
-        $current->fill($values)->save();
+        $current
+            ->movingCompany('A sync pass writes the provider payload as observed, and the company an employee, position or unit belongs to is part of that payload; a transfer between companies arrives as exactly this update.')
+            ->fill($values)
+            ->save();
 
         return $current->refresh();
     }

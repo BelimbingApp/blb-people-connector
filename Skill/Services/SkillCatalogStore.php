@@ -24,6 +24,16 @@ use App\Domains\PeopleConnector\Skill\Models\SkillCategory;
  * department, and owner references are validated against the connector's
  * workforce identity spine (the #26 seam), and the composite (id, tenant_id)
  * foreign keys enforce the tenant half at the schema level too.
+ *
+ * This store SCOPES; it does not AUTHORIZE. Every method takes the company
+ * entity id as a parameter and faithfully scopes to whatever it is handed —
+ * forCompany() stops an unscoped query, not a wrongly scoped one. Deciding
+ * that the acting user may act for that company belongs to the caller, which
+ * today is Livewire\Catalog\Index::authorizedCompanyForManage(). A new caller
+ * must do the same; CompanyAttribution::allowedCompanyEntities() is the
+ * source of that answer. See blb-people-connector#25 and
+ * docs/contracts/company-ownership.md ("the guard is scoping, not
+ * authorization").
  */
 class SkillCatalogStore
 {

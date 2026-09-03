@@ -186,7 +186,10 @@ test('declared readable and writable ports resolve with their exact type after a
 
     expect($resolver->read($actor, $provider, PeopleCapability::EmployeeDirectory, TestEmployeeReader::class, $scope))->toBe($reader)
         ->and($resolver->write($actor, $provider, PeopleCapability::EmployeeDirectory, TestEmployeeWriter::class, $scope))->toBe($writer)
-        ->and($authorization->authorized)->toBe(['people-connector.provider.read', 'people-connector.provider.write']);
+        ->and($authorization->authorized)->toBe([
+            'people-connector.provider.read.employee_directory',
+            'people-connector.provider.write.employee_directory',
+        ]);
 });
 
 test('denied connector authorization never asks an adapter for capabilities or a port', function (): void {
@@ -223,6 +226,71 @@ test('denied connector authorization never asks an adapter for capabilities or a
         resolverTestActor((int) $tenant->id, (int) $company->id),
         $provider,
         PeopleCapability::EmployeeDirectory,
+        TestEmployeeReader::class,
+        ProviderScope::company((int) $company->id),
+    ))->toThrow(AuthorizationDeniedException::class);
+});
+
+test('a permission granted for one capability does not authorize another', function (): void {
+    [$tenant, $company] = createTenantWithCompany(['name' => 'Capability Isolation Tenant']);
+    resolverTestActivateConnection((int) $tenant->id, (int) $company->id, 'test.provider');
+
+    // Grants only the Employee Directory read permission. Before the
+    // capability was folded into the permission name, this same actor could
+    // read Payroll through the identical 'people-connector.provider.read'
+    // check — see docs/contracts/hr-data-boundary.md rule 7.3.
+    $authorization = new class implements AuthorizationService
+    {
+        public function can(Actor $actor, string $capability, ?ResourceContext $resource = null, array $context = []): AuthorizationDecision
+        {
+            return $capability === 'people-connector.provider.read.employee_directory'
+                ? AuthorizationDecision::allow()
+                : AuthorizationDecision::deny(AuthorizationReasonCode::DENIED_MISSING_CAPABILITY);
+        }
+
+        public function authorize(Actor $actor, string $capability, ?ResourceContext $resource = null, array $context = []): void
+        {
+            if ($capability !== 'people-connector.provider.read.employee_directory') {
+                throw new AuthorizationDeniedException(
+                    AuthorizationDecision::deny(AuthorizationReasonCode::DENIED_MISSING_CAPABILITY),
+                );
+            }
+        }
+
+        public function filterAllowed(Actor $actor, string $capability, iterable $resources, array $context = []): Collection
+        {
+            return $capability === 'people-connector.provider.read.employee_directory' ? collect($resources) : collect();
+        }
+    };
+    app()->instance(AuthorizationService::class, $authorization);
+
+    $reader = new class implements TestEmployeeReader {};
+    $employeeDirectoryProvider = Mockery::mock(ProviderAdapter::class, ResolvesProviderPorts::class);
+    $employeeDirectoryProvider->shouldReceive('descriptor')->andReturn(providerDescriptor());
+    $employeeDirectoryProvider->shouldReceive('capabilities')->once()->andReturn(new CapabilitySet([
+        new CapabilityDeclaration(PeopleCapability::EmployeeDirectory, [
+            new CapabilityChannel(CapabilityDelivery::Synchronous, TestEmployeeReader::class),
+        ]),
+    ]));
+    $employeeDirectoryProvider->shouldReceive('resolvePort')->once()->with(TestEmployeeReader::class, Mockery::type(ProviderPortAuthorization::class))->andReturn($reader);
+
+    expect(app(ProviderPortResolver::class)->read(
+        resolverTestActor((int) $tenant->id, (int) $company->id),
+        $employeeDirectoryProvider,
+        PeopleCapability::EmployeeDirectory,
+        TestEmployeeReader::class,
+        ProviderScope::company((int) $company->id),
+    ))->toBe($reader);
+
+    $payrollProvider = Mockery::mock(ProviderAdapter::class, ResolvesProviderPorts::class);
+    $payrollProvider->shouldReceive('descriptor')->andReturn(providerDescriptor());
+    $payrollProvider->shouldNotReceive('capabilities');
+    $payrollProvider->shouldNotReceive('resolvePort');
+
+    expect(fn () => app(ProviderPortResolver::class)->read(
+        resolverTestActor((int) $tenant->id, (int) $company->id),
+        $payrollProvider,
+        PeopleCapability::Payroll,
         TestEmployeeReader::class,
         ProviderScope::company((int) $company->id),
     ))->toThrow(AuthorizationDeniedException::class);

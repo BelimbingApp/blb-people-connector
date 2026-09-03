@@ -165,6 +165,12 @@ that a Class C or Class D model uses. It does three things:
    just before it runs. If no top-level `AND` predicate constrains one of the
    declared columns, it throws `MissingCompanyScopeException` instead of
    executing.
+4. Puts a `CompanyOwnedQuery` under the model as its *base* query builder,
+   which refuses any write that sets one of the declared columns — `update()`,
+   `upsert()`, `updateOrInsert()`, `increment()`/`decrement()` and their
+   `$extra` maps, `toBase()`/`getQuery()` writes, and the `UPDATE` a `save()`
+   issues — unless the writer first said `movingCompany($reason)`. It throws
+   `CompanyMoveRefusedException`. See "Moving a row between companies" below.
 
 The result is that `Skill::query()->forTenant($tenantId)->get()` — the exact
 line all three lanes wrote — now raises an error naming the model and the
@@ -235,6 +241,116 @@ honest uses on models that are not company-owned, and a check that flags those
 gets argued down until it means nothing. It belongs in the same category as
 `DB::table()`: you have left Eloquent, and the rule below about raw queries
 applies. Do not reach for it on a company-owned table.
+
+### Moving a row between companies
+
+The scope guard checks a query's *predicates*. It cannot check its *values*,
+and that leaves one write it accepts which is still wrong: a correctly pinned
+update that sets `company_entity_id` to a sibling company's id.
+
+```php
+Skill::query()->forCompany($tenantId, $alpha)->update(['company_entity_id' => $beta]);
+```
+
+Both axes are pinned, on the base table, with real values — the exact shape
+the guard is written to accept. And the database accepts it too, which is the
+asymmetry that made this worth its own rule (blb-people-connector#18): the
+tenant axis has a foreign key, so moving a row to a tenant that does not exist
+fails, but the company axis has only a composite key to
+`workforce_entities (id, tenant_id)`, and `$beta` *is* a real entity in the
+same tenant. The write is valid; it is only wrong. Afterwards the row is not
+visible as a leak. It looks like data that was never there.
+
+So changing a company column is refused unless it is stated:
+
+```php
+$projection->movingCompany('why this row may change company')->fill($values)->save();
+Model::query()->movingCompany('why')->forCompany(…)->update([…]);
+```
+
+The refusal lives on the model's **base** query builder, `CompanyOwnedQuery`,
+not on the Eloquent builder and not in a model event. That placement is the
+finding of the #28 review, and it is what makes the list below complete:
+Eloquent's `update()` is `toBase()->update()`, `increment()`, `decrement()`,
+`incrementEach()` and `decrementEach()` are `toBase()->…` with an `$extra`
+column map spliced into the same `SET`, and `updateOrInsert()` is not on the
+Eloquent builder at all and is forwarded to the base one. A check on the
+Eloquent builder saw none of those; the base builder sees all of them, and
+also `->getQuery()`/`->toBase()` writes, `saveQuietly()` and
+`Model::withoutEvents()`, because nothing about it is an event. It applies to
+every column in `companyScopeColumns()`, so a Class D row cannot be moved to
+another company's parent either.
+
+A statement covers **one write**. On a builder, the grant is spent by the
+next `update()`/`upsert()` on that builder *or any clone of it* — the grant
+is shared by reference precisely because Eloquent clones the base query on
+every `toBase()`, and a flag copied into the clone would have left the
+original armed. On a model, the grant is spent by the next `save()`, whether
+that save succeeds, aborts at the database, or is halted by a listener before
+it gets there; a `delete()` does not spend it. This is the difference from an
+escape on a relation, which covered everything appended to it.
+
+The reason is required for the same purpose as on `withoutCompanyScope()`:
+`grep -rn movingCompany` is the complete list of places a row may leave its
+company **through Eloquent**, and it is complete because every Eloquent route
+that could move one without that marker is refused. `DB::table()` is not
+Eloquent and is not covered; see "What the guard does not cover". Today there
+are two, and they are the only two the domain knows of:
+
+- **A sync pass.** `WorkforceProjectionStore` writes the provider's payload as
+  observed, and the company an employee, position or unit belongs to is part of
+  that payload. An employee transferring between two companies in HR2000
+  arrives as exactly this update. The company axis on a projection table is
+  provider truth, and this is where it is allowed to change.
+- **A company merge.** `WorkforceIdentityStore::merge()` rewrites every row
+  owned by the superseded company entity to its survivor, in the same
+  transaction that marks the superseded entity merged. The set of tables it
+  rewrites is **derived** from the models declaring `CompanyOwned` with
+  `company_entity_id` as their owner column (`CompanyOwnedModels`), not
+  listed by hand: a hand-kept list was three tables short by the time it was
+  checked (blb-people-connector#29), and every row it missed did not become
+  wrong but invisible, because a query pinned to the survivor cannot see a
+  row still pointing at the merged entity. A merge that would collide on a
+  unique catalog key in the survivor is refused whole with
+  `WorkforceMergeConflictException`; nothing moves until a person resolves
+  the duplicate. Class D rows follow their parent; a company projection is
+  the entity itself and is retired rather than rewritten. The other branches
+  — a merged organization unit, position, employee or user — are derived the
+  same way, from `WorkforceReference` declarations on the models that carry
+  a column pointing at that kind of entity (`ReferencesWorkforceEntities`),
+  and `WorkforceReferenceContractTest` fails the suite when a `*_entity_id`
+  column exists on any model's table and is not declared, or is declared and
+  does not exist (blb-people-connector#35). A **published or
+  retired proficiency scale** is carried too: its immutability guard (model
+  and trigger) exempts a change of owner alone, from an entity already marked
+  merged into the new owner, and nothing else — content and lifecycle stay
+  immutable.
+
+`CompanyIsolationContract` runs the whole route list against every
+company-owned model — fourteen builder routes and three model routes, plus the
+one-write rule on the same builder, on a clone taken while armed, and on a
+model whose save was halted — so a route that is added to Eloquent later, or
+a model added to the domain later, fails the suite rather than the tenant.
+
+**Where the database also refuses.** The Skill module's catalog rows —
+categories, skills, proficiency scales — change company in exactly one case:
+a company merge, which carries them to the survivor. No sync writes them. So
+there the backstop is the same class of thing the tenant axis has: a
+`BEFORE UPDATE` trigger on each table, on both drivers, that aborts when
+`company_entity_id` changes *unless* the old owner is a workforce entity in
+state `merged` whose `merged_into_entity_id` is the new owner — which is what
+the merge records, in the same transaction, before it rewrites anything. That
+is the actual rule, expressed where the model layer cannot be bypassed. The
+model-layer refusal gives the author a message; the trigger stands when the
+model layer is stepped around. Note what the trigger's exemption is: a
+**standing** permission, not one scoped to the merge transaction. Once entity
+A is recorded as merged into B, any write that moves a catalog row from A to
+B is permitted by the database from then on. That is bounded — the row can
+only go where the merge would have sent it — and it is the price of a rule
+the database can check without a session flag; it is stated here so nobody
+reads it later as a bug. Projection tables get no trigger, because the
+database cannot tell a provider-side transfer from a mistake; there the named
+escape is the mechanism, and the sync store is the one caller.
 
 ### What the guard accepts
 
@@ -383,7 +499,7 @@ legitimate is lost by refusing to tell the two apart when one is present.
 
 An earlier version tried to tell them apart, by naming the tables the query
 could see and accepting the correlation when the other side was *absent* from
-that list. See the next section for why that was the wrong shape of rule.
+that list. See the next section for why that was the wrong kind of rule.
 
 `whereIn('company_entity_id', [$a, $b])` is accepted, by design. The guard
 proves the column is constrained to *named* companies. It does not prove there
@@ -416,6 +532,13 @@ under precisely the condition that matters. So:
 > recognise.** An inclusion test fails closed when a name does not match. An
 > exclusion test fails open on the identical mismatch, and every unfamiliar
 > spelling becomes an attack.
+
+What decides which of those a test is, is not the question it asks but **which
+way its match points**. An inclusion test fails closed because a match means
+*permit*, so a mismatch refuses. A test that **refuses** on a match permits on
+a mismatch, and is an exclusion test wearing an inclusion test's shape however
+its condition reads. The outer-query guard under "Why this shape and not
+another" is refused on exactly that ground.
 
 When a question genuinely needs an exclusion — "is this name absent" — the
 answer is usually to find a condition that removes the question instead. Here
@@ -455,6 +578,19 @@ Being honest about the edges:
   model only. Joining a second company-owned table pins the base table but not
   the joined one, so a join whose `ON` clause correlates loosely can still read
   columns from another company's rows on the joined side. Scope joins yourself.
+- **A company-owned table joined into an _unguarded_ query.** The bullet above
+  assumes a company-owned base, so at least that table is pinned. When the
+  base is Class T — `WorkforceEntity`, say — the guard is not partial, it
+  never runs: `RequireCompanyScope` is registered per model by `CompanyOwned`,
+  and joining a company-owned table *by name* never constructs that model's
+  builder. `WorkforceEntity::query()->join(<a company-owned table>, …)` reads
+  every company's rows, with no tenant predicate needed.
+  (`joinSub()` handed the guarded model's Eloquent builder is the exception —
+  `toBase()` applies scopes, so that sub-select is guarded on its own.
+  `joinSub(…->getQuery())` is not.) Same root as the correlated subquery
+  bullet below: the guard reads the query it is attached to, and here it is
+  attached to nothing. Pin the company yourself in the `ON` clause or a
+  `where`, or start from the guarded model and join back.
 - **Cross-company parent links written outside a store.** `skills.category_id`
   has a composite foreign key on `(category_id, tenant_id)`, not on the
   company, so a write that bypasses `SkillCatalogStore` can point a skill at
@@ -462,9 +598,13 @@ Being honest about the edges:
   The store refuses this; the database does not.
 - **Saving or deleting a model you already hold.** Eloquent addresses those by
   primary key without scopes. That is correct: you obtained the instance
-  through a guarded query.
+  through a guarded query. What a held model may not do silently is change a
+  company column; see "Moving a row between companies".
 - **Raw `DB::table()` queries, and `->getQuery()`.** Both leave Eloquent, and
   global scopes with it. Do not use either on a company-owned table.
+  (`->getQuery()` on a company-owned model still returns its
+  `CompanyOwnedQuery`, so the move refusal survives the step; the scope
+  guard does not.)
 - **A derived or raw `from`.** `fromSub()` and `fromRaw()` are *refused*, not
   silently allowed: once the base relation is derived, the guard cannot tell
   what an unqualified column refers to. That is a deliberate failure rather
@@ -474,7 +614,7 @@ Being honest about the edges:
   arm is a separate SELECT the guard never inspects, so a pinned base says
   nothing whatever about what the arm returns.
 - **A correlated subquery whose enclosing query is not itself pinned.** The
-  correlation rule below binds each inner row to one outer row; it inherits
+  correlation rule above binds each inner row to one outer row; it inherits
   the outer query's scoping and cannot add any. Read from an unguarded Class T
   outer, that is no company boundary at all. Stated in full under the rule.
 - **Class D tables in the Connector module.** They are classified above but
@@ -497,6 +637,24 @@ Being honest about the edges:
   value. Worse, auto-filling silently *changes* results, so a sync run that
   legitimately spans companies would quietly write half its rows. Refusing is
   loud; guessing is not.
+- **A guard on the outer query**, refusing to join a company-owned table
+  unless the outer pins a company, would catch the Class T join above. It is
+  buildable at the Eloquent level — `$query->joins` is structured, this scope
+  already walks `$query->wheres`, and `CompanyOwnedModels` is a derived
+  registry — so the connection-layer objection below does not apply. It is
+  refused on two other grounds.
+  First, it matches join targets **by table name**, and its polarity is the
+  dangerous one. The rule above prefers an inclusion test because a match
+  means *permit*, so an unrecognised spelling refuses. Here a match would mean
+  *refuse*, so an unrecognised spelling permits — the schema-qualified
+  `public.categories` that this document already records as failing open,
+  rebuilt on purpose. A security check that silently does nothing on a naming
+  variation is worse than none, because it licenses confidence. Second, it
+  would be switched off: merges, reconciliation
+  and reporting read across companies legitimately and would trip it
+  constantly, each becoming a `withoutCompanyScope()` at a call site. Class T
+  is unguarded deliberately; the honest answer for a join out of one is the
+  bullet above.
 - **A guard in the database connection layer** would also catch raw queries,
   but it has to parse SQL text, cannot see the author's intent, and produces
   false positives on joins and subqueries. Higher cost, lower precision.

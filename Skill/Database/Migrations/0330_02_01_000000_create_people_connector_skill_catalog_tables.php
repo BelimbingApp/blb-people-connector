@@ -87,6 +87,27 @@ return new class extends Migration
                     AND NEW.published_at IS NOT DISTINCT FROM OLD.published_at THEN
                     RETURN NEW;
                 END IF;
+                -- A company merge carries a published scale to the survivor:
+                -- only the owner changes, and only from an entity already
+                -- marked merged into the new owner. Content and lifecycle
+                -- stay immutable.
+                IF NEW.company_entity_id IS DISTINCT FROM OLD.company_entity_id
+                    AND NEW.status = OLD.status
+                    AND NEW.tenant_id = OLD.tenant_id
+                    AND NEW.code = OLD.code
+                    AND NEW.name = OLD.name
+                    AND NEW.version = OLD.version
+                    AND NEW.published_at IS NOT DISTINCT FROM OLD.published_at
+                    AND NEW.retired_at IS NOT DISTINCT FROM OLD.retired_at
+                    AND EXISTS (
+                        SELECT 1 FROM people_connector_connector_workforce_entities
+                        WHERE id = OLD.company_entity_id
+                            AND tenant_id = OLD.tenant_id
+                            AND state = 'merged'
+                            AND merged_into_entity_id = NEW.company_entity_id
+                    ) THEN
+                    RETURN NEW;
+                END IF;
                 RAISE EXCEPTION 'proficiency scale % is % and immutable; draft a new version instead', OLD.id, OLD.status;
             END;
             $$ LANGUAGE plpgsql;
@@ -137,17 +158,62 @@ return new class extends Migration
             CREATE TRIGGER pcs_skill_code_guard_trigger
                 BEFORE UPDATE ON people_connector_skill_skills
                 FOR EACH ROW EXECUTE FUNCTION pcs_skill_code_guard();
+
+            CREATE OR REPLACE FUNCTION pcs_company_owner_guard() RETURNS trigger AS $$
+            BEGIN
+                IF NEW.company_entity_id IS DISTINCT FROM OLD.company_entity_id
+                    AND NOT EXISTS (
+                        SELECT 1 FROM people_connector_connector_workforce_entities
+                        WHERE id = OLD.company_entity_id
+                            AND tenant_id = OLD.tenant_id
+                            AND state = 'merged'
+                            AND merged_into_entity_id = NEW.company_entity_id
+                    ) THEN
+                    RAISE EXCEPTION 'catalog row % belongs to company entity % and cannot move to another company', OLD.id, OLD.company_entity_id;
+                END IF;
+                RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql;
+
+            CREATE TRIGGER pcs_category_company_owner_guard_trigger
+                BEFORE UPDATE ON people_connector_skill_categories
+                FOR EACH ROW EXECUTE FUNCTION pcs_company_owner_guard();
+
+            CREATE TRIGGER pcs_skill_company_owner_guard_trigger
+                BEFORE UPDATE ON people_connector_skill_skills
+                FOR EACH ROW EXECUTE FUNCTION pcs_company_owner_guard();
+
+            -- This name is load-bearing. PostgreSQL fires BEFORE row triggers
+            -- in trigger NAME order, and pcs_scale_company_owner_guard_trigger
+            -- sorts before pcs_scale_guard_trigger, so a write that violates
+            -- both gets the owner-guard message. Renaming either -- including
+            -- to something more descriptive -- reorders them, on PostgreSQL
+            -- only. SQLite reaches the same order by an unrelated route; see
+            -- createSqliteGuards(). Pinned by the trigger-order test in
+            -- Skill/Tests/Feature/ProficiencyScaleTest.php. See #37.
+            CREATE TRIGGER pcs_scale_company_owner_guard_trigger
+                BEFORE UPDATE ON people_connector_skill_proficiency_scales
+                FOR EACH ROW EXECUTE FUNCTION pcs_company_owner_guard();
         SQL);
     }
 
     private function createSqliteGuards(): void
     {
+        // The third arm mirrors the plpgsql function: a company merge may
+        // change the owner of a non-draft scale, and nothing else, and only
+        // from an entity already marked merged into the new owner.
         DB::statement(
             'CREATE TRIGGER pcs_scale_update_guard BEFORE UPDATE ON people_connector_skill_proficiency_scales'
             ." WHEN NOT (OLD.status = 'draft' OR (OLD.status = 'published' AND NEW.status = 'retired'"
             .' AND NEW.tenant_id = OLD.tenant_id AND NEW.company_entity_id = OLD.company_entity_id'
             .' AND NEW.code = OLD.code AND NEW.name = OLD.name AND NEW.version = OLD.version'
-            .' AND NEW.published_at IS OLD.published_at))'
+            .' AND NEW.published_at IS OLD.published_at)'
+            .' OR (NEW.company_entity_id != OLD.company_entity_id AND NEW.status = OLD.status'
+            .' AND NEW.tenant_id = OLD.tenant_id AND NEW.code = OLD.code AND NEW.name = OLD.name'
+            .' AND NEW.version = OLD.version AND NEW.published_at IS OLD.published_at AND NEW.retired_at IS OLD.retired_at'
+            .' AND EXISTS (SELECT 1 FROM people_connector_connector_workforce_entities'
+            .' WHERE id = OLD.company_entity_id AND tenant_id = OLD.tenant_id'
+            ." AND state = 'merged' AND merged_into_entity_id = NEW.company_entity_id)))"
             ." BEGIN SELECT RAISE(ABORT, 'proficiency scale is published and immutable; draft a new version instead'); END",
         );
         DB::statement(
@@ -200,6 +266,49 @@ return new class extends Migration
             .' WHEN NEW.code != OLD.code'
             ." BEGIN SELECT RAISE(ABORT, 'skill code is stable and cannot be changed'); END",
         );
+
+        // The company axis has no database backstop of its own: the composite
+        // foreign key accepts any entity in the tenant, so a pinned UPDATE can
+        // move a catalog row to a sibling company and nothing objects. The one
+        // move a catalog row may make is to the survivor of a company merge,
+        // and the merge marks the old entity merged-into the survivor before
+        // it rewrites anything, so that is the rule the database checks.
+        DB::statement(
+            'CREATE TRIGGER pcs_category_company_owner_guard BEFORE UPDATE ON people_connector_skill_categories'
+            .' WHEN NEW.company_entity_id != OLD.company_entity_id AND NOT EXISTS ('
+            .' SELECT 1 FROM people_connector_connector_workforce_entities'
+            .' WHERE id = OLD.company_entity_id AND tenant_id = OLD.tenant_id'
+            ." AND state = 'merged' AND merged_into_entity_id = NEW.company_entity_id)"
+            ." BEGIN SELECT RAISE(ABORT, 'catalog row belongs to its company entity and cannot move to another company'); END",
+        );
+        DB::statement(
+            'CREATE TRIGGER pcs_skill_company_owner_guard BEFORE UPDATE ON people_connector_skill_skills'
+            .' WHEN NEW.company_entity_id != OLD.company_entity_id AND NOT EXISTS ('
+            .' SELECT 1 FROM people_connector_connector_workforce_entities'
+            .' WHERE id = OLD.company_entity_id AND tenant_id = OLD.tenant_id'
+            ." AND state = 'merged' AND merged_into_entity_id = NEW.company_entity_id)"
+            ." BEGIN SELECT RAISE(ABORT, 'catalog row belongs to its company entity and cannot move to another company'); END",
+        );
+        // The POSITION of this statement is load-bearing. SQLite fires
+        // BEFORE UPDATE triggers in reverse creation order -- OBSERVED, not
+        // documented: lang_createtrigger.html specifies no firing order for
+        // multiple triggers of the same kind, and this was measured on 3.45.1
+        // (pdo_sqlite) and 3.51.2 (CLI). Treat it as a fact about the builds
+        // we ship against, not a guarantee. The PostgreSQL half IS documented,
+        // which is why the two comments do not read alike. Being created
+        // after pcs_scale_update_guard is what makes the owner guard speak
+        // first when a write violates both. Moving it earlier -- which reads
+        // as tidying -- reorders them, on SQLite only. PostgreSQL reaches the
+        // same order by trigger name instead. Pinned by the trigger-order test
+        // in Skill/Tests/Feature/ProficiencyScaleTest.php. See #37.
+        DB::statement(
+            'CREATE TRIGGER pcs_scale_company_owner_guard BEFORE UPDATE ON people_connector_skill_proficiency_scales'
+            .' WHEN NEW.company_entity_id != OLD.company_entity_id AND NOT EXISTS ('
+            .' SELECT 1 FROM people_connector_connector_workforce_entities'
+            .' WHERE id = OLD.company_entity_id AND tenant_id = OLD.tenant_id'
+            ." AND state = 'merged' AND merged_into_entity_id = NEW.company_entity_id)"
+            ." BEGIN SELECT RAISE(ABORT, 'catalog row belongs to its company entity and cannot move to another company'); END",
+        );
     }
 
     private function dropImmutabilityGuards(): void
@@ -211,15 +320,20 @@ return new class extends Migration
                 DROP TRIGGER IF EXISTS pcs_scale_guard_trigger ON people_connector_skill_proficiency_scales;
                 DROP TRIGGER IF EXISTS pcs_level_guard_trigger ON people_connector_skill_proficiency_scale_levels;
                 DROP TRIGGER IF EXISTS pcs_skill_code_guard_trigger ON people_connector_skill_skills;
+                DROP TRIGGER IF EXISTS pcs_category_company_owner_guard_trigger ON people_connector_skill_categories;
+                DROP TRIGGER IF EXISTS pcs_skill_company_owner_guard_trigger ON people_connector_skill_skills;
+                DROP TRIGGER IF EXISTS pcs_scale_company_owner_guard_trigger ON people_connector_skill_proficiency_scales;
                 DROP FUNCTION IF EXISTS pcs_scale_guard();
                 DROP FUNCTION IF EXISTS pcs_level_guard();
                 DROP FUNCTION IF EXISTS pcs_skill_code_guard();
+                DROP FUNCTION IF EXISTS pcs_company_owner_guard();
             SQL);
         } elseif ($driver === 'sqlite') {
             foreach ([
                 'pcs_scale_update_guard', 'pcs_scale_delete_guard',
                 'pcs_level_insert_guard', 'pcs_level_update_guard', 'pcs_level_delete_guard',
                 'pcs_skill_code_guard',
+                'pcs_category_company_owner_guard', 'pcs_skill_company_owner_guard', 'pcs_scale_company_owner_guard',
             ] as $trigger) {
                 DB::statement('DROP TRIGGER IF EXISTS '.$trigger);
             }
