@@ -40,6 +40,7 @@ class RequirementResolver
         $profiles = RequirementProfile::query()
             ->forCompany($tenantId, (int) $companyEntityId)
             ->whereIn('status', [RequirementProfileStatus::Published->value, RequirementProfileStatus::Retired->value])
+            ->whereDate('published_at', '<=', $asOf)
             ->where(function ($query) use ($asOf): void {
                 $query->whereNull('effective_date')
                     ->orWhereDate('effective_date', '<=', $asOf);
