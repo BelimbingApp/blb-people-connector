@@ -79,12 +79,14 @@ return new class extends Migration
                     RETURN NEW;
                 END IF;
                 IF OLD.status = 'published' AND NEW.status = 'retired'
+                    AND NEW.id = OLD.id
                     AND NEW.tenant_id = OLD.tenant_id
                     AND NEW.company_entity_id = OLD.company_entity_id
                     AND NEW.code = OLD.code
                     AND NEW.name = OLD.name
                     AND NEW.version = OLD.version
-                    AND NEW.published_at IS NOT DISTINCT FROM OLD.published_at THEN
+                    AND NEW.published_at IS NOT DISTINCT FROM OLD.published_at
+                    AND NEW.created_at IS NOT DISTINCT FROM OLD.created_at THEN
                     RETURN NEW;
                 END IF;
                 -- A company merge carries a published scale to the survivor:
@@ -211,9 +213,9 @@ return new class extends Migration
         DB::statement(
             'CREATE TRIGGER pcs_scale_update_guard BEFORE UPDATE ON people_connector_skill_proficiency_scales'
             ." WHEN NOT (OLD.status = 'draft' OR (OLD.status = 'published' AND NEW.status = 'retired'"
-            .' AND NEW.tenant_id = OLD.tenant_id AND NEW.company_entity_id = OLD.company_entity_id'
+            .' AND NEW.id = OLD.id AND NEW.tenant_id = OLD.tenant_id AND NEW.company_entity_id = OLD.company_entity_id'
             .' AND NEW.code = OLD.code AND NEW.name = OLD.name AND NEW.version = OLD.version'
-            .' AND NEW.published_at IS OLD.published_at)'
+            .' AND NEW.published_at IS OLD.published_at AND NEW.created_at IS OLD.created_at)'
             .' OR (NEW.company_entity_id != OLD.company_entity_id AND NEW.status = OLD.status'
             .' AND NEW.tenant_id = OLD.tenant_id AND NEW.code = OLD.code AND NEW.name = OLD.name'
             .' AND NEW.version = OLD.version AND NEW.published_at IS OLD.published_at AND NEW.retired_at IS OLD.retired_at'

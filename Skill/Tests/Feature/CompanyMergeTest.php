@@ -420,3 +420,44 @@ test('the scale merge arm pins every column except the owner and updated_at', fu
 
     expect(DB::table($table)->where('id', $scale->id)->update(['company_entity_id' => $c, 'updated_at' => '2030-01-01 00:00:00']))->toBe(1);
 });
+
+test('the scale retire arm pins every column except its lifecycle timestamps', function (): void {
+    // Published → retired changes status and retired_at; Eloquent also writes
+    // updated_at. Every other column must be named as pinned, so this arm
+    // cannot silently drift when the table gains a column (#55).
+    [, , $companyEntityId, $mergeTarget] = companyMergeFixture();
+    $scales = app(ProficiencyScaleStore::class);
+    $scale = $scales->publish($companyEntityId, (int) $scales->draft($companyEntityId, 'retire', 'Retire', companyMergeLevels())->id);
+    $table = $scale->getTable();
+
+    // Let the owner guard admit this one otherwise-valid owner transition, so
+    // the scale guard — not a missing merge fact — proves retirement pins it.
+    WorkforceEntity::query()->whereKey($companyEntityId)->update([
+        'state' => WorkforceEntity::STATE_MERGED,
+        'merged_into_entity_id' => $mergeTarget,
+    ]);
+
+    $pinned = [
+        'id' => 999_999,
+        'tenant_id' => 999_999,
+        'company_entity_id' => $mergeTarget,
+        'code' => 'retire.changed',
+        'name' => 'Changed',
+        'version' => 99,
+        'published_at' => '2020-01-01 00:00:00',
+        'created_at' => '2020-01-01 00:00:00',
+    ];
+    $permitted = ['status', 'retired_at', 'updated_at'];
+
+    expect(array_values(array_diff(Schema::getColumnListing($table), array_keys($pinned), $permitted)))
+        ->toBe([], 'every column must be pinned or explicitly permitted during retirement');
+
+    foreach ($pinned as $column => $changed) {
+        // Savepoint-wrapped: a trigger abort poisons the test transaction on Postgres.
+        expect(fn () => DB::transaction(fn () => DB::table($table)->where('id', $scale->id)->update([
+            'status' => ProficiencyScaleStatus::Retired->value,
+            'retired_at' => '2030-01-01 00:00:00',
+            $column => $changed,
+        ])))->toThrow(QueryException::class, 'immutable', "column [{$column}] rode along with retirement");
+    }
+});
