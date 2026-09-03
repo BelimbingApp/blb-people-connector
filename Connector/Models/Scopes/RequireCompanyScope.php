@@ -60,14 +60,14 @@ final class RequireCompanyScope implements Scope
 
     /**
      * A query pins a company when one of the owning columns, **on the base
-     * table**, is compared to a real value at the top level of the query,
-     * joined with AND.
+     * table**, is compared to a real value in an AND-only predicate tree
+     * rooted at the query.
      *
      * Deliberately strict on three counts:
      *
-     *  - a predicate nested inside an `orWhere` group does not count, and a
-     *    top-level `orWhere` anywhere disqualifies the query outright, because
-     *    either can widen the result set past the company;
+     *  - a predicate in an `orWhere` group does not count, and an `orWhere`
+     *    anywhere in the predicate tree disqualifies the query outright,
+     *    because either can widen the result set past the company;
      *  - a qualified column must name the base table or its alias. Accepting
      *    any qualifier let a join whose ON clause correlated only on
      *    `tenant_id` satisfy the guard with a predicate on the *joined* table,
@@ -84,14 +84,12 @@ final class RequireCompanyScope implements Scope
      * @param  list<string>  $columns
      * @param  list<string>  $baseTables
      */
-    private function pinsACompany(QueryBuilder $query, array $columns, array $baseTables): bool
+    private function pinsACompany(QueryBuilder $query, array $columns, array $baseTables, ?bool $mayCorrelate = null): bool
     {
         $wheres = $query->wheres ?? [];
 
-        foreach ($wheres as $where) {
-            if (($where['boolean'] ?? 'and') !== 'and') {
-                return false;
-            }
+        if (! $this->containsOnlyAndPredicates($wheres)) {
+            return false;
         }
 
         // A correlation is only distinguishable from a join condition when
@@ -101,7 +99,10 @@ final class RequireCompanyScope implements Scope
         // a schema-qualified join put `public.categories` in the list while a
         // whereColumn against the bare `categories` was not in it, so a join
         // condition read as a correlation and wrote across the boundary.
-        $mayCorrelate = ($query->joins ?? []) === [];
+        // A nested predicate inherits its parent's joins. Re-evaluating this
+        // only against the nested builder would mistake a comparison to a
+        // joined table for a correlation to an outer query.
+        $mayCorrelate = ($mayCorrelate ?? true) && ($query->joins ?? []) === [];
 
         foreach ($wheres as $where) {
             if ($this->comparesToARealValue($where)
@@ -112,9 +113,48 @@ final class RequireCompanyScope implements Scope
             if ($mayCorrelate && $this->correlatesToAnOuterQuery($where, $columns, $baseTables)) {
                 return true;
             }
+
+            // Query Builder expresses where(['company_entity_id' => $id]) as
+            // a Nested clause containing Basic clauses. A conjunction remains
+            // a pin: it cannot admit a row that the company predicate excludes.
+            // This also intentionally supports an explicitly parenthesized
+            // AND-only group, while containsOnlyAndPredicates() refuses an OR
+            // at any depth before we inspect it.
+            if (($where['type'] ?? null) === 'Nested'
+                && ($where['query'] ?? null) instanceof QueryBuilder
+                && $this->pinsACompany($where['query'], $columns, $baseTables, $mayCorrelate)) {
+                return true;
+            }
         }
 
         return false;
+    }
+
+    /**
+     * A pin survives parentheses but not an OR at any depth. Laravel stores
+     * array-form wheres as a Nested query, so validating the whole tree lets
+     * us recognise that standard call shape without treating an OR branch as
+     * a boundary.
+     *
+     * @param  list<array<string, mixed>>  $wheres
+     */
+    private function containsOnlyAndPredicates(array $wheres): bool
+    {
+        foreach ($wheres as $where) {
+            if (($where['boolean'] ?? 'and') !== 'and') {
+                return false;
+            }
+
+            if (($where['type'] ?? null) === 'Nested') {
+                $nested = $where['query'] ?? null;
+
+                if (! $nested instanceof QueryBuilder || ! $this->containsOnlyAndPredicates($nested->wheres ?? [])) {
+                    return false;
+                }
+            }
+        }
+
+        return true;
     }
 
     /**
