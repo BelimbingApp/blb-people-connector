@@ -7,6 +7,7 @@ use App\Domains\PeopleConnector\Connector\Data\WorkforceReference;
 use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
 use App\Domains\PeopleConnector\Connector\Models\Concerns\CompanyOwned;
 use App\Domains\PeopleConnector\Connector\Models\TenantOwnedModel;
+use App\Domains\PeopleConnector\Connector\Models\WorkforceEntity;
 use App\Domains\PeopleConnector\Skill\Enums\SelectorType;
 use App\Domains\PeopleConnector\Skill\Exceptions\PublishedRequirementImmutableException;
 
@@ -30,6 +31,7 @@ class RequirementProfileSelector extends TenantOwnedModel implements ReferencesW
     {
         return [
             new WorkforceReference('selector_entity_id', WorkforceResourceType::OrganizationUnit),
+            new WorkforceReference('selector_entity_id', WorkforceResourceType::Position),
         ];
     }
 
@@ -43,6 +45,10 @@ class RequirementProfileSelector extends TenantOwnedModel implements ReferencesW
     protected static function booted(): void
     {
         $guard = function (RequirementProfileSelector $selector): void {
+            if ($selector->isCarriedByCompanyMerge() || $selector->isCarriedByWorkforceEntityMerge()) {
+                return;
+            }
+
             $profile = $selector->owningProfile();
 
             if ($profile !== null && $profile->isLocked()) {
@@ -55,6 +61,58 @@ class RequirementProfileSelector extends TenantOwnedModel implements ReferencesW
         static::creating($guard);
         static::updating($guard);
         static::deleting($guard);
+    }
+
+    /**
+     * A company merge rewrites company_entity_id (and nothing else) when the
+     * superseded company is already marked merged into the survivor.
+     */
+    private function isCarriedByCompanyMerge(): bool
+    {
+        $dirty = $this->getDirty();
+        unset($dirty['company_entity_id'], $dirty['updated_at']);
+
+        if ($dirty !== [] || ! $this->isDirty('company_entity_id')) {
+            return false;
+        }
+
+        $originalId = $this->getOriginal('company_entity_id');
+        if ($originalId === null || $this->company_entity_id === null) {
+            return false;
+        }
+
+        return WorkforceEntity::query()
+            ->forTenant((int) $this->tenant_id)
+            ->whereKey((int) $originalId)
+            ->where('state', WorkforceEntity::STATE_MERGED)
+            ->where('merged_into_entity_id', (int) $this->company_entity_id)
+            ->exists();
+    }
+
+    /**
+     * A workforce-entity merge rewrites selector_entity_id (and nothing else)
+     * when the superseded entity is already marked merged into the survivor.
+     */
+    private function isCarriedByWorkforceEntityMerge(): bool
+    {
+        $dirty = $this->getDirty();
+        unset($dirty['selector_entity_id'], $dirty['updated_at']);
+
+        if ($dirty !== [] || ! $this->isDirty('selector_entity_id')) {
+            return false;
+        }
+
+        $originalId = $this->getOriginal('selector_entity_id');
+        if ($originalId === null || $this->selector_entity_id === null) {
+            return false;
+        }
+
+        return WorkforceEntity::query()
+            ->forTenant((int) $this->tenant_id)
+            ->whereKey((int) $originalId)
+            ->where('state', WorkforceEntity::STATE_MERGED)
+            ->where('merged_into_entity_id', (int) $this->selector_entity_id)
+            ->exists();
     }
 
     /**

@@ -4,6 +4,7 @@ namespace App\Domains\PeopleConnector\Skill\Models;
 
 use App\Domains\PeopleConnector\Connector\Models\Concerns\CompanyOwned;
 use App\Domains\PeopleConnector\Connector\Models\TenantOwnedModel;
+use App\Domains\PeopleConnector\Connector\Models\WorkforceEntity;
 use App\Domains\PeopleConnector\Skill\Enums\RequirementCriticality;
 use App\Domains\PeopleConnector\Skill\Exceptions\PublishedRequirementImmutableException;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -41,6 +42,10 @@ class RequirementItem extends TenantOwnedModel
     protected static function booted(): void
     {
         $guard = function (RequirementItem $item): void {
+            if ($item->isCarriedByCompanyMerge()) {
+                return;
+            }
+
             $profile = $item->owningProfile();
 
             if ($profile !== null && $profile->isLocked()) {
@@ -53,6 +58,32 @@ class RequirementItem extends TenantOwnedModel
         static::creating($guard);
         static::updating($guard);
         static::deleting($guard);
+    }
+
+    /**
+     * A company merge rewrites company_entity_id (and nothing else) when the
+     * superseded company is already marked merged into the survivor.
+     */
+    private function isCarriedByCompanyMerge(): bool
+    {
+        $dirty = $this->getDirty();
+        unset($dirty['company_entity_id'], $dirty['updated_at']);
+
+        if ($dirty !== [] || ! $this->isDirty('company_entity_id')) {
+            return false;
+        }
+
+        $originalId = $this->getOriginal('company_entity_id');
+        if ($originalId === null || $this->company_entity_id === null) {
+            return false;
+        }
+
+        return WorkforceEntity::query()
+            ->forTenant((int) $this->tenant_id)
+            ->whereKey((int) $originalId)
+            ->where('state', WorkforceEntity::STATE_MERGED)
+            ->where('merged_into_entity_id', (int) $this->company_entity_id)
+            ->exists();
     }
 
     /**

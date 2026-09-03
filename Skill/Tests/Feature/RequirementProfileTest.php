@@ -3,11 +3,19 @@
 declare(strict_types=1);
 
 use App\Base\Tenancy\Contracts\TenantContext;
+use App\Domains\PeopleConnector\Connector\Data\ExternalReference;
+use App\Domains\PeopleConnector\Connector\Data\WorkforceCompany;
+use App\Domains\PeopleConnector\Connector\Data\WorkforcePosition;
+use App\Domains\PeopleConnector\Connector\Data\WorkforceProvenance;
+use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
+use App\Domains\PeopleConnector\Connector\Models\DomainModels;
 use App\Domains\PeopleConnector\Connector\Models\ExternalIdentity;
 use App\Domains\PeopleConnector\Connector\Models\ProviderConnection;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceEntity;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceOrganizationUnitProjection;
 use App\Domains\PeopleConnector\Connector\Models\WorkforcePositionProjection;
+use App\Domains\PeopleConnector\Connector\Services\WorkforceIdentityStore;
+use App\Domains\PeopleConnector\Connector\Services\WorkforceProjectionStore;
 use App\Domains\PeopleConnector\Skill\Data\RequirementItemDraft;
 use App\Domains\PeopleConnector\Skill\Data\RequirementProfileDraft;
 use App\Domains\PeopleConnector\Skill\Data\RequirementSelectorDraft;
@@ -667,6 +675,84 @@ test('as-of dating uses published_at/retired_at interval, not null effective_dat
     expect($historicalResult['profile'])->not->toBeNull()
         ->and((int) $historicalResult['profile']->id)->toBe((int) $v1->id)
         ->and($historicalResult['profile']->version)->toBe(1);
+});
+
+test('merging a position rewrites requirement profile selectors that target it', function (): void {
+    [$tenantId] = requirementFixture();
+    $store = app(RequirementProfileStore::class);
+    $projections = app(WorkforceProjectionStore::class);
+    $identities = app(WorkforceIdentityStore::class);
+
+    $connection = ProviderConnection::query()->firstOrCreate(
+        [
+            'tenant_id' => $tenantId,
+            'scope_key' => 'tenant',
+            'provider_id' => 'test.people',
+        ],
+        [
+            'label' => 'Merge Connection',
+            'status' => ProviderConnection::STATUS_ACTIVE,
+        ],
+    );
+    $at = new DateTimeImmutable('2026-09-03T00:00:00+00:00');
+    $companyRef = new ExternalReference('test.people', WorkforceResourceType::Company, 'REQ-MERGE-CO');
+    $projections->upsert((int) $connection->id, new WorkforceCompany($companyRef, 'Merge Co', true, $at));
+    $mergeCompanyId = (int) $identities->resolve((int) $connection->id, $companyRef)->id;
+
+    $catalog = app(SkillCatalogStore::class);
+    $category = $catalog->defineCategory($mergeCompanyId, 'merge', 'Merge');
+    $skill = $catalog->defineSkill($mergeCompanyId, new SkillDraft(
+        code: 'merge.skill',
+        name: 'Merge Skill',
+        definition: 'Merge.',
+        categoryId: (int) $category->id,
+        scope: SkillScope::Shared,
+        defaultAssessmentMethod: AssessmentMethod::DirectObservation,
+    ));
+
+    $pos = fn (string $id): ExternalReference => new ExternalReference('test.people', WorkforceResourceType::Position, $id);
+    foreach (['POS-OLD', 'POS-NEW'] as $id) {
+        $projections->upsert((int) $connection->id, new WorkforcePosition($pos($id), $companyRef, $id, true, $at, $at));
+    }
+    $oldPositionId = (int) $identities->resolve((int) $connection->id, $pos('POS-OLD'))->id;
+
+    $profile = $store->draft($mergeCompanyId, new RequirementProfileDraft(
+        code: 'pos.merge',
+        name: 'Position Merge Profile',
+        selectors: [new RequirementSelectorDraft(SelectorType::Position, null, $oldPositionId)],
+        items: [
+            new RequirementItemDraft(
+                skillId: (int) $skill->id,
+                sequence: 1,
+                requiredLevel: 2,
+                criticality: RequirementCriticality::Essential,
+                weightPercent: 100.0,
+            ),
+        ],
+    ));
+    $store->publish($mergeCompanyId, (int) $profile->id);
+
+    expect(array_map(
+        fn (array $pair): string => $pair[0].'.'.$pair[1]->column,
+        DomainModels::referencing(WorkforceResourceType::Position),
+    ))->toContain(RequirementProfileSelector::class.'.selector_entity_id');
+
+    $identities->merge(
+        (int) $connection->id,
+        $pos('POS-OLD'),
+        $pos('POS-NEW'),
+        $at->modify('+1 hour'),
+        new WorkforceProvenance('identity_merge', 'selector-merge-review'),
+    );
+    $newPositionId = (int) $identities->resolve((int) $connection->id, $pos('POS-NEW'))->id;
+
+    $selector = RequirementProfileSelector::query()
+        ->forCompany($tenantId, $mergeCompanyId)
+        ->where('profile_id', $profile->id)
+        ->firstOrFail();
+
+    expect($newPositionId)->not->toBe($oldPositionId)
+        ->and((int) $selector->selector_entity_id)->toBe($newPositionId);
 });
 
 test('criticality enum provides workbook priority multipliers', function (): void {
