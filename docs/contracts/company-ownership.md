@@ -772,13 +772,18 @@ contract (blb-people-connector#53):
   includes `provider_credentials`, and the platform's redaction applies only
   to diagnostic capture ("bulk exports preserve selected tables exactly").
   The table registry has no way for a module to declare a table
-  non-transferable, so the connector cannot keep that table out of its scope
-  (belimbing#530 asks for that declaration).
+  non-transferable, so the connector cannot keep that table out of its scope.
   What leaves is a *reference* into base-integration storage, not key
   material, and it is useless on another instance; it is still something a
-  package should not carry. Until the platform offers a declaration, an
-  operator sharing the Connector scope is sharing credential references, and
-  the test above fails the day either side of that changes.
+  package should not carry. The owner's ruling on belimbing#530 is that this
+  is the operator's decision, not the module's: the DataShare UI will warn
+  and let the operator redact any field, with the name-pattern defaults
+  pre-ticked as suggestions rather than guarantees, and with the warning
+  this repository measured — redacting a `NOT NULL` column such as
+  `secret_reference` makes those rows plan as `conflict` and therefore
+  unrestorable at the destination. Until that UI lands, an operator sharing
+  the Connector scope is sharing credential references, and the test above
+  fails the day either side of that changes.
 
 ## Privacy deletion and retention
 
