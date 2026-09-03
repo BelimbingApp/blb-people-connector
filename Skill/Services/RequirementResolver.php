@@ -42,17 +42,11 @@ class RequirementResolver
             ->forCompany($tenantId, (int) $companyEntityId)
             ->whereIn('status', [RequirementProfileStatus::Published->value, RequirementProfileStatus::Retired->value])
             ->whereNotNull('published_at')
-            ->where(function ($query) use ($asOf): void {
-                $query->whereRaw('COALESCE(effective_date, DATE(published_at)) <= ?', [$asOf->format('Y-m-d')]);
-            })
-            ->where(function ($query) use ($asOf): void {
-                // Exclusive end: a profile retired on day D is not current for
-                // as-of D. Inclusive retired_at would overlap the successor's
-                // start (COALESCE(effective_date, DATE(published_at)) <= D) for
-                // the whole publish day and make resolve() throw.
-                $query->whereNull('retired_at')
-                    ->orWhereDate('retired_at', '>', $asOf);
-            })
+            ->whereRaw('COALESCE(effective_date, DATE(published_at)) <= ?', [$asOf->format('Y-m-d')])
+            // Single raw predicate keeps the company pin AND-only under
+            // RequireCompanyScope (#65): a Nested whereNull/orWhereDate group
+            // is an OR at depth and disqualifies the whole query.
+            ->whereRaw('(retired_at IS NULL OR DATE(retired_at) > ?)', [$asOf->format('Y-m-d')])
             ->orderByRaw('COALESCE(effective_date, DATE(published_at)) DESC')
             ->orderBy('version', 'desc')
             ->get();
