@@ -6,6 +6,7 @@ use App\Base\Tenancy\Contracts\TenantContext;
 use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceEntity;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceOrganizationUnitProjection;
+use App\Domains\PeopleConnector\Connector\Models\WorkforcePositionProjection;
 use App\Domains\PeopleConnector\Skill\Data\RequirementItemDraft;
 use App\Domains\PeopleConnector\Skill\Data\RequirementProfileDraft;
 use App\Domains\PeopleConnector\Skill\Data\RequirementSelectorDraft;
@@ -296,36 +297,62 @@ class RequirementProfileStore
         }
 
         foreach ($selectors as $selector) {
-            if ($selector->selectorType === SelectorType::Department && $selector->selectorEntityId === null) {
-                throw new InvalidRequirementProfileException('Department selector requires a selector_entity_id.');
-            }
-
-            if ($selector->selectorEntityId !== null) {
-                $entity = WorkforceEntity::query()->forTenant($tenantId)->find($selector->selectorEntityId);
-                if ($entity === null) {
-                    throw new InvalidRequirementProfileException(
-                        "Selector entity [{$selector->selectorEntityId}] was not found.",
-                    );
+            if ($selector->selectorType === SelectorType::Company) {
+                if ($selector->selectorEntityId !== null) {
+                    throw new InvalidRequirementProfileException('Company selector must not carry a selector_entity_id.');
                 }
 
-                if ($selector->selectorType === SelectorType::Department
-                    && $entity->resource_type !== WorkforceResourceType::OrganizationUnit->value) {
+                continue;
+            }
+
+            if ($selector->selectorEntityId === null) {
+                throw new InvalidRequirementProfileException(
+                    "{$selector->selectorType->value} selector requires a selector_entity_id.",
+                );
+            }
+
+            $entity = WorkforceEntity::query()->forTenant($tenantId)->find($selector->selectorEntityId);
+            if ($entity === null) {
+                throw new InvalidRequirementProfileException(
+                    "Selector entity [{$selector->selectorEntityId}] was not found.",
+                );
+            }
+
+            if ($selector->selectorType === SelectorType::Department) {
+                if ($entity->resource_type !== WorkforceResourceType::OrganizationUnit->value) {
                     throw new InvalidRequirementProfileException(
                         'Department selector entity must be an organization_unit.',
                     );
                 }
 
-                if ($selector->selectorType === SelectorType::Department) {
-                    $orgUnit = WorkforceOrganizationUnitProjection::query()
-                        ->forCompany($tenantId, $companyEntityId)
-                        ->where('workforce_entity_id', $selector->selectorEntityId)
-                        ->first();
+                $orgUnit = WorkforceOrganizationUnitProjection::query()
+                    ->forCompany($tenantId, $companyEntityId)
+                    ->where('workforce_entity_id', $selector->selectorEntityId)
+                    ->first();
 
-                    if ($orgUnit === null) {
-                        throw new InvalidRequirementProfileException(
-                            "Department selector entity [{$selector->selectorEntityId}] does not belong to this company.",
-                        );
-                    }
+                if ($orgUnit === null) {
+                    throw new InvalidRequirementProfileException(
+                        "Department selector entity [{$selector->selectorEntityId}] does not belong to this company.",
+                    );
+                }
+            }
+
+            if ($selector->selectorType === SelectorType::Position) {
+                if ($entity->resource_type !== WorkforceResourceType::Position->value) {
+                    throw new InvalidRequirementProfileException(
+                        'Position selector entity must be a position.',
+                    );
+                }
+
+                $position = WorkforcePositionProjection::query()
+                    ->forCompany($tenantId, $companyEntityId)
+                    ->where('workforce_entity_id', $selector->selectorEntityId)
+                    ->first();
+
+                if ($position === null) {
+                    throw new InvalidRequirementProfileException(
+                        "Position selector entity [{$selector->selectorEntityId}] does not belong to this company.",
+                    );
                 }
             }
         }

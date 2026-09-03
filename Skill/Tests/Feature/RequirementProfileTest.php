@@ -7,6 +7,7 @@ use App\Domains\PeopleConnector\Connector\Models\ExternalIdentity;
 use App\Domains\PeopleConnector\Connector\Models\ProviderConnection;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceEntity;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceOrganizationUnitProjection;
+use App\Domains\PeopleConnector\Connector\Models\WorkforcePositionProjection;
 use App\Domains\PeopleConnector\Skill\Data\RequirementItemDraft;
 use App\Domains\PeopleConnector\Skill\Data\RequirementProfileDraft;
 use App\Domains\PeopleConnector\Skill\Data\RequirementSelectorDraft;
@@ -48,7 +49,7 @@ function requirementEntity(int $tenantId, string $type, ?int $companyEntityId = 
         'first_seen_at' => now(),
     ]);
 
-    if ($type === 'organization_unit' && $companyEntityId !== null) {
+    if (($type === 'organization_unit' || $type === 'position') && $companyEntityId !== null) {
         $connection = ProviderConnection::query()->firstOrCreate(
             [
                 'tenant_id' => $tenantId,
@@ -67,7 +68,7 @@ function requirementEntity(int $tenantId, string $type, ?int $companyEntityId = 
             'connection_id' => $connection->id,
             'workforce_entity_id' => $entity->id,
             'provider_id' => 'test-provider',
-            'resource_type' => 'organization_unit',
+            'resource_type' => $type,
             'external_id' => $externalId,
             'external_id_hash' => hash('sha256', $externalId),
             'state' => ExternalIdentity::STATE_ACTIVE,
@@ -75,16 +76,31 @@ function requirementEntity(int $tenantId, string $type, ?int $companyEntityId = 
             'last_observed_at' => now(),
         ]);
 
-        WorkforceOrganizationUnitProjection::create([
-            'tenant_id' => $tenantId,
-            'workforce_entity_id' => $entity->id,
-            'source_identity_id' => $identity->id,
-            'company_entity_id' => $companyEntityId,
-            'name' => 'Test Department',
-            'active' => true,
-            'effective_at' => now(),
-            'observed_at' => now(),
-        ]);
+        if ($type === 'organization_unit') {
+            WorkforceOrganizationUnitProjection::create([
+                'tenant_id' => $tenantId,
+                'workforce_entity_id' => $entity->id,
+                'source_identity_id' => $identity->id,
+                'company_entity_id' => $companyEntityId,
+                'name' => 'Test Department',
+                'active' => true,
+                'effective_at' => now(),
+                'observed_at' => now(),
+            ]);
+        }
+
+        if ($type === 'position') {
+            WorkforcePositionProjection::create([
+                'tenant_id' => $tenantId,
+                'workforce_entity_id' => $entity->id,
+                'source_identity_id' => $identity->id,
+                'company_entity_id' => $companyEntityId,
+                'name' => 'Test Position',
+                'active' => true,
+                'effective_at' => now(),
+                'observed_at' => now(),
+            ]);
+        }
     }
 
     return $entity;
