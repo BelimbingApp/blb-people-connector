@@ -323,8 +323,11 @@ are two, and they are the only two the domain knows of:
   does not exist (blb-people-connector#35). A **published or
   retired proficiency scale** is carried too: its immutability guard (model
   and trigger) exempts a change of owner alone, from an entity already marked
-  merged into the new owner, and nothing else — content and lifecycle stay
-  immutable.
+  merged into the new owner, and nothing else — content, lifecycle and audit
+  metadata stay immutable, `updated_at` being the one column the merge is
+  allowed to write. `CompanyMergeTest` enumerates the scales table and fails
+  when a column is added that is neither pinned by the arm nor named as
+  permitted, so the pin list cannot silently fall behind the schema (#38).
 
 `CompanyIsolationContract` runs the whole route list against every
 company-owned model — fourteen builder routes and three model routes, plus the
