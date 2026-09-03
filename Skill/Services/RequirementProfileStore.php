@@ -387,6 +387,7 @@ class RequirementProfileStore
             ->forCompany($tenantId, $companyEntityId)
             ->where('status', RequirementProfileStatus::Published->value)
             ->where('id', '!=', $newProfile->getKey())
+            ->where('code', '!=', $newProfile->code)
             ->whereNull('retired_at')
             ->get();
 
@@ -397,6 +398,7 @@ class RequirementProfileStore
                 ->get();
 
             if ($this->selectorsCanOverlap($newSelectors, $existingSelectors)) {
+
                 throw new InvalidRequirementProfileException(
                     "Profile [{$newProfile->code}] v{$newProfile->version} overlaps with published profile [{$existingProfile->code}] v{$existingProfile->version}. "
                     .'Overlapping profiles must be refined or the existing profile retired before publishing.',
