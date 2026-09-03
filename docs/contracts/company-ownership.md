@@ -780,6 +780,32 @@ contract (blb-people-connector#53):
   operator sharing the Connector scope is sharing credential references, and
   the test above fails the day either side of that changes.
 
+## Privacy deletion and retention
+
+Company-scoped erasure of connector-owned workforce projections is owned by
+`PrivacyDeletionService` (blb-people#24 / blb-people-connector#54). The first
+landed slice:
+
+- **Tombstones Class C personal projection fields** on employees, organization
+  units, and positions for the requested `company_entity_id`: display names and
+  codes become `[redacted]`, contact fields null out, `active` becomes false,
+  and `privacy_deleted_at` records the request time. Identity tokens
+  (`workforce_entities`) and company projections are not erased.
+- **Redacts snapshot payloads in place.** `WorkforceSnapshot` remains
+  append-only for ordinary updates and all deletes; the only permitted update
+  is a privacy redaction that replaces `payload` with a stub and sets
+  `redacted_at`. Event keys, provenance metadata, and row identity stay.
+- **Leaves append-only evidence alone.** Privileged support actions, sync
+  checkpoint events, and other retain-forever tables are out of scope for this
+  service; their DELETE guards must still abort after a privacy pass.
+- **Is company-scoped.** A two-company tenant proves sibling projections and
+  snapshots are untouched (`PrivacyDeletionTest`).
+- **Uses an explicit retention clock.** `privacy_deleted_at` / `redacted_at`
+  are never derived from `updated_at` or from a company-entity ownership move.
+
+Skill-module catalogs, training aggregates, and export of tombstoned rows are
+not decided here; child lanes own those.
+
 ## What this contract cannot yet decide
 
 One question is genuinely open, and this document does not answer it.
