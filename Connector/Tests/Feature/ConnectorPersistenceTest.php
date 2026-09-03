@@ -758,6 +758,67 @@ test('a sync pass that cannot reconfirm the linked user never nulls out an alrea
         ->and($unconfirmed->user_entity_id)->toBe($linked->user_entity_id);
 });
 
+test('an explicit revocation signal clears an already-linked user, unlike ordinary reconfirmation failure', function (): void {
+    [$tenant] = createTenantWithCompany(['name' => 'Revoked User Link Tenant']);
+    $connection = connectorPersistenceConnection((int) $tenant->id);
+    $projections = app(WorkforceProjectionStore::class);
+    $observedAt = new DateTimeImmutable('2026-09-03T00:00:00+00:00');
+    $companyReference = connectorPersistenceReference(WorkforceResourceType::Company, 'REVOKED-COMPANY');
+    $employeeReference = connectorPersistenceReference(WorkforceResourceType::Employee, 'REVOKED-EMP');
+    $userReference = connectorPersistenceReference(WorkforceResourceType::User, 'REVOKED-USER');
+
+    $projections->upsert((int) $connection->id, new WorkforceCompany($companyReference, 'Revoked Co', true, $observedAt));
+    $linked = $projections->upsert((int) $connection->id, new WorkforceEmployee(
+        $employeeReference,
+        $companyReference,
+        'Revoked Link Employee',
+        true,
+        $observedAt,
+        $observedAt,
+        employeeNumber: 'REVOKED-1',
+        userReference: $userReference,
+        sourceVersion: 'employee-v1',
+    ));
+
+    expect($linked->user_entity_id)->not->toBeNull();
+
+    // Unlike the "cannot reconfirm" case above, an explicit revocation is a
+    // positive statement (rule 9.1) and must clear the projected link rather
+    // than leave a stale, no-longer-true user_entity_id in place — leaving it
+    // would trade the earlier data-loss bug for a stale-authorisation one.
+    $revoked = $projections->upsert((int) $connection->id, new WorkforceEmployee(
+        $employeeReference,
+        $companyReference,
+        'Revoked Link Employee',
+        true,
+        $observedAt->modify('+1 day'),
+        $observedAt->modify('+1 day'),
+        employeeNumber: 'REVOKED-1',
+        sourceVersion: 'employee-v2',
+        userReferenceRevoked: true,
+    ));
+
+    expect($revoked->id)->toBe($linked->id)
+        ->and($revoked->user_entity_id)->toBeNull();
+});
+
+test('a workforce employee cannot both carry a user reference and report it revoked', function (): void {
+    $employeeReference = connectorPersistenceReference(WorkforceResourceType::Employee, 'CONTRADICT-EMP');
+    $companyReference = connectorPersistenceReference(WorkforceResourceType::Company, 'CONTRADICT-COMPANY');
+    $userReference = connectorPersistenceReference(WorkforceResourceType::User, 'CONTRADICT-USER');
+
+    expect(fn () => new WorkforceEmployee(
+        $employeeReference,
+        $companyReference,
+        'Contradictory Employee',
+        true,
+        new DateTimeImmutable,
+        new DateTimeImmutable,
+        userReference: $userReference,
+        userReferenceRevoked: true,
+    ))->toThrow(InvalidArgumentException::class, 'cannot both carry a user reference and report it revoked');
+});
+
 test('sync checkpoints advance only on complete pages and preserve an append-only version history', function (): void {
     [$tenantA] = createTenantWithCompany(['name' => 'Checkpoint Tenant A']);
     [$tenantB] = createTenantWithCompany(['name' => 'Checkpoint Tenant B']);

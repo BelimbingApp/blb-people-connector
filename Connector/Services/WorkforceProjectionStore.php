@@ -144,8 +144,9 @@ final class WorkforceProjectionStore
             // meaning the platform user link is gone. Rule 9.1 requires a
             // positive statement before a projection is torn down; "the
             // adapter didn't reconfirm it this pass" is not one. Only an
-            // explicit non-null value may overwrite an existing link.
-            stickyOnNull: ['user_entity_id'],
+            // explicit non-null value, or an explicit revocation signal,
+            // may overwrite an existing link — otherwise it is left alone.
+            stickyOnNull: $record->userReferenceRevoked ? [] : ['user_entity_id'],
         );
     }
 
