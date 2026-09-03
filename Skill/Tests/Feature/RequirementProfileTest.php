@@ -47,10 +47,27 @@ function requirementEntity(int $tenantId, string $type, ?int $companyEntityId = 
     ]);
 
     if ($type === 'organization_unit' && $companyEntityId !== null) {
+        $connection = \App\Domains\PeopleConnector\Connector\Models\ProviderConnection::query()->create([
+            'tenant_id' => $tenantId,
+            'provider' => 'test',
+            'display_name' => 'Test Connection',
+            'is_enabled' => true,
+        ]);
+
+        $identity = \App\Domains\PeopleConnector\Connector\Models\ExternalIdentity::query()->create([
+            'tenant_id' => $tenantId,
+            'connection_id' => $connection->id,
+            'workforce_entity_id' => $entity->id,
+            'external_key' => 'test-key-'.$entity->id,
+            'state' => \App\Domains\PeopleConnector\Connector\Models\ExternalIdentity::STATE_ACTIVE,
+            'effective_from' => now(),
+            'last_observed_at' => now(),
+        ]);
+
         WorkforceOrganizationUnitProjection::query()->create([
             'tenant_id' => $tenantId,
             'workforce_entity_id' => $entity->id,
-            'source_identity_id' => 1,
+            'source_identity_id' => $identity->id,
             'company_entity_id' => $companyEntityId,
             'name' => 'Test Department',
             'active' => true,
