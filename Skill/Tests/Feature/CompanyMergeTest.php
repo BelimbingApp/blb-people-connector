@@ -6,6 +6,7 @@ use App\Domains\PeopleConnector\Connector\Data\ProviderScope;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceCompany;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceEmployee;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceOrganizationUnit;
+use App\Domains\PeopleConnector\Connector\Data\WorkforcePosition;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceProvenance;
 use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
 use App\Domains\PeopleConnector\Connector\Exceptions\WorkforceMergeConflictException;
@@ -17,16 +18,25 @@ use App\Domains\PeopleConnector\Connector\Models\WorkforcePositionProjection;
 use App\Domains\PeopleConnector\Connector\Services\ProviderConnectionStore;
 use App\Domains\PeopleConnector\Connector\Services\WorkforceIdentityStore;
 use App\Domains\PeopleConnector\Connector\Services\WorkforceProjectionStore;
+use App\Domains\PeopleConnector\Skill\Data\RequirementItemDraft;
+use App\Domains\PeopleConnector\Skill\Data\RequirementProfileDraft;
+use App\Domains\PeopleConnector\Skill\Data\RequirementSelectorDraft;
 use App\Domains\PeopleConnector\Skill\Data\ProficiencyLevelDraft;
 use App\Domains\PeopleConnector\Skill\Data\SkillDraft;
 use App\Domains\PeopleConnector\Skill\Enums\AssessmentMethod;
 use App\Domains\PeopleConnector\Skill\Enums\ProficiencyScaleStatus;
+use App\Domains\PeopleConnector\Skill\Enums\RequirementCriticality;
+use App\Domains\PeopleConnector\Skill\Enums\SelectorType;
 use App\Domains\PeopleConnector\Skill\Enums\SkillScope;
 use App\Domains\PeopleConnector\Skill\Exceptions\PublishedScaleImmutableException;
 use App\Domains\PeopleConnector\Skill\Models\ProficiencyScale;
+use App\Domains\PeopleConnector\Skill\Models\RequirementItem;
+use App\Domains\PeopleConnector\Skill\Models\RequirementProfile;
+use App\Domains\PeopleConnector\Skill\Models\RequirementProfileSelector;
 use App\Domains\PeopleConnector\Skill\Models\Skill;
 use App\Domains\PeopleConnector\Skill\Models\SkillCategory;
 use App\Domains\PeopleConnector\Skill\Services\ProficiencyScaleStore;
+use App\Domains\PeopleConnector\Skill\Services\RequirementProfileStore;
 use App\Domains\PeopleConnector\Skill\Services\SkillCatalogStore;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
@@ -120,6 +130,7 @@ test('the merge rewrites every model that owns rows through company_entity_id, d
     foreach ([
         WorkforceOrganizationUnitProjection::class, WorkforcePositionProjection::class, WorkforceEmployeeProjection::class,
         SkillCategory::class, Skill::class, ProficiencyScale::class,
+        RequirementProfile::class, RequirementItem::class, RequirementProfileSelector::class,
     ] as $model) {
         expect($targets)->toContain($model);
     }
@@ -383,6 +394,40 @@ test('categories and skills refuse the wrong survivor at the database, with the 
     }
 });
 
+test('a company merge carries a published requirement profile with its items and selectors', function (): void {
+    [$tenantId, $connectionId, $old, $new] = companyMergeFixture();
+    $catalog = app(SkillCatalogStore::class);
+    $profiles = app(RequirementProfileStore::class);
+
+    $category = $catalog->defineCategory($old, 'req', 'Requirements');
+    $skill = $catalog->defineSkill($old, companyMergeSkillDraft($category));
+    $profile = $profiles->draft($old, new RequirementProfileDraft(
+        code: 'merge.req',
+        name: 'Merge Requirement',
+        selectors: [new RequirementSelectorDraft(SelectorType::Company)],
+        items: [
+            new RequirementItemDraft(
+                skillId: (int) $skill->id,
+                sequence: 1,
+                requiredLevel: 2,
+                criticality: RequirementCriticality::Essential,
+                weightPercent: 100.0,
+            ),
+        ],
+    ));
+    $profile = $profiles->publish($old, (int) $profile->id);
+    $itemId = (int) RequirementItem::query()->forCompany($tenantId, $old)->where('profile_id', $profile->id)->value('id');
+    $selectorId = (int) RequirementProfileSelector::query()->forCompany($tenantId, $old)->where('profile_id', $profile->id)->value('id');
+
+    companyMergeRun($connectionId);
+
+    expect((int) $profile->refresh()->company_entity_id)->toBe($new)
+        ->and(RequirementProfile::query()->forCompany($tenantId, $new)->whereKey($profile->id)->exists())->toBeTrue()
+        ->and((int) RequirementItem::query()->forCompany($tenantId, $new)->whereKey($itemId)->value('company_entity_id'))->toBe($new)
+        ->and((int) RequirementProfileSelector::query()->forCompany($tenantId, $new)->whereKey($selectorId)->value('company_entity_id'))->toBe($new)
+        ->and(RequirementProfile::query()->forCompany($tenantId, $old)->count())->toBe(0);
+});
+
 test('the scale merge arm pins every column except the owner and updated_at', function (): void {
     // Enumerated columns are a list someone must remember to extend
     // (blb-people-connector#38). This inverts the default: every column on
@@ -419,6 +464,171 @@ test('the scale merge arm pins every column except the owner and updated_at', fu
     }
 
     expect(DB::table($table)->where('id', $scale->id)->update(['company_entity_id' => $c, 'updated_at' => '2030-01-01 00:00:00']))->toBe(1);
+});
+
+test('the requirement selector company-merge arm pins every column except the owner and updated_at', function (): void {
+    [$tenantId, , $old] = companyMergeFixture();
+    $catalog = app(SkillCatalogStore::class);
+    $profiles = app(RequirementProfileStore::class);
+    $category = $catalog->defineCategory($old, 'pin-sel', 'Pin Selectors');
+    $skill = $catalog->defineSkill($old, companyMergeSkillDraft($category));
+    $profile = $profiles->publish($old, (int) $profiles->draft($old, new RequirementProfileDraft(
+        code: 'pin.selector.company',
+        name: 'Pin Selector Company',
+        selectors: [new RequirementSelectorDraft(SelectorType::Company)],
+        items: [
+            new RequirementItemDraft(
+                skillId: (int) $skill->id,
+                sequence: 1,
+                requiredLevel: 2,
+                criticality: RequirementCriticality::Essential,
+                weightPercent: 100.0,
+            ),
+        ],
+    ))->id);
+    $selector = RequirementProfileSelector::query()->forCompany($tenantId, $old)->where('profile_id', $profile->id)->firstOrFail();
+    $c = companyMergeStranger($tenantId);
+    WorkforceEntity::query()->whereKey($old)->update(['state' => WorkforceEntity::STATE_MERGED, 'merged_into_entity_id' => $c]);
+    $table = $selector->getTable();
+
+    $pinned = [
+        'id' => 999_999,
+        'tenant_id' => 999_999,
+        'profile_id' => 999_999,
+        'selector_type' => 'department',
+        'selector_value' => 'HIJACKED',
+        'selector_entity_id' => 999_999,
+        'created_at' => '2020-01-01 00:00:00',
+    ];
+    $permitted = ['company_entity_id', 'updated_at'];
+
+    expect(array_values(array_diff(Schema::getColumnListing($table), array_keys($pinned), $permitted)))
+        ->toBe([], 'every selector column must be pinned or explicitly permitted on company merge');
+
+    foreach ($pinned as $column => $changed) {
+        expect(fn () => DB::transaction(fn () => DB::table($table)->where('id', $selector->id)->update(['company_entity_id' => $c, $column => $changed])))
+            ->toThrow(QueryException::class, 'immutable', "column [{$column}] rode along with the selector company carry");
+    }
+
+    expect(DB::table($table)->where('id', $selector->id)->update(['company_entity_id' => $c, 'updated_at' => '2030-01-01 00:00:00']))->toBe(1);
+});
+
+test('the requirement selector entity-merge arm pins every column except the target and updated_at', function (): void {
+    [$tenantId, $connectionId, $old] = companyMergeFixture();
+    $catalog = app(SkillCatalogStore::class);
+    $profiles = app(RequirementProfileStore::class);
+    $projections = app(WorkforceProjectionStore::class);
+    $identities = app(WorkforceIdentityStore::class);
+    $category = $catalog->defineCategory($old, 'pin-pos', 'Pin Position');
+    $skill = $catalog->defineSkill($old, companyMergeSkillDraft($category));
+
+    $at = new DateTimeImmutable('2026-08-30T09:00:00+00:00');
+    $companyRef = companyMergeCompanyReference('COMPANY-OLD');
+    $pos = fn (string $id): ExternalReference => new ExternalReference('test.people', WorkforceResourceType::Position, $id);
+    foreach (['PIN-POS-OLD', 'PIN-POS-NEW'] as $id) {
+        $projections->upsert((int) $connectionId, new WorkforcePosition(
+            $pos($id),
+            $companyRef,
+            $id,
+            true,
+            $at,
+            $at,
+        ));
+    }
+    $posOld = (int) $identities->resolve((int) $connectionId, $pos('PIN-POS-OLD'))->id;
+    $posNew = (int) $identities->resolve((int) $connectionId, $pos('PIN-POS-NEW'))->id;
+
+    $profile = $profiles->publish($old, (int) $profiles->draft($old, new RequirementProfileDraft(
+        code: 'pin.selector.entity',
+        name: 'Pin Selector Entity',
+        selectors: [new RequirementSelectorDraft(SelectorType::Position, null, $posOld)],
+        items: [
+            new RequirementItemDraft(
+                skillId: (int) $skill->id,
+                sequence: 1,
+                requiredLevel: 2,
+                criticality: RequirementCriticality::Essential,
+                weightPercent: 100.0,
+            ),
+        ],
+    ))->id);
+    $selector = RequirementProfileSelector::query()->forCompany($tenantId, $old)->where('profile_id', $profile->id)->firstOrFail();
+    WorkforceEntity::query()->whereKey($posOld)->update(['state' => WorkforceEntity::STATE_MERGED, 'merged_into_entity_id' => $posNew]);
+    $table = $selector->getTable();
+
+    $pinned = [
+        'id' => 999_999,
+        'tenant_id' => 999_999,
+        'company_entity_id' => 999_999,
+        'profile_id' => 999_999,
+        'selector_type' => 'department',
+        'selector_value' => 'HIJACKED',
+        'created_at' => '2020-01-01 00:00:00',
+    ];
+    $permitted = ['selector_entity_id', 'updated_at'];
+
+    expect(array_values(array_diff(Schema::getColumnListing($table), array_keys($pinned), $permitted)))
+        ->toBe([], 'every selector column must be pinned or explicitly permitted on entity merge');
+
+    foreach ($pinned as $column => $changed) {
+        expect(fn () => DB::transaction(fn () => DB::table($table)->where('id', $selector->id)->update(['selector_entity_id' => $posNew, $column => $changed])))
+            ->toThrow(QueryException::class, 'immutable', "column [{$column}] rode along with the selector entity carry");
+    }
+
+    expect(DB::table($table)->where('id', $selector->id)->update(['selector_entity_id' => $posNew, 'updated_at' => '2030-01-01 00:00:00']))->toBe(1);
+});
+
+test('the requirement item company-merge arm pins every column except the owner and updated_at', function (): void {
+    [$tenantId, , $old] = companyMergeFixture();
+    $catalog = app(SkillCatalogStore::class);
+    $profiles = app(RequirementProfileStore::class);
+    $category = $catalog->defineCategory($old, 'pin-item', 'Pin Items');
+    $skill = $catalog->defineSkill($old, companyMergeSkillDraft($category));
+    $profile = $profiles->publish($old, (int) $profiles->draft($old, new RequirementProfileDraft(
+        code: 'pin.item.company',
+        name: 'Pin Item Company',
+        selectors: [new RequirementSelectorDraft(SelectorType::Company)],
+        items: [
+            new RequirementItemDraft(
+                skillId: (int) $skill->id,
+                sequence: 1,
+                requiredLevel: 2,
+                criticality: RequirementCriticality::Essential,
+                weightPercent: 100.0,
+            ),
+        ],
+    ))->id);
+    $item = RequirementItem::query()->forCompany($tenantId, $old)->where('profile_id', $profile->id)->firstOrFail();
+    $c = companyMergeStranger($tenantId);
+    WorkforceEntity::query()->whereKey($old)->update(['state' => WorkforceEntity::STATE_MERGED, 'merged_into_entity_id' => $c]);
+    $table = $item->getTable();
+
+    $pinned = [
+        'id' => 999_999,
+        'tenant_id' => 999_999,
+        'profile_id' => 999_999,
+        'skill_id' => 999_999,
+        'sequence' => 99,
+        'required_level' => 9,
+        'criticality' => 'critical',
+        'weight_percent' => 12.34,
+        'evidence_standard' => 'HIJACKED',
+        'mandatory_gate' => true,
+        'reassessment_months' => 99,
+        'active' => false,
+        'created_at' => '2020-01-01 00:00:00',
+    ];
+    $permitted = ['company_entity_id', 'updated_at'];
+
+    expect(array_values(array_diff(Schema::getColumnListing($table), array_keys($pinned), $permitted)))
+        ->toBe([], 'every item column must be pinned or explicitly permitted on company merge');
+
+    foreach ($pinned as $column => $changed) {
+        expect(fn () => DB::transaction(fn () => DB::table($table)->where('id', $item->id)->update(['company_entity_id' => $c, $column => $changed])))
+            ->toThrow(QueryException::class, 'immutable', "column [{$column}] rode along with the item company carry");
+    }
+
+    expect(DB::table($table)->where('id', $item->id)->update(['company_entity_id' => $c, 'updated_at' => '2030-01-01 00:00:00']))->toBe(1);
 });
 
 test('the scale retire arm pins every column except its lifecycle timestamps', function (): void {

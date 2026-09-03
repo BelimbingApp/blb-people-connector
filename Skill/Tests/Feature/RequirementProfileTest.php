@@ -365,6 +365,12 @@ test('effective dating returns the most recent applicable profile', function ():
 
     $employee = ['company_entity_id' => $companyEntityId];
 
+    // Publish day must resolve to v2 without throwing: inclusive retired_at
+    // overlapped the successor's start for the whole calendar day.
+    $resultPublishDay = $resolver->resolve($employee, Carbon::parse('2024-01-20'));
+    expect($resultPublishDay['profile'])->not->toBeNull()
+        ->and($resultPublishDay['profile']->version)->toBe(2);
+
     $resultCurrent = $resolver->resolve($employee, Carbon::parse('2024-01-25'));
     expect($resultCurrent['profile'])->not->toBeNull()
         ->and($resultCurrent['profile']->version)->toBe(2)
