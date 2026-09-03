@@ -77,7 +77,10 @@ test('the two columns the merge forgot are now declared where the merge reads th
 
     // Exact, not "contains": the probe test relies on no real model declaring
     // a reference under Position except this one, so that a merged position
-    // can only reach a probe's row through the probe.
+    // can only reach a probe's row through the probe. When a real model
+    // legitimately declares a Position column, EXTEND this array and move the
+    // probes to a resource type nothing real declares; do not weaken this
+    // back to toContain, which would let the probe's isolation lapse silently.
     $forPositions = array_map(fn (array $pair): string => $pair[0].'.'.$pair[1]->column, DomainModels::referencing(WorkforceResourceType::Position));
     expect($forPositions)->toBe([WorkforceEmployeeProjection::class.'.position_entity_id']);
 });
@@ -99,9 +102,11 @@ test('the two columns the merge forgot are now declared where the merge reads th
  *    later run until a human deletes the file. Removing this guard passes
  *    review and turns the next leak into a wedge; it was measured, not
  *    reasoned: drop the guard, plant a leak, fatal.
- *  - unlink-before-write protects against a leaked file with *stale content*
- *    being read instead of this test's source. It runs too late to prevent
- *    the fatal above.
+ *  - unlink-before-write does not protect against anything on its own:
+ *    `file_put_contents` already truncates, and when the guard skips the
+ *    `require` the fresh source is never loaded either way. Measured, both
+ *    ways, in the review of #52; it stays because writing over a file you
+ *    did not remove is the habit that produces the next leak.
  *  - the `.gitignore` entry protects against a leak reaching a commit.
  *
  * With all three in place a leaked file makes the run red but recoverable,
