@@ -742,6 +742,75 @@ three-line union refusal fails the union regression.
 
 ---
 
+## Export, backup and restore
+
+Connector-owned data leaves and re-enters an instance through the platform's
+DataShare packages. Nothing connector-specific is involved: every table is
+registered with its module path by its migration, and the scope catalog
+derives two scopes from that, `app/Domains/PeopleConnector/Connector` and
+`app/Domains/PeopleConnector/Skill`. `DataShareRoundTripTest` drives the
+vehicle over both scopes on both drivers, and what it measured is the
+contract (blb-people-connector#53):
+
+- **A package is a faithful copy.** Re-planning a scope package against its
+  own source reports every row as `unchanged`, for both scopes.
+- **The Skill scope restores.** Emptied and re-applied, the catalog comes
+  back row-identical; the company guard (an unpinned query is refused) holds
+  on the restored rows because it is the model's — `RequireCompanyScope` in
+  `CompanyOwned`, not anything in the package — and the skills-table
+  triggers (skill code, company owner) hold because they are the
+  migration's, not the package's. The scale and
+  level guards are not exercised by that fixture, which creates no scales;
+  the round trip covers 4 of the 14 Connector tables today (#58 covers
+  the projection tables). This
+  needed a platform fix: a row whose optional composite reference was null
+  (a skill without a department) planned as a conflict until belimbing#528.
+- **A package is instance-level.** It carries every company in the tenant.
+  There is no company axis on export today, and no filter that fails when
+  omitted; per-company export, if [1004] wants it, is not this mechanism.
+- **The credential reference travels in clear.** The Connector scope
+  includes `provider_credentials`, and the platform's redaction applies only
+  to diagnostic capture ("bulk exports preserve selected tables exactly").
+  The table registry has no way for a module to declare a table
+  non-transferable, so the connector cannot keep that table out of its scope.
+  What leaves is a *reference* into base-integration storage, not key
+  material, and it is useless on another instance; it is still something a
+  package should not carry. The owner's ruling on belimbing#530 is that this
+  is the operator's decision, not the module's: the DataShare UI will warn
+  and let the operator redact any field, with the name-pattern defaults
+  pre-ticked as suggestions rather than guarantees, and with the warning
+  this repository measured — redacting a `NOT NULL` column such as
+  `secret_reference` makes those rows plan as `conflict` and therefore
+  unrestorable at the destination. Until that UI lands, an operator sharing
+  the Connector scope is sharing credential references, and the test above
+  fails the day either side of that changes.
+
+## Privacy deletion and retention
+
+Company-scoped erasure of connector-owned workforce projections is owned by
+`PrivacyDeletionService` (blb-people#24 / blb-people-connector#54). The first
+landed slice:
+
+- **Tombstones Class C personal projection fields** on employees, organization
+  units, and positions for the requested `company_entity_id`: display names and
+  codes become `[redacted]`, contact fields null out, `active` becomes false,
+  and `privacy_deleted_at` records the request time. Identity tokens
+  (`workforce_entities`) and company projections are not erased.
+- **Redacts snapshot payloads in place.** `WorkforceSnapshot` remains
+  append-only for ordinary updates and all deletes; the only permitted update
+  is a privacy redaction that replaces `payload` with a stub and sets
+  `redacted_at`. Event keys, provenance metadata, and row identity stay.
+- **Leaves append-only evidence alone.** Privileged support actions, sync
+  checkpoint events, and other retain-forever tables are out of scope for this
+  service; their DELETE guards must still abort after a privacy pass.
+- **Is company-scoped.** A two-company tenant proves sibling projections and
+  snapshots are untouched (`PrivacyDeletionTest`).
+- **Uses an explicit retention clock.** `privacy_deleted_at` / `redacted_at`
+  are never derived from `updated_at` or from a company-entity ownership move.
+
+Skill-module catalogs, training aggregates, and export of tombstoned rows are
+not decided here; child lanes own those.
+
 ## What this contract cannot yet decide
 
 One question is genuinely open, and this document does not answer it.
