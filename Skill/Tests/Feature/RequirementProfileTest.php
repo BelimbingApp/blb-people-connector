@@ -57,11 +57,15 @@ function requirementEntity(int $tenantId, string $type, ?int $companyEntityId = 
             'status' => ProviderConnection::STATUS_ACTIVE,
         ]);
 
+        $externalId = 'test-id-'.$entity->id;
         $identity = ExternalIdentity::query()->create([
             'tenant_id' => $tenantId,
             'connection_id' => $connection->id,
             'workforce_entity_id' => $entity->id,
-            'external_key' => 'test-key-'.$entity->id,
+            'provider_id' => 'test-provider',
+            'resource_type' => 'organization_unit',
+            'external_id' => $externalId,
+            'external_id_hash' => hash('sha256', $externalId),
             'state' => ExternalIdentity::STATE_ACTIVE,
             'effective_from' => now(),
             'last_observed_at' => now(),
