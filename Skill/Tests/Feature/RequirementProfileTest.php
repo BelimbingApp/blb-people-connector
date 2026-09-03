@@ -409,6 +409,13 @@ test('effective_date March policy published July resolves for March as-of', func
 
     $employee = ['company_entity_id' => $companyEntityId];
 
+    // The effective date itself must resolve on both drivers — SQLite stores
+    // cast dates as 'Y-m-d H:i:s', and comparing that string to a bare day
+    // without DATE() skips the boundary.
+    $resultEffectiveDay = $resolver->resolve($employee, Carbon::parse('2024-03-01'));
+    expect($resultEffectiveDay['profile'])->not->toBeNull()
+        ->and($resultEffectiveDay['profile']->code)->toBe('march.effective');
+
     $resultMarch = $resolver->resolve($employee, Carbon::parse('2024-03-15'));
     expect($resultMarch['profile'])->not->toBeNull()
         ->and($resultMarch['profile']->code)->toBe('march.effective')
@@ -418,7 +425,7 @@ test('effective_date March policy published July resolves for March as-of', func
     expect($resultJuly['profile'])->not->toBeNull()
         ->and($resultJuly['profile']->code)->toBe('march.effective');
 
-    $resultFebruary = $resolver->resolve($employee, Carbon::parse('2024-02-15'));
+    $resultFebruary = $resolver->resolve($employee, Carbon::parse('2024-02-29'));
     expect($resultFebruary['profile'])->toBeNull();
 });
 

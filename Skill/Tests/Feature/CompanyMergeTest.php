@@ -428,6 +428,56 @@ test('a company merge carries a published requirement profile with its items and
         ->and(RequirementProfile::query()->forCompany($tenantId, $old)->count())->toBe(0);
 });
 
+test('the requirement profile company-merge arm pins every column except the owner and updated_at', function (): void {
+    [$tenantId, , $old] = companyMergeFixture();
+    $catalog = app(SkillCatalogStore::class);
+    $profiles = app(RequirementProfileStore::class);
+    $category = $catalog->defineCategory($old, 'pin-prof', 'Pin Profiles');
+    $skill = $catalog->defineSkill($old, companyMergeSkillDraft($category));
+    $profile = $profiles->publish($old, (int) $profiles->draft($old, new RequirementProfileDraft(
+        code: 'pin.profile.company',
+        name: 'Pin Profile Company',
+        selectors: [new RequirementSelectorDraft(SelectorType::Company)],
+        items: [
+            new RequirementItemDraft(
+                skillId: (int) $skill->id,
+                sequence: 1,
+                requiredLevel: 2,
+                criticality: RequirementCriticality::Essential,
+                weightPercent: 100.0,
+            ),
+        ],
+    ))->id);
+    $c = companyMergeStranger($tenantId);
+    WorkforceEntity::query()->whereKey($old)->update(['state' => WorkforceEntity::STATE_MERGED, 'merged_into_entity_id' => $c]);
+    $table = $profile->getTable();
+
+    $pinned = [
+        'id' => 999_999,
+        'tenant_id' => 999_999,
+        'code' => 'pin.profile.moved',
+        'name' => 'Renamed',
+        'version' => 99,
+        'status' => 'retired',
+        'effective_date' => '2020-01-01',
+        'published_at' => '2020-01-01 00:00:00',
+        'retired_at' => '2020-01-01 00:00:00',
+        'owner_employee_entity_id' => 999_999,
+        'created_at' => '2020-01-01 00:00:00',
+    ];
+    $permitted = ['company_entity_id', 'updated_at'];
+
+    expect(array_values(array_diff(Schema::getColumnListing($table), array_keys($pinned), $permitted)))
+        ->toBe([], 'every profile column must be pinned or explicitly permitted on company merge');
+
+    foreach ($pinned as $column => $changed) {
+        expect(fn () => DB::transaction(fn () => DB::table($table)->where('id', $profile->id)->update(['company_entity_id' => $c, $column => $changed])))
+            ->toThrow(QueryException::class, 'immutable', "column [{$column}] rode along with the profile company carry");
+    }
+
+    expect(DB::table($table)->where('id', $profile->id)->update(['company_entity_id' => $c, 'updated_at' => '2030-01-01 00:00:00']))->toBe(1);
+});
+
 test('the scale merge arm pins every column except the owner and updated_at', function (): void {
     // Enumerated columns are a list someone must remember to extend
     // (blb-people-connector#38). This inverts the default: every column on

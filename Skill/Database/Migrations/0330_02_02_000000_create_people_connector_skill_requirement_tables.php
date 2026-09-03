@@ -85,6 +85,7 @@ return new class extends Migration
                     RETURN NEW;
                 END IF;
                 IF NEW.company_entity_id IS DISTINCT FROM OLD.company_entity_id
+                    AND NEW.id = OLD.id
                     AND NEW.tenant_id = OLD.tenant_id
                     AND NEW.code = OLD.code
                     AND NEW.name = OLD.name
@@ -93,7 +94,8 @@ return new class extends Migration
                     AND NEW.effective_date IS NOT DISTINCT FROM OLD.effective_date
                     AND NEW.published_at IS NOT DISTINCT FROM OLD.published_at
                     AND NEW.retired_at IS NOT DISTINCT FROM OLD.retired_at
-                    AND NEW.owner_employee_entity_id IS NOT DISTINCT FROM OLD.owner_employee_entity_id THEN
+                    AND NEW.owner_employee_entity_id IS NOT DISTINCT FROM OLD.owner_employee_entity_id
+                    AND NEW.created_at IS NOT DISTINCT FROM OLD.created_at THEN
                     SELECT EXISTS(
                         SELECT 1 FROM people_connector_connector_workforce_entities
                         WHERE tenant_id = OLD.tenant_id
@@ -259,10 +261,11 @@ return new class extends Migration
             .' AND NEW.code = OLD.code AND NEW.name = OLD.name AND NEW.version = OLD.version'
             .' AND NEW.published_at IS OLD.published_at)'
             .' OR (NEW.company_entity_id != OLD.company_entity_id'
-            .' AND NEW.tenant_id = OLD.tenant_id AND NEW.code = OLD.code AND NEW.name = OLD.name'
+            .' AND NEW.id = OLD.id AND NEW.tenant_id = OLD.tenant_id AND NEW.code = OLD.code AND NEW.name = OLD.name'
             .' AND NEW.version = OLD.version AND NEW.status = OLD.status'
             .' AND NEW.effective_date IS OLD.effective_date AND NEW.published_at IS OLD.published_at'
             .' AND NEW.retired_at IS OLD.retired_at AND NEW.owner_employee_entity_id IS OLD.owner_employee_entity_id'
+            .' AND NEW.created_at IS OLD.created_at'
             .' AND EXISTS(SELECT 1 FROM people_connector_connector_workforce_entities'
             ." WHERE tenant_id = OLD.tenant_id AND id = OLD.company_entity_id AND state = 'merged'"
             .' AND merged_into_entity_id = NEW.company_entity_id)))'

@@ -42,12 +42,16 @@ class RequirementResolver
             ->forCompany($tenantId, (int) $companyEntityId)
             ->whereIn('status', [RequirementProfileStatus::Published->value, RequirementProfileStatus::Retired->value])
             ->whereNotNull('published_at')
-            ->whereRaw('COALESCE(effective_date, DATE(published_at)) <= ?', [$asOf->format('Y-m-d')])
+            // DATE() on both arms so SQLite's cast-date string ('Y-m-d H:i:s')
+            // compares equal to the bare as-of day the same way PostgreSQL does.
+            ->whereRaw('COALESCE(DATE(effective_date), DATE(published_at)) <= ?', [$asOf->format('Y-m-d')])
             // Single raw predicate keeps the company pin AND-only under
             // RequireCompanyScope (#65): a Nested whereNull/orWhereDate group
-            // is an OR at depth and disqualifies the whole query.
+            // is an OR at depth and disqualifies the whole query. Safe here
+            // because this OR is ANDed with forCompany()'s basic comparison on
+            // company_entity_id — it can only narrow, never widen past the company.
             ->whereRaw('(retired_at IS NULL OR DATE(retired_at) > ?)', [$asOf->format('Y-m-d')])
-            ->orderByRaw('COALESCE(effective_date, DATE(published_at)) DESC')
+            ->orderByRaw('COALESCE(DATE(effective_date), DATE(published_at)) DESC')
             ->orderBy('version', 'desc')
             ->get();
 
