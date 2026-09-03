@@ -147,11 +147,11 @@ class SkillCatalogStore
             ->forCompany((int) $skill->tenant_id, $companyEntityId)
             ->find($skill->category_id);
 
-        if (! $category?->active) {
+        if (!$category?->active) {
             throw new InvalidSkillCatalogException('Reactivate the skill category before reactivating its skills.');
         }
 
-        if (! $skill->active) {
+        if (!$skill->active) {
             $skill->update(['active' => true]);
             event(new SkillReactivated((int) $skill->tenant_id, (int) $skill->getKey(), $skill->code));
         }
@@ -238,7 +238,7 @@ class SkillCatalogStore
         if ($category === null) {
             throw new InvalidSkillCatalogException('The skill category must belong to the same company catalog.');
         }
-        if (! $category->active && $draft->active) {
+        if (!$category->active && $draft->active) {
             throw new InvalidSkillCatalogException("Skill category [{$category->code}] is inactive; activate it first or pick another.");
         }
 
