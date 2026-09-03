@@ -75,7 +75,7 @@ function requirementEntity(int $tenantId, string $type, ?int $companyEntityId = 
             'last_observed_at' => now(),
         ]);
 
-        WorkforceOrganizationUnitProjection::query()->forCompany($tenantId, $companyEntityId)->create([
+        WorkforceOrganizationUnitProjection::create([
             'tenant_id' => $tenantId,
             'workforce_entity_id' => $entity->id,
             'source_identity_id' => $identity->id,
