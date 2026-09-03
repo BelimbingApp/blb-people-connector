@@ -63,6 +63,8 @@ return new class extends Migration
     {
         DB::unprepared(<<<'SQL'
             CREATE OR REPLACE FUNCTION pcs_req_profile_guard() RETURNS trigger AS $$
+            DECLARE
+                is_company_merge boolean;
             BEGIN
                 IF TG_OP = 'DELETE' THEN
                     IF OLD.published_at IS NOT NULL THEN
@@ -81,6 +83,27 @@ return new class extends Migration
                     AND NEW.version = OLD.version
                     AND NEW.published_at IS NOT DISTINCT FROM OLD.published_at THEN
                     RETURN NEW;
+                END IF;
+                IF NEW.company_entity_id IS DISTINCT FROM OLD.company_entity_id
+                    AND NEW.tenant_id = OLD.tenant_id
+                    AND NEW.code = OLD.code
+                    AND NEW.name = OLD.name
+                    AND NEW.version = OLD.version
+                    AND NEW.status = OLD.status
+                    AND NEW.effective_date IS NOT DISTINCT FROM OLD.effective_date
+                    AND NEW.published_at IS NOT DISTINCT FROM OLD.published_at
+                    AND NEW.retired_at IS NOT DISTINCT FROM OLD.retired_at
+                    AND NEW.owner_employee_entity_id IS NOT DISTINCT FROM OLD.owner_employee_entity_id THEN
+                    SELECT EXISTS(
+                        SELECT 1 FROM people_connector_connector_workforce_entities
+                        WHERE tenant_id = OLD.tenant_id
+                        AND id = OLD.company_entity_id
+                        AND state = 'merged'
+                        AND merged_into_entity_id = NEW.company_entity_id
+                    ) INTO is_company_merge;
+                    IF is_company_merge THEN
+                        RETURN NEW;
+                    END IF;
                 END IF;
                 RAISE EXCEPTION 'requirement profile % is % and immutable; draft a new version instead', OLD.id, OLD.status;
             END;
@@ -159,7 +182,15 @@ return new class extends Migration
             ." WHEN NOT (OLD.status = 'draft' OR (OLD.status = 'published' AND NEW.status = 'retired'"
             .' AND NEW.tenant_id = OLD.tenant_id AND NEW.company_entity_id = OLD.company_entity_id'
             .' AND NEW.code = OLD.code AND NEW.name = OLD.name AND NEW.version = OLD.version'
-            .' AND NEW.published_at IS OLD.published_at))'
+            .' AND NEW.published_at IS OLD.published_at)'
+            .' OR (NEW.company_entity_id != OLD.company_entity_id'
+            .' AND NEW.tenant_id = OLD.tenant_id AND NEW.code = OLD.code AND NEW.name = OLD.name'
+            .' AND NEW.version = OLD.version AND NEW.status = OLD.status'
+            .' AND NEW.effective_date IS OLD.effective_date AND NEW.published_at IS OLD.published_at'
+            .' AND NEW.retired_at IS OLD.retired_at AND NEW.owner_employee_entity_id IS OLD.owner_employee_entity_id'
+            .' AND EXISTS(SELECT 1 FROM people_connector_connector_workforce_entities'
+            ." WHERE tenant_id = OLD.tenant_id AND id = OLD.company_entity_id AND state = 'merged'"
+            .' AND merged_into_entity_id = NEW.company_entity_id)))'
             ." BEGIN SELECT RAISE(ABORT, 'requirement profile is published and immutable; draft a new version instead'); END",
         );
         DB::statement(

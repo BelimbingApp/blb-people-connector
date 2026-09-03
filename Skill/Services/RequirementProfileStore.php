@@ -144,6 +144,12 @@ class RequirementProfileStore
                 ->get();
             $this->assertPublishableItems($items->all());
 
+            $newSelectors = RequirementProfileSelector::query()
+                ->forCompany($tenantId, $companyEntityId)
+                ->where('profile_id', $profile->getKey())
+                ->get();
+            $this->assertNoOverlap($tenantId, $companyEntityId, $profile, $newSelectors);
+
             $previous = $this->publishedOf($tenantId, (int) $profile->company_entity_id, (string) $profile->code);
             $previous?->update([
                 'status' => RequirementProfileStatus::Retired,
@@ -370,6 +376,58 @@ class RequirementProfileStore
                 );
             }
         }
+    }
+
+    /**
+     * @param  \Illuminate\Support\Collection<int, RequirementProfileSelector>  $newSelectors
+     */
+    private function assertNoOverlap(int $tenantId, int $companyEntityId, RequirementProfile $newProfile, $newSelectors): void
+    {
+        $publishedProfiles = RequirementProfile::query()
+            ->forCompany($tenantId, $companyEntityId)
+            ->where('status', RequirementProfileStatus::Published->value)
+            ->where('id', '!=', $newProfile->getKey())
+            ->whereNull('retired_at')
+            ->get();
+
+        foreach ($publishedProfiles as $existingProfile) {
+            $existingSelectors = RequirementProfileSelector::query()
+                ->forCompany($tenantId, $companyEntityId)
+                ->where('profile_id', $existingProfile->getKey())
+                ->get();
+
+            if ($this->selectorsCanOverlap($newSelectors, $existingSelectors)) {
+                throw new InvalidRequirementProfileException(
+                    "Profile [{$newProfile->code}] v{$newProfile->version} overlaps with published profile [{$existingProfile->code}] v{$existingProfile->version}. "
+                    .'Overlapping profiles must be refined or the existing profile retired before publishing.',
+                );
+            }
+        }
+    }
+
+    /**
+     * @param  \Illuminate\Support\Collection<int, RequirementProfileSelector>  $selectorsA
+     * @param  \Illuminate\Support\Collection<int, RequirementProfileSelector>  $selectorsB
+     */
+    private function selectorsCanOverlap($selectorsA, $selectorsB): bool
+    {
+        $typeMapA = $selectorsA->groupBy('selector_type');
+        $typeMapB = $selectorsB->groupBy('selector_type');
+
+        foreach ($typeMapA as $type => $aSelectors) {
+            if (! isset($typeMapB[$type])) {
+                continue;
+            }
+
+            $aEntityIds = $aSelectors->pluck('selector_entity_id')->filter()->unique()->values()->all();
+            $bEntityIds = $typeMapB[$type]->pluck('selector_entity_id')->filter()->unique()->values()->all();
+
+            if ($aEntityIds !== [] && $bEntityIds !== [] && array_intersect($aEntityIds, $bEntityIds) === []) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     /**

@@ -352,6 +352,46 @@ test('effective dating returns the most recent applicable profile', function ():
         ->and($resultOld['profile']->name)->toBe('Older Profile');
 });
 
+test('effective_date March policy published July resolves for March as-of', function (): void {
+    [$tenantId, $companyEntityId, $skillA, $skillB] = requirementFixture();
+    $store = app(RequirementProfileStore::class);
+    $resolver = app(RequirementResolver::class);
+
+    $marchPolicy = new RequirementProfileDraft(
+        code: 'march.effective',
+        name: 'March Effective Policy',
+        effectiveDate: Carbon::parse('2024-03-01'),
+        selectors: [new RequirementSelectorDraft(SelectorType::Company)],
+        items: [
+            new RequirementItemDraft(
+                skillId: (int) $skillA->id,
+                sequence: 1,
+                requiredLevel: 2,
+                criticality: RequirementCriticality::Essential,
+                weightPercent: 100.0,
+            ),
+        ],
+    );
+
+    $v1 = $store->draft($companyEntityId, $marchPolicy);
+    Carbon::setTestNow('2024-07-15 12:00:00');
+    $v1 = $store->publish($companyEntityId, (int) $v1->id);
+
+    $employee = ['company_entity_id' => $companyEntityId];
+
+    $resultMarch = $resolver->resolve($employee, Carbon::parse('2024-03-15'));
+    expect($resultMarch['profile'])->not->toBeNull()
+        ->and($resultMarch['profile']->code)->toBe('march.effective')
+        ->and($resultMarch['profile']->name)->toBe('March Effective Policy');
+
+    $resultJuly = $resolver->resolve($employee, Carbon::parse('2024-07-20'));
+    expect($resultJuly['profile'])->not->toBeNull()
+        ->and($resultJuly['profile']->code)->toBe('march.effective');
+
+    $resultFebruary = $resolver->resolve($employee, Carbon::parse('2024-02-15'));
+    expect($resultFebruary['profile'])->toBeNull();
+});
+
 test('company isolation: sibling company cannot address profiles', function (): void {
     [$tenantId, $companyAId, $skillA, $skillB] = requirementFixture();
     $store = app(RequirementProfileStore::class);

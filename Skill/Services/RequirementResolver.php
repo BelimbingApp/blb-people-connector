@@ -21,7 +21,7 @@ class RequirementResolver
      * Resolve the active requirement profile for an employee at a given date.
      * Returns the profile and an explanation of how it matched.
      *
-     * @param  array<string, mixed>  $employeeData  Employee attributes: company_entity_id, department_entity_id, position_entity_id, job_title, job_grade, workforce_class
+     * @param  array<string, mixed>  $employeeData  Employee attributes: company_entity_id, department_entity_id, position_entity_id, job_title_entity_id, job_grade_entity_id, workforce_class_entity_id
      * @return array{profile: RequirementProfile|null, explanation: string, matched_selectors: array<string>}
      */
     public function resolve(array $employeeData, ?DateTimeInterface $asOf = null): array
@@ -43,10 +43,13 @@ class RequirementResolver
             ->whereIn('status', [RequirementProfileStatus::Published->value, RequirementProfileStatus::Retired->value])
             ->whereDate('published_at', '<=', $asOf)
             ->where(function ($query) use ($asOf): void {
+                $query->whereRaw('COALESCE(effective_date, DATE(published_at)) <= ?', [$asOf->format('Y-m-d')]);
+            })
+            ->where(function ($query) use ($asOf): void {
                 $query->whereNull('retired_at')
                     ->orWhereDate('retired_at', '>=', $asOf);
             })
-            ->orderBy('published_at', 'desc')
+            ->orderByRaw('COALESCE(effective_date, DATE(published_at)) DESC')
             ->orderBy('version', 'desc')
             ->get();
 
@@ -201,32 +204,32 @@ class RequirementResolver
      */
     private function matchJobTitle(RequirementProfileSelector $selector, array $employeeData): array
     {
-        $employeeJobTitle = $employeeData['job_title'] ?? null;
+        $employeeJobTitleEntityId = $employeeData['job_title_entity_id'] ?? null;
 
-        if ($selector->selector_value === null) {
+        if ($selector->selector_entity_id === null) {
             return [
                 'matches' => false,
-                'explanation' => 'Job title selector has no value',
+                'explanation' => 'Job title selector has no entity ID',
             ];
         }
 
-        if ($employeeJobTitle === null) {
+        if ($employeeJobTitleEntityId === null) {
             return [
                 'matches' => false,
                 'explanation' => 'Employee has no job title',
             ];
         }
 
-        if (strcasecmp((string) $selector->selector_value, (string) $employeeJobTitle) === 0) {
+        if ((int) $selector->selector_entity_id === (int) $employeeJobTitleEntityId) {
             return [
                 'matches' => true,
-                'explanation' => "Job title '{$selector->selector_value}'",
+                'explanation' => "Job title entity ID {$selector->selector_entity_id}",
             ];
         }
 
         return [
             'matches' => false,
-            'explanation' => "Employee job title '{$employeeJobTitle}' does not match '{$selector->selector_value}'",
+            'explanation' => "Employee job title {$employeeJobTitleEntityId} does not match {$selector->selector_entity_id}",
         ];
     }
 
@@ -236,32 +239,32 @@ class RequirementResolver
      */
     private function matchJobGrade(RequirementProfileSelector $selector, array $employeeData): array
     {
-        $employeeJobGrade = $employeeData['job_grade'] ?? null;
+        $employeeJobGradeEntityId = $employeeData['job_grade_entity_id'] ?? null;
 
-        if ($selector->selector_value === null) {
+        if ($selector->selector_entity_id === null) {
             return [
                 'matches' => false,
-                'explanation' => 'Job grade selector has no value',
+                'explanation' => 'Job grade selector has no entity ID',
             ];
         }
 
-        if ($employeeJobGrade === null) {
+        if ($employeeJobGradeEntityId === null) {
             return [
                 'matches' => false,
                 'explanation' => 'Employee has no job grade',
             ];
         }
 
-        if (strcasecmp((string) $selector->selector_value, (string) $employeeJobGrade) === 0) {
+        if ((int) $selector->selector_entity_id === (int) $employeeJobGradeEntityId) {
             return [
                 'matches' => true,
-                'explanation' => "Job grade '{$selector->selector_value}'",
+                'explanation' => "Job grade entity ID {$selector->selector_entity_id}",
             ];
         }
 
         return [
             'matches' => false,
-            'explanation' => "Employee job grade '{$employeeJobGrade}' does not match '{$selector->selector_value}'",
+            'explanation' => "Employee job grade {$employeeJobGradeEntityId} does not match {$selector->selector_entity_id}",
         ];
     }
 
@@ -271,32 +274,32 @@ class RequirementResolver
      */
     private function matchWorkforceClass(RequirementProfileSelector $selector, array $employeeData): array
     {
-        $employeeWorkforceClass = $employeeData['workforce_class'] ?? null;
+        $employeeWorkforceClassEntityId = $employeeData['workforce_class_entity_id'] ?? null;
 
-        if ($selector->selector_value === null) {
+        if ($selector->selector_entity_id === null) {
             return [
                 'matches' => false,
-                'explanation' => 'Workforce class selector has no value',
+                'explanation' => 'Workforce class selector has no entity ID',
             ];
         }
 
-        if ($employeeWorkforceClass === null) {
+        if ($employeeWorkforceClassEntityId === null) {
             return [
                 'matches' => false,
                 'explanation' => 'Employee has no workforce class',
             ];
         }
 
-        if (strcasecmp((string) $selector->selector_value, (string) $employeeWorkforceClass) === 0) {
+        if ((int) $selector->selector_entity_id === (int) $employeeWorkforceClassEntityId) {
             return [
                 'matches' => true,
-                'explanation' => "Workforce class '{$selector->selector_value}'",
+                'explanation' => "Workforce class entity ID {$selector->selector_entity_id}",
             ];
         }
 
         return [
             'matches' => false,
-            'explanation' => "Employee workforce class '{$employeeWorkforceClass}' does not match '{$selector->selector_value}'",
+            'explanation' => "Employee workforce class {$employeeWorkforceClassEntityId} does not match {$selector->selector_entity_id}",
         ];
     }
 
