@@ -49,21 +49,24 @@ function requirementEntity(int $tenantId, string $type, ?int $companyEntityId = 
     ]);
 
     if ($type === 'organization_unit' && $companyEntityId !== null) {
-        $providerId = 'test-provider-'.uniqid();
-        $connection = ProviderConnection::query()->create([
-            'tenant_id' => $tenantId,
-            'provider_id' => $providerId,
-            'label' => 'Test Connection',
-            'scope_key' => 'tenant',
-            'status' => ProviderConnection::STATUS_ACTIVE,
-        ]);
+        $connection = ProviderConnection::query()->firstOrCreate(
+            [
+                'tenant_id' => $tenantId,
+                'scope_key' => 'tenant',
+                'provider_id' => 'test-provider',
+            ],
+            [
+                'label' => 'Test Connection',
+                'status' => ProviderConnection::STATUS_ACTIVE,
+            ]
+        );
 
         $externalId = 'test-id-'.$entity->id;
         $identity = ExternalIdentity::query()->create([
             'tenant_id' => $tenantId,
             'connection_id' => $connection->id,
             'workforce_entity_id' => $entity->id,
-            'provider_id' => $providerId,
+            'provider_id' => 'test-provider',
             'resource_type' => 'organization_unit',
             'external_id' => $externalId,
             'external_id_hash' => hash('sha256', $externalId),
