@@ -802,6 +802,119 @@ test('an explicit revocation signal clears an already-linked user, unlike ordina
         ->and($revoked->user_entity_id)->toBeNull();
 });
 
+test('history distinguishes an unconfirmed user pass from an explicit revocation', function (): void {
+    [$tenant] = createTenantWithCompany(['name' => 'History User Link Tenant']);
+    $connection = connectorPersistenceConnection((int) $tenant->id);
+    $projections = app(WorkforceProjectionStore::class);
+    $observedAt = new DateTimeImmutable('2026-09-03T00:00:00+00:00');
+    $companyReference = connectorPersistenceReference(WorkforceResourceType::Company, 'HIST-COMPANY');
+    $employeeReference = connectorPersistenceReference(WorkforceResourceType::Employee, 'HIST-EMP');
+    $userReference = connectorPersistenceReference(WorkforceResourceType::User, 'HIST-USER');
+
+    $projections->upsert((int) $connection->id, new WorkforceCompany($companyReference, 'Hist Co', true, $observedAt));
+    $projections->upsert((int) $connection->id, new WorkforceEmployee(
+        $employeeReference,
+        $companyReference,
+        'History Employee',
+        true,
+        $observedAt,
+        $observedAt,
+        employeeNumber: 'HIST-1',
+        userReference: $userReference,
+        sourceVersion: 'employee-v1',
+    ));
+    $projections->upsert((int) $connection->id, new WorkforceEmployee(
+        $employeeReference,
+        $companyReference,
+        'History Employee',
+        true,
+        $observedAt->modify('+1 day'),
+        $observedAt->modify('+1 day'),
+        employeeNumber: 'HIST-1',
+        sourceVersion: 'employee-v2',
+    ));
+    $projections->upsert((int) $connection->id, new WorkforceEmployee(
+        $employeeReference,
+        $companyReference,
+        'History Employee',
+        true,
+        $observedAt->modify('+2 days'),
+        $observedAt->modify('+2 days'),
+        employeeNumber: 'HIST-1',
+        sourceVersion: 'employee-v3',
+        userReferenceRevoked: true,
+    ));
+
+    $payloads = WorkforceSnapshot::query()
+        ->forTenant((int) $tenant->id)
+        ->where('event_type', 'projection_upserted')
+        ->where('resource_type', WorkforceResourceType::Employee->value)
+        ->orderBy('id')
+        ->get()
+        ->pluck('payload');
+
+    expect($payloads)->toHaveCount(3)
+        ->and($payloads[0]['user_reference'])->not->toBeNull()
+        ->and($payloads[0]['user_reference_revoked'])->toBeFalse()
+        ->and($payloads[1]['user_reference'])->toBeNull()
+        ->and($payloads[1]['user_reference_revoked'])->toBeFalse()
+        ->and($payloads[2]['user_reference'])->toBeNull()
+        ->and($payloads[2]['user_reference_revoked'])->toBeTrue();
+});
+
+test('a same-time unconfirmed pass is sticky while a same-time revocation still conflicts', function (): void {
+    [$tenant] = createTenantWithCompany(['name' => 'Same Time Sticky Tenant']);
+    $connection = connectorPersistenceConnection((int) $tenant->id);
+    $projections = app(WorkforceProjectionStore::class);
+    $observedAt = new DateTimeImmutable('2026-09-03T00:00:00+00:00');
+    $companyReference = connectorPersistenceReference(WorkforceResourceType::Company, 'SAMETIME-COMPANY');
+    $employeeReference = connectorPersistenceReference(WorkforceResourceType::Employee, 'SAMETIME-EMP');
+    $userReference = connectorPersistenceReference(WorkforceResourceType::User, 'SAMETIME-USER');
+
+    $projections->upsert((int) $connection->id, new WorkforceCompany($companyReference, 'Same Time Co', true, $observedAt));
+    $linked = $projections->upsert((int) $connection->id, new WorkforceEmployee(
+        $employeeReference,
+        $companyReference,
+        'Same Time Employee',
+        true,
+        $observedAt,
+        $observedAt,
+        employeeNumber: 'SAMETIME-1',
+        userReference: $userReference,
+        sourceVersion: 'employee-v1',
+    ));
+
+    // Sticky unset runs before the equal-observed_at check, so a silent pass
+    // at the same observation time does not look like a conflicting null.
+    $silent = $projections->upsert((int) $connection->id, new WorkforceEmployee(
+        $employeeReference,
+        $companyReference,
+        'Same Time Employee',
+        true,
+        $observedAt,
+        $observedAt,
+        employeeNumber: 'SAMETIME-1',
+        sourceVersion: 'employee-v1',
+    ));
+
+    expect($silent->id)->toBe($linked->id)
+        ->and($silent->user_entity_id)->toBe($linked->user_entity_id);
+
+    // Explicit revocation at the same observation time still conflicts: it
+    // is a different fact about the same instant, not a missing confirmation.
+    expect(fn () => $projections->upsert((int) $connection->id, new WorkforceEmployee(
+        $employeeReference,
+        $companyReference,
+        'Same Time Employee',
+        true,
+        $observedAt,
+        $observedAt,
+        employeeNumber: 'SAMETIME-1',
+        sourceVersion: 'employee-v1-revoked',
+        userReferenceRevoked: true,
+    )))->toThrow(WorkforceProjectionConflictException::class, 'same provider observation time');
+});
+
 test('a workforce employee cannot both carry a user reference and report it revoked', function (): void {
     $employeeReference = connectorPersistenceReference(WorkforceResourceType::Employee, 'CONTRADICT-EMP');
     $companyReference = connectorPersistenceReference(WorkforceResourceType::Company, 'CONTRADICT-COMPANY');

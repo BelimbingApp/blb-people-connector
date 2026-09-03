@@ -7,7 +7,7 @@ use App\Domains\PeopleConnector\Connector\Enums\WorkforceHistoryEventType;
 final readonly class WorkforceHistoryEvent
 {
     /**
-     * @param  array<string, bool|int|string|array<string, string>|null>  $payload
+     * @param  array<string, bool|int|string|array<string, string>|null>  $payload  Employee upserts include user_reference_revoked.
      */
     private function __construct(
         public WorkforceHistoryEventType $type,
@@ -148,6 +148,10 @@ final readonly class WorkforceHistoryEvent
             default => $base + [
                 'company_reference' => self::referencePayload($record->companyReference),
                 'user_reference' => self::referencePayload($record->userReference),
+                // Distinguishes an unconfirmed null (false) from an explicit
+                // revocation (true). Both write a null user_reference; only
+                // the flag records which assertion justified the write.
+                'user_reference_revoked' => $record->userReferenceRevoked,
                 'organization_reference' => self::referencePayload($record->organizationReference),
                 'position_reference' => self::referencePayload($record->positionReference),
                 'manager_reference' => self::referencePayload($record->managerReference),
