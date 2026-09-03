@@ -739,6 +739,38 @@ three-line union refusal fails the union regression.
 
 ---
 
+## Export, backup and restore
+
+Connector-owned data leaves and re-enters an instance through the platform's
+DataShare packages. Nothing connector-specific is involved: every table is
+registered with its module path by its migration, and the scope catalog
+derives two scopes from that, `app/Domains/PeopleConnector/Connector` and
+`app/Domains/PeopleConnector/Skill`. `DataShareRoundTripTest` drives the
+vehicle over both scopes on both drivers, and what it measured is the
+contract (blb-people-connector#53):
+
+- **A package is a faithful copy.** Re-planning a scope package against its
+  own source reports every row as `unchanged`, for both scopes.
+- **The Skill scope restores.** Emptied and re-applied, the catalog comes
+  back row-identical; the company guard and the catalog triggers hold on the
+  restored rows because they are the migration's, not the package's. This
+  needed a platform fix: a row whose optional composite reference was null
+  (a skill without a department) planned as a conflict until belimbing#528.
+- **A package is instance-level.** It carries every company in the tenant.
+  There is no company axis on export today, and no filter that fails when
+  omitted; per-company export, if [1004] wants it, is not this mechanism.
+- **The credential reference travels in clear.** The Connector scope
+  includes `provider_credentials`, and the platform's redaction applies only
+  to diagnostic capture ("bulk exports preserve selected tables exactly").
+  The table registry has no way for a module to declare a table
+  non-transferable, so the connector cannot keep that table out of its scope
+  (belimbing#530 asks for that declaration).
+  What leaves is a *reference* into base-integration storage, not key
+  material, and it is useless on another instance; it is still something a
+  package should not carry. Until the platform offers a declaration, an
+  operator sharing the Connector scope is sharing credential references, and
+  the test above fails the day either side of that changes.
+
 ## What this contract cannot yet decide
 
 One question is genuinely open, and this document does not answer it.
