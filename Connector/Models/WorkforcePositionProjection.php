@@ -27,6 +27,7 @@ final class WorkforcePositionProjection extends TenantOwnedModel implements Refe
             'active' => 'boolean',
             'effective_at' => 'immutable_datetime',
             'observed_at' => 'immutable_datetime',
+            'privacy_deleted_at' => 'immutable_datetime',
         ];
     }
 }
