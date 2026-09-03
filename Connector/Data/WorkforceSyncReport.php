@@ -24,6 +24,8 @@ final readonly class WorkforceSyncReport
         public int $conflicts,
         public int $checkpointVersion,
         public \DateTimeImmutable $asOf,
+        /** False when the whole feed was refused: nothing changed and the pass must not be read as a success. */
+        public bool $checkpointAdvanced = true,
     ) {
         if (! in_array($pass, ['bootstrap', 'incremental'], true)) {
             throw new \InvalidArgumentException('Workforce sync passes are bootstrap or incremental.');
@@ -46,5 +48,11 @@ final readonly class WorkforceSyncReport
     public function empty(): bool
     {
         return $this->seen() === 0;
+    }
+
+    /** The feed had records and every one of them was refused; the checkpoint did not move. */
+    public function feedRefused(): bool
+    {
+        return ! $this->checkpointAdvanced;
     }
 }

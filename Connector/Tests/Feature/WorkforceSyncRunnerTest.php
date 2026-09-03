@@ -600,3 +600,60 @@ test('freshness is decided from the provider watermark on the checkpoint and fai
     app(TenantContext::class)->set((int) $otherTenant->id);
     expect(fn () => $policy->for($connectionId, $asOf))->toThrow(ConnectorRecordNotFoundException::class);
 });
+
+test('a bootstrap whose every record is refused raises a feed-refused issue and leaves no checkpoint, so it cannot pass for a clean sync', function (): void {
+    [$tenantId, , $connectionId, $actor] = syncRunnerTenant('Sync All Refused Tenant');
+    $at = syncRunnerAt('2026-09-01T08:00:00+00:00');
+    $foreign = static fn (string $id): ExternalReference => new ExternalReference('other.provider', WorkforceResourceType::Employee, $id);
+    $foreignCompany = new ExternalReference('other.provider', WorkforceResourceType::Company, 'co-x');
+
+    $report = app(WorkforceSyncRunner::class)->bootstrap($actor, syncRunnerProvider([
+        'first' => new WorkforcePage(
+            [
+                new WorkforceEmployee($foreign('x-1'), $foreignCompany, 'Wrong Provider One', true, $at, $at),
+                new WorkforceEmployee($foreign('x-2'), $foreignCompany, 'Wrong Provider Two', true, $at, $at),
+            ],
+            $at,
+            resumeCursor: 'resume-refused',
+            complete: true,
+        ),
+    ]), $connectionId);
+
+    expect([$report->employees, $report->conflicts])->toBe([0, 2])
+        ->and($report->feedRefused())->toBeTrue()
+        ->and($report->checkpointAdvanced)->toBeFalse()
+        ->and($report->checkpointVersion)->toBe(0)
+        ->and(SyncCheckpoint::query()->forTenant($tenantId)->count())->toBe(0)
+        ->and(app(WorkforceFreshnessPolicy::class)->for($connectionId, $at)->staleReason)->toBe(WorkforceFreshness::REASON_NEVER_SYNCHRONIZED)
+        ->and(syncRunnerIssues($tenantId, $connectionId))->toBe([
+            ['kind' => 'sync_conflict', 'key' => 'sync:employee:x-1', 'reason' => 'identity_collision', 'severity' => 'error'],
+            ['kind' => 'sync_conflict', 'key' => 'sync:employee:x-2', 'reason' => 'identity_collision', 'severity' => 'error'],
+            ['kind' => 'sync_feed_refused', 'key' => 'sync:feed:refused', 'reason' => 'every_record_refused', 'severity' => 'error'],
+        ]);
+});
+
+test('an incremental pass whose every change is refused keeps the previous checkpoint so the same pages are presented again', function (): void {
+    [$tenantId, , $connectionId, $actor] = syncRunnerTenant('Sync Incremental Refused Tenant');
+    $t0 = syncRunnerAt('2026-09-01T08:00:00+00:00');
+    $t1 = syncRunnerAt('2026-09-02T08:00:00+00:00');
+    $runner = app(WorkforceSyncRunner::class);
+    $runner->bootstrap($actor, syncRunnerProvider(syncRunnerBootstrapPages($t0)), $connectionId);
+
+    $report = $runner->incremental($actor, syncRunnerProvider(changePages: [
+        'first' => new WorkforceChangePage([
+            new WorkforceDeactivation(syncRunnerRef(WorkforceResourceType::Employee, 'ghost-1'), $t1),
+            new WorkforceDeactivation(syncRunnerRef(WorkforceResourceType::Employee, 'ghost-2'), $t1),
+        ], $t1, resumeCursor: 'resume-must-not-land', complete: true),
+    ]), $connectionId);
+
+    $checkpoint = SyncCheckpoint::query()->forTenant($tenantId)->where('connection_id', $connectionId)->sole();
+
+    expect([$report->deactivations, $report->conflicts])->toBe([0, 2])
+        ->and($report->feedRefused())->toBeTrue()
+        ->and($report->checkpointVersion)->toBe(1)
+        ->and($checkpoint->version)->toBe(1)
+        ->and($checkpoint->resume_cursor)->toBe('resume-after-bootstrap')
+        ->and(SyncCheckpointEvent::query()->forTenant($tenantId)->count())->toBe(1)
+        ->and(collect(syncRunnerIssues($tenantId, $connectionId))->pluck('kind')->all())->toBe(['sync_conflict', 'sync_conflict', 'sync_feed_refused'])
+        ->and(app(WorkforceFreshnessPolicy::class)->for($connectionId, $t1)->isStale())->toBeFalse();
+});

@@ -62,6 +62,10 @@ final class WorkforceSyncRunner
 
     public const ISSUE_KEY_EMPTY_BOOTSTRAP = 'sync:bootstrap:empty';
 
+    public const ISSUE_KIND_FEED_REFUSED = 'sync_feed_refused';
+
+    public const ISSUE_KEY_FEED_REFUSED = 'sync:feed:refused';
+
     public function __construct(
         private TenantContext $tenantContext,
         private ProviderPortResolver $ports,
@@ -109,11 +113,17 @@ final class WorkforceSyncRunner
             );
         }
 
+        $currentVersion = (int) ($this->checkpoints->current($connectionId, $stream)?->version ?? 0);
+
+        if ($this->feedRefused($connectionId, $tally, $page->asOf)) {
+            return $this->report($connectionId, $stream, 'bootstrap', $tally, $currentVersion, $page->asOf, checkpointAdvanced: false);
+        }
+
         $checkpoint = $this->checkpoints->advanceCompletedPage(
             $connectionId,
             $stream,
             new WorkforceChangePage([], $page->asOf, resumeCursor: $page->resumeCursor, complete: true),
-            (int) ($this->checkpoints->current($connectionId, $stream)?->version ?? 0),
+            $currentVersion,
         );
 
         return $this->report($connectionId, $stream, 'bootstrap', $tally, (int) $checkpoint->version, $page->asOf);
@@ -145,9 +155,39 @@ final class WorkforceSyncRunner
             $pageCursor = $this->nextCursor($page, $pageCursor);
         } while (! $page->complete);
 
+        if ($this->feedRefused($connectionId, $tally, $page->asOf)) {
+            return $this->report($connectionId, $stream, 'incremental', $tally, (int) $checkpoint->version, $page->asOf, checkpointAdvanced: false);
+        }
+
         $advanced = $this->checkpoints->advanceCompletedPage($connectionId, $stream, $page, (int) $checkpoint->version);
 
         return $this->report($connectionId, $stream, 'incremental', $tally, (int) $advanced->version, $page->asOf);
+    }
+
+    /**
+     * A pass that turned its entire feed into reconciliation issues did not
+     * synchronise anything, and must not look as though it did: it raises one
+     * more issue naming that fact and leaves the checkpoint where it was, so
+     * the next pass presents the same pages again once someone has looked.
+     *
+     * @param  array<string, int>  $tally
+     */
+    private function feedRefused(int $connectionId, array $tally, \DateTimeImmutable $asOf): bool
+    {
+        if ($tally['conflicts'] === 0 || $this->effected($tally) > 0) {
+            return false;
+        }
+
+        $this->issues->report(
+            $connectionId,
+            self::ISSUE_KEY_FEED_REFUSED,
+            self::ISSUE_KIND_FEED_REFUSED,
+            new ReconciliationIssueDetails(reasonCode: 'every_record_refused', observedCount: $tally['conflicts']),
+            severity: 'error',
+            seenAt: $asOf,
+        );
+
+        return true;
     }
 
     /** @param  array<string, int>  $tally */
@@ -296,8 +336,19 @@ final class WorkforceSyncRunner
             + $tally['deactivations'] + $tally['mergesQueued'] + $tally['conflicts'];
     }
 
+    /**
+     * Records that changed state this pass: written, switched off, brought back, or queued for review.
+     *
+     * @param  array<string, int>  $tally
+     */
+    private function effected(array $tally): int
+    {
+        return $tally['companies'] + $tally['organizationUnits'] + $tally['positions'] + $tally['employees']
+            + $tally['deactivations'] + $tally['reactivations'] + $tally['mergesQueued'];
+    }
+
     /** @param  array<string, int>  $tally */
-    private function report(int $connectionId, string $stream, string $pass, array $tally, int $version, \DateTimeImmutable $asOf): WorkforceSyncReport
+    private function report(int $connectionId, string $stream, string $pass, array $tally, int $version, \DateTimeImmutable $asOf, bool $checkpointAdvanced = true): WorkforceSyncReport
     {
         return new WorkforceSyncReport(
             $connectionId,
@@ -314,6 +365,7 @@ final class WorkforceSyncRunner
             $tally['conflicts'],
             $version,
             $asOf,
+            $checkpointAdvanced,
         );
     }
 
