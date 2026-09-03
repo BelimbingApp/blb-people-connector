@@ -56,7 +56,7 @@ class SkillCatalogDefaults
                     ->where('code', $category['code'])
                     ->exists();
 
-                if (!$exists) {
+                if ($exists === false) {
                     $this->catalog->defineCategory($companyEntityId, $category['code'], $category['name']);
                     $created++;
                 }
