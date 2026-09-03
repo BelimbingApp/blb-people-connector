@@ -37,14 +37,29 @@ afterEach(function (): void {
     app(TenantContext::class)->clear();
 });
 
-function requirementEntity(int $tenantId, string $type): WorkforceEntity
+function requirementEntity(int $tenantId, string $type, ?int $companyEntityId = null): WorkforceEntity
 {
-    return WorkforceEntity::query()->create([
+    $entity = WorkforceEntity::query()->create([
         'tenant_id' => $tenantId,
         'resource_type' => $type,
         'state' => WorkforceEntity::STATE_ACTIVE,
         'first_seen_at' => now(),
     ]);
+
+    if ($type === 'organization_unit' && $companyEntityId !== null) {
+        WorkforceOrganizationUnitProjection::query()->create([
+            'tenant_id' => $tenantId,
+            'workforce_entity_id' => $entity->id,
+            'source_identity_id' => 1,
+            'company_entity_id' => $companyEntityId,
+            'name' => 'Test Department',
+            'active' => true,
+            'effective_at' => now(),
+            'observed_at' => now(),
+        ]);
+    }
+
+    return $entity;
 }
 
 /**
@@ -209,8 +224,8 @@ test('department targeting matches employees by organization unit entity', funct
     $store = app(RequirementProfileStore::class);
     $resolver = app(RequirementResolver::class);
 
-    $deptA = requirementEntity($tenantId, 'organization_unit');
-    $deptB = requirementEntity($tenantId, 'organization_unit');
+    $deptA = requirementEntity($tenantId, 'organization_unit', $companyEntityId);
+    $deptB = requirementEntity($tenantId, 'organization_unit', $companyEntityId);
 
     $draftA = new RequirementProfileDraft(
         code: 'dept.a.profile',
@@ -334,16 +349,10 @@ test('company isolation: department selector cannot reference sibling company or
 
     $companyB = requirementEntity($tenantId, 'company');
 
-    $deptA = WorkforceOrganizationUnitProjection::query()->create([
-        'tenant_id' => $tenantId,
-        'workforce_entity_id' => requirementEntity($tenantId, 'organization_unit')->id,
-        'source_identity_id' => 1,
-        'company_entity_id' => $companyAId,
-        'name' => 'Department A',
-        'active' => true,
-        'effective_at' => now(),
-        'observed_at' => now(),
-    ]);
+    $deptEntity = requirementEntity($tenantId, 'organization_unit', $companyAId);
+    $deptA = WorkforceOrganizationUnitProjection::query()
+        ->where('workforce_entity_id', $deptEntity->id)
+        ->first();
 
     $crossCompanyProfile = new RequirementProfileDraft(
         code: 'cross.company',
@@ -488,7 +497,7 @@ test('multi-selector profiles require all selectors to match', function (): void
     $store = app(RequirementProfileStore::class);
     $resolver = app(RequirementResolver::class);
 
-    $dept = requirementEntity($tenantId, 'organization_unit');
+    $dept = requirementEntity($tenantId, 'organization_unit', $companyEntityId);
 
     $multiSelector = new RequirementProfileDraft(
         code: 'multi.selector',
