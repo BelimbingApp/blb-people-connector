@@ -74,16 +74,43 @@ test('the two columns the merge forgot are now declared where the merge reads th
     expect($forOrganizationUnits)->toContain(Skill::class.'.department_entity_id')
         ->and($forEmployees)->toContain(Skill::class.'.owner_employee_entity_id')
         ->and($forEmployees)->toContain(WorkforceEmployeeProjection::class.'.manager_entity_id');
+
+    // Exact, not "contains": the probe test relies on no real model declaring
+    // a reference under Position except this one, so that a merged position
+    // can only reach a probe's row through the probe. When a real model
+    // legitimately declares a Position column, EXTEND this array and move the
+    // probes to a resource type nothing real declares; do not weaken this
+    // back to toContain, which would let the probe's isolation lapse silently.
+    $forPositions = array_map(fn (array $pair): string => $pair[0].'.'.$pair[1]->column, DomainModels::referencing(WorkforceResourceType::Position));
+    expect($forPositions)->toBe([WorkforceEmployeeProjection::class.'.position_entity_id']);
 });
 
 /**
  * Bring a model into existence for one test: a file in a Models directory,
  * discovered by the same scan production uses.
  *
- * Cleanup cannot rest on `finally` alone — a fatal (say, redeclaring a class
- * whose file was left behind) skips it. So the file is removed if it already
- * exists before it is written, the class is only required if not yet loaded,
- * and .gitignore refuses the file so a leak can never be committed.
+ * Cleanup cannot rest on `finally` alone — a fatal skips it. The three
+ * measures below are not co-equal, and the one that stops the fatal is easy
+ * to mistake for belt-and-braces (blb-people-connector#40):
+ *
+ *  - `class_exists($class, false)` before `require` is the entire defence
+ *    against the sticky fatal. `->with(DomainModels::all())` resolves at
+ *    collection time, which autoloads every file in the Models directory
+ *    before any test body runs — so if a probe file was left behind, its
+ *    class is already declared by the time this helper executes, and an
+ *    unconditional `require` dies with "Cannot redeclare class" in every
+ *    later run until a human deletes the file. Removing this guard passes
+ *    review and turns the next leak into a wedge; it was measured, not
+ *    reasoned: drop the guard, plant a leak, fatal.
+ *  - unlink-before-write does not protect against anything on its own:
+ *    `file_put_contents` already truncates, and when the guard skips the
+ *    `require` the fresh source is never loaded either way. Measured, both
+ *    ways, in the review of #52; it stays because writing over a file you
+ *    did not remove is the habit that produces the next leak.
+ *  - the `.gitignore` entry protects against a leak reaching a commit.
+ *
+ * With all three in place a leaked file makes the run red but recoverable,
+ * and the run cleans it up.
  *
  * @return array{string, class-string}
  */

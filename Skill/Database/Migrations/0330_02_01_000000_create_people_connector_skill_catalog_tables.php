@@ -89,8 +89,12 @@ return new class extends Migration
                 END IF;
                 -- A company merge carries a published scale to the survivor:
                 -- only the owner changes, and only from an entity already
-                -- marked merged into the new owner. Content and lifecycle
-                -- stay immutable.
+                -- marked merged into the new owner. Content, lifecycle and
+                -- audit metadata stay immutable; updated_at is the one column
+                -- deliberately not pinned, because the merge writes it. Every
+                -- column of the table is either pinned here or named as
+                -- permitted in CompanyMergeTest, which fails when a column is
+                -- added and neither (#38).
                 IF NEW.company_entity_id IS DISTINCT FROM OLD.company_entity_id
                     AND NEW.status = OLD.status
                     AND NEW.tenant_id = OLD.tenant_id
@@ -99,6 +103,8 @@ return new class extends Migration
                     AND NEW.version = OLD.version
                     AND NEW.published_at IS NOT DISTINCT FROM OLD.published_at
                     AND NEW.retired_at IS NOT DISTINCT FROM OLD.retired_at
+                    AND NEW.created_at IS NOT DISTINCT FROM OLD.created_at
+                    AND NEW.id = OLD.id
                     AND EXISTS (
                         SELECT 1 FROM people_connector_connector_workforce_entities
                         WHERE id = OLD.company_entity_id
@@ -211,6 +217,7 @@ return new class extends Migration
             .' OR (NEW.company_entity_id != OLD.company_entity_id AND NEW.status = OLD.status'
             .' AND NEW.tenant_id = OLD.tenant_id AND NEW.code = OLD.code AND NEW.name = OLD.name'
             .' AND NEW.version = OLD.version AND NEW.published_at IS OLD.published_at AND NEW.retired_at IS OLD.retired_at'
+            .' AND NEW.created_at IS OLD.created_at AND NEW.id = OLD.id'
             .' AND EXISTS (SELECT 1 FROM people_connector_connector_workforce_entities'
             .' WHERE id = OLD.company_entity_id AND tenant_id = OLD.tenant_id'
             ." AND state = 'merged' AND merged_into_entity_id = NEW.company_entity_id)))"

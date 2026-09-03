@@ -30,6 +30,7 @@ use App\Domains\PeopleConnector\Skill\Services\ProficiencyScaleStore;
 use App\Domains\PeopleConnector\Skill\Services\SkillCatalogStore;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 // Self-contained on purpose: Pest test functions are global once their file
 // loads, so a helper borrowed from another test file exists only when that
@@ -330,4 +331,92 @@ test('merging an organization unit or an employee carries the skill references t
         ->and($newOwner)->not->toBe($owner)
         ->and((int) $skill->refresh()->department_entity_id)->toBe($newDepartment)
         ->and((int) $skill->owner_employee_entity_id)->toBe($newOwner);
+});
+
+/**
+ * A fresh company entity in the tenant, for a move that no merge sanctions.
+ */
+function companyMergeStranger(int $tenantId): int
+{
+    return (int) WorkforceEntity::query()->create([
+        'tenant_id' => $tenantId,
+        'resource_type' => WorkforceResourceType::Company->value,
+        'state' => WorkforceEntity::STATE_ACTIVE,
+        'first_seen_at' => now(),
+    ])->id;
+}
+
+test('categories and skills refuse the wrong survivor at the database, with the model layer stepped around', function (): void {
+    // Scales carry two guards, so weakening one leaves the suite green there.
+    // Categories and skills carry one, and until this test nothing asserted
+    // its destination pin (blb-people-connector#39): widening it on every
+    // definition kept the suite green on both drivers.
+    [$tenantId, $connectionId, $a, $b] = companyMergeFixture();
+    $catalog = app(SkillCatalogStore::class);
+    $category = $catalog->defineCategory($a, 'safety', 'Safety');
+    $skill = $catalog->defineSkill($a, companyMergeSkillDraft($category));
+    $c = companyMergeStranger($tenantId);
+    $rows = [
+        [$category->getTable(), (int) $category->id],
+        [$skill->getTable(), (int) $skill->id],
+    ];
+    $raw = fn (string $table, int $id, int $owner): int => DB::table($table)->where('id', $id)->update(['company_entity_id' => $owner]);
+    $ownerOf = fn (string $table, int $id): int => (int) DB::table($table)->where('id', $id)->value('company_entity_id');
+    // Savepoint-wrapped: a trigger abort poisons the test transaction on Postgres.
+    $refused = fn (callable $write) => expect(fn () => DB::transaction($write))->toThrow(QueryException::class, 'cannot move to another company');
+
+    foreach ($rows as [$table, $id]) {
+        // No merge recorded: neither destination is allowed.
+        $refused(fn () => $raw($table, $id, $b));
+        $refused(fn () => $raw($table, $id, $c));
+    }
+
+    // A merged into C: B is the wrong survivor and is refused; C is permitted;
+    // the reverse move afterwards is refused.
+    WorkforceEntity::query()->whereKey($a)->update(['state' => WorkforceEntity::STATE_MERGED, 'merged_into_entity_id' => $c]);
+
+    foreach ($rows as [$table, $id]) {
+        $refused(fn () => $raw($table, $id, $b));
+        expect($raw($table, $id, $c))->toBe(1)
+            ->and($ownerOf($table, $id))->toBe($c);
+        $refused(fn () => $raw($table, $id, $a));
+    }
+});
+
+test('the scale merge arm pins every column except the owner and updated_at', function (): void {
+    // Enumerated columns are a list someone must remember to extend
+    // (blb-people-connector#38). This inverts the default: every column on
+    // the table must appear below either as pinned — a change alongside the
+    // owner move is refused — or as deliberately permitted. A new column
+    // fails this test until it is placed in one of the two.
+    [$tenantId, $connectionId, $a] = companyMergeFixture();
+    $scales = app(ProficiencyScaleStore::class);
+    $scale = $scales->publish($a, (int) $scales->draft($a, 'core', 'Core', companyMergeLevels())->id);
+    $c = companyMergeStranger($tenantId);
+    WorkforceEntity::query()->whereKey($a)->update(['state' => WorkforceEntity::STATE_MERGED, 'merged_into_entity_id' => $c]);
+    $table = $scale->getTable();
+
+    $pinned = [
+        'id' => 999_999,
+        'tenant_id' => 999_999,
+        'code' => 'core.moved',
+        'name' => 'Renamed',
+        'version' => 99,
+        'status' => 'retired',
+        'published_at' => '2020-01-01 00:00:00',
+        'retired_at' => '2020-01-01 00:00:00',
+        'created_at' => '2020-01-01 00:00:00',
+    ];
+    $permitted = ['company_entity_id', 'updated_at'];
+
+    expect(array_values(array_diff(Schema::getColumnListing($table), array_keys($pinned), $permitted)))
+        ->toBe([], 'every column must be pinned or explicitly permitted');
+
+    foreach ($pinned as $column => $changed) {
+        // Savepoint-wrapped: a trigger abort poisons the test transaction on Postgres.
+        expect(fn () => DB::transaction(fn () => DB::table($table)->where('id', $scale->id)->update(['company_entity_id' => $c, $column => $changed])))
+            ->toThrow(QueryException::class, 'immutable', "column [{$column}] rode along with the owner change");
+    }
+
+    expect(DB::table($table)->where('id', $scale->id)->update(['company_entity_id' => $c, 'updated_at' => '2030-01-01 00:00:00']))->toBe(1);
 });
