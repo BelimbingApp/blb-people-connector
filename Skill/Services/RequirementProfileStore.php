@@ -380,7 +380,7 @@ class RequirementProfileStore
     }
 
     /**
-     * @param  \Illuminate\Support\Collection<int, RequirementProfileSelector>  $newSelectors
+     * @param  Collection<int, RequirementProfileSelector>  $newSelectors
      */
     private function assertNoOverlap(int $tenantId, int $companyEntityId, RequirementProfile $newProfile, Collection $newSelectors): void
     {
@@ -409,8 +409,8 @@ class RequirementProfileStore
     }
 
     /**
-     * @param  \Illuminate\Support\Collection<int, RequirementProfileSelector>  $selectorsA
-     * @param  \Illuminate\Support\Collection<int, RequirementProfileSelector>  $selectorsB
+     * @param  Collection<int, RequirementProfileSelector>  $selectorsA
+     * @param  Collection<int, RequirementProfileSelector>  $selectorsB
      */
     private function selectorsCanOverlap(Collection $selectorsA, Collection $selectorsB): bool
     {
