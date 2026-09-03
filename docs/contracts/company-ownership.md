@@ -755,8 +755,12 @@ contract (blb-people-connector#53):
 - **A package is a faithful copy.** Re-planning a scope package against its
   own source reports every row as `unchanged`, for both scopes.
 - **The Skill scope restores.** Emptied and re-applied, the catalog comes
-  back row-identical; the company guard and the catalog triggers hold on the
-  restored rows because they are the migration's, not the package's. This
+  back row-identical; the company guard (an unpinned query is refused) and
+  the skills-table triggers (skill code, company owner) hold on the restored
+  rows because they are the migration's, not the package's. The scale and
+  level guards are not exercised by that fixture, which creates no scales;
+  the round trip covers 4 of the 14 Connector tables today (#58 covers
+  the projection tables). This
   needed a platform fix: a row whose optional composite reference was null
   (a skill without a department) planned as a conflict until belimbing#528.
 - **A package is instance-level.** It carries every company in the tenant.

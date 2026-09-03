@@ -16,6 +16,7 @@ use App\Base\Settings\Contracts\SettingsService;
 use App\Base\Tenancy\Contracts\TenantContext;
 use App\Domains\PeopleConnector\Connector\Data\ProviderAuthenticationRequest;
 use App\Domains\PeopleConnector\Connector\Data\ProviderScope;
+use App\Domains\PeopleConnector\Connector\Exceptions\MissingCompanyScopeException;
 use App\Domains\PeopleConnector\Connector\Services\ProviderConnectionStore;
 use App\Domains\PeopleConnector\Connector\Services\ProviderCredentialStore;
 use App\Domains\PeopleConnector\Connector\Testing\CompanyIsolationContract;
@@ -38,6 +39,12 @@ use Illuminate\Support\Facades\Storage;
  */
 const PEOPLE_CONNECTOR_SHARE_SCOPE = 'app/Domains/PeopleConnector/Connector';
 const PEOPLE_CONNECTOR_SKILL_SHARE_SCOPE = 'app/Domains/PeopleConnector/Skill';
+
+beforeEach(function (): void {
+    // Packages are real files; keep them out of storage/app/private like the
+    // platform's own DataShare tests do.
+    Storage::fake('local');
+});
 
 afterEach(function (): void {
     app(TenantContext::class)->clear();
@@ -134,7 +141,7 @@ test('both connector scopes export every row faithfully: a re-plan against the s
         ->and($plan->summary['counts'])->toBe(['insert' => 0, 'unchanged' => $rowCount, 'conflict' => 0]);
 })->with([PEOPLE_CONNECTOR_SHARE_SCOPE, PEOPLE_CONNECTOR_SKILL_SHARE_SCOPE]);
 
-test('the skill scope restores into an emptied catalog identically, with the company guard and the triggers still standing', function (): void {
+test('the skill scope restores into an emptied catalog identically, with the company guard and the skills-table triggers still standing', function (): void {
     [$fixture, $alphaSkill, $betaSkill] = connectorShareFixture();
     $before = connectorShareSnapshot(PEOPLE_CONNECTOR_SKILL_SHARE_SCOPE);
     ['bundle' => $bundle, 'export' => $export] = connectorSharePublish(PEOPLE_CONNECTOR_SKILL_SHARE_SCOPE);
@@ -153,11 +160,19 @@ test('the skill scope restores into an emptied catalog identically, with the com
 
     expect(connectorShareSnapshot(PEOPLE_CONNECTOR_SKILL_SHARE_SCOPE))->toEqual($before);
 
-    // Restored rows are still company-owned rows: pinned to the wrong company
-    // they are invisible, and the database guards are the migration's, not
-    // the package's, so they still refuse.
+    // Restored rows are still company-owned rows. The guard is the model's,
+    // not the package's: a query that pins no company is refused outright
+    // (deleting RequireCompanyScope from CompanyOwned turns this red — the
+    // forCompany() assertions alone stayed green without it), and pinned to
+    // one company the other's rows are invisible.
+    expect(fn () => Skill::query()->forTenant($fixture->tenantId)->get())->toThrow(MissingCompanyScopeException::class);
     expect(Skill::query()->forCompany($fixture->tenantId, $fixture->alphaCompanyEntityId)->pluck('code')->all())->toBe(['alpha.forklift'])
         ->and(Skill::query()->forCompany($fixture->tenantId, $fixture->betaCompanyEntityId)->pluck('code')->all())->toBe(['beta.forklift']);
+
+    // The database guards on the skills table — the skill-code trigger and
+    // the company-owner trigger — are the migration's, not the package's.
+    // The scale and level guards are not exercised here: this fixture
+    // creates no scales.
     expect(fn () => DB::transaction(fn () => DB::table('people_connector_skill_skills')->where('id', $alphaSkill->id)->update(['code' => 'renamed'])))
         ->toThrow(QueryException::class);
     expect(fn () => DB::transaction(fn () => DB::table('people_connector_skill_skills')->where('id', $betaSkill->id)->update(['company_entity_id' => $fixture->alphaCompanyEntityId])))
@@ -207,7 +222,10 @@ test('a scope export is instance-level: one package carries every company in the
     // gaining a column — fails here instead of in an export nobody read.
     expect(count($records['people_connector_connector_workforce_companies'] ?? []))->toBe(2)
         ->and($credential)->not->toBeNull()
-        ->and($credential['secret_reference'] ?? null)->toBe('base-integration:alpha-secret-reference')
+        // When this fails with null, belimbing#530 has landed (the platform now
+        // redacts or excludes this table): update the contract section and this
+        // assertion deliberately. It is a notification, not a break.
+        ->and($credential['secret_reference'] ?? null)->toBe('base-integration:alpha-secret-reference', 'secret_reference changed: is belimbing#530 fixed? Update docs/contracts/company-ownership.md and this assertion.')
         ->and($credential['key_id'] ?? null)->toBe('key-2026-09')
         ->and(array_keys($credential))->toBe([
             'audience', 'connection_id', 'created_at', 'credential_id', 'expires_at', 'id', 'issued_at',
