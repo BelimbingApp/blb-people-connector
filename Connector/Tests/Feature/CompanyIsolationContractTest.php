@@ -81,6 +81,36 @@ test('two companies in one tenant are visible to each other only through the com
         ->toThrow(MissingCompanyScopeException::class, 'is company-owned');
 });
 
+test('an array-form where conjunction pins the company axis', function (): void {
+    $fixture = CompanyIsolationContract::twoCompaniesInOneTenant();
+    app(TenantContext::class)->set($fixture->tenantId);
+
+    [$alphaSkill] = companyIsolationRivalSkills($fixture);
+
+    // Laravel wraps its convenient array form in a Nested query. The guard
+    // must recognise that AND-only group just as it recognises fluent where()
+    // calls; otherwise firstOrCreate() and updateOrCreate() fail before they
+    // can inspect an already-constrained row.
+    expect(Skill::query()->where([
+        'tenant_id' => $fixture->tenantId,
+        'company_entity_id' => $fixture->alphaCompanyEntityId,
+    ])->sole()->id)->toBe($alphaSkill->id);
+
+    expect(Skill::query()->firstOrCreate([
+        'tenant_id' => $fixture->tenantId,
+        'company_entity_id' => $fixture->alphaCompanyEntityId,
+        'code' => 'alpha.public',
+    ])->id)->toBe($alphaSkill->id);
+
+    expect(Skill::query()->updateOrCreate([
+        'tenant_id' => $fixture->tenantId,
+        'company_entity_id' => $fixture->alphaCompanyEntityId,
+        'code' => 'alpha.public',
+    ], [
+        'name' => 'Alpha Public',
+    ])->id)->toBe($alphaSkill->id);
+});
+
 test('a user is offered only the workforce company their own platform company connects to', function (): void {
     $fixture = CompanyIsolationContract::twoCompaniesInOneTenant();
     app(TenantContext::class)->set($fixture->tenantId);
@@ -150,6 +180,17 @@ test('a predicate on a joined table cannot pin the base table', function (): voi
     expect(fn () => $bypass()->get())->toThrow(MissingCompanyScopeException::class)
         ->and(fn () => $bypass()->update(['name' => 'DEFACED VIA JOIN']))->toThrow(MissingCompanyScopeException::class)
         ->and(fn () => $bypass()->delete())->toThrow(MissingCompanyScopeException::class);
+
+    // A nested group cannot turn a comparison to a joined table into an
+    // outer-query correlation. Array-form wheres are nested too, so this is
+    // the boundary that keeps supporting them from reopening the join bypass.
+    $nestedBypass = fn () => Skill::query()
+        ->join($categories.' as c', fn ($join) => $join->on('c.tenant_id', '=', $skills.'.tenant_id'))
+        ->where($skills.'.tenant_id', $fixture->tenantId)
+        ->where(fn ($query) => $query->whereColumn($skills.'.company_entity_id', '=', 'c.company_entity_id'))
+        ->select($skills.'.*');
+
+    expect(fn () => $nestedBypass()->get())->toThrow(MissingCompanyScopeException::class);
 
     expect($betaSkill->refresh()->name)->toBe('Beta Secret Process');
 
