@@ -104,6 +104,54 @@ test('a scale cannot move to a sibling company at the model or database layer', 
     expect((int) $scale->refresh()->company_entity_id)->toBe($companyEntityId);
 });
 
+test('when both scale guards would refuse, the owner guard is the one that speaks', function (): void {
+    // people_connector_skill_proficiency_scales carries two BEFORE UPDATE
+    // triggers. The test above deliberately uses a DRAFT so only the owner
+    // guard can fire, because that was the one configuration both drivers
+    // agreed on -- an honest accommodation, and the reason #37 exists.
+    //
+    // Measured since (#37): PostgreSQL fires BEFORE row triggers in trigger
+    // NAME order, SQLite in REVERSE CREATION order. Both therefore reach the
+    // owner guard first, by two mechanisms with nothing to do with each other:
+    // pcs_scale_company_owner_guard_trigger sorts before pcs_scale_guard_trigger,
+    // and the SQLite owner guard is the last CREATE TRIGGER in the migration.
+    //
+    // Nothing recorded that either fact was load-bearing, so renaming a
+    // trigger reordered PostgreSQL alone and moving a statement reordered
+    // SQLite alone, each silently and on one lane only. This pins it.
+    [$tenantId, $companyEntityId] = proficiencyScaleFixture('Scale Trigger Order Tenant');
+    $store = app(ProficiencyScaleStore::class);
+    $scale = $store->draft($companyEntityId, 'core', 'Core', proficiencyScaleLevels());
+    $store->publish($companyEntityId, (int) $scale->id);
+
+    $sibling = WorkforceEntity::query()->create([
+        'tenant_id' => $tenantId,
+        'resource_type' => 'company',
+        'state' => WorkforceEntity::STATE_ACTIVE,
+        'first_seen_at' => now(),
+    ]);
+
+    // Published AND moving company with no merge record, so BOTH guards would
+    // refuse. Which message surfaces is decided purely by firing order.
+    //
+    // That both are genuinely armed is not visible from here, and this test
+    // does not prove it: the owner guard alone is exercised by 'a scale
+    // cannot move to a sibling company at the model or database layer' above,
+    // and the immutability guard alone by 'published-scale immutability holds
+    // at the database layer against builder and raw writes' below. Without
+    // that pair this test would pass just as happily with one trigger missing.
+    // Savepoint-wrapped: a trigger abort poisons the test transaction on Postgres.
+    expect(fn () => DB::transaction(fn () => ProficiencyScale::query()
+        ->movingCompany('Deliberately bypasses the model layer to prove which database trigger speaks first.')
+        ->forCompany($tenantId, $companyEntityId)
+        ->update(['company_entity_id' => $sibling->id])))
+        ->toThrow(QueryException::class, 'cannot move to another company');
+
+    // Both guards held: the row neither moved nor lost its published status.
+    expect((int) $scale->refresh()->company_entity_id)->toBe($companyEntityId)
+        ->and($scale->status)->toBe(ProficiencyScaleStatus::Published);
+});
+
 test('a published scale refuses mutation of itself and its levels', function (): void {
     [, $companyEntityId] = proficiencyScaleFixture();
     $store = app(ProficiencyScaleStore::class);

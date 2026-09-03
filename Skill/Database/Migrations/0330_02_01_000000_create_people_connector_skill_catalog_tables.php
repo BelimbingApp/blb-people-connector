@@ -183,6 +183,14 @@ return new class extends Migration
                 BEFORE UPDATE ON people_connector_skill_skills
                 FOR EACH ROW EXECUTE FUNCTION pcs_company_owner_guard();
 
+            -- This name is load-bearing. PostgreSQL fires BEFORE row triggers
+            -- in trigger NAME order, and pcs_scale_company_owner_guard_trigger
+            -- sorts before pcs_scale_guard_trigger, so a write that violates
+            -- both gets the owner-guard message. Renaming either -- including
+            -- to something more descriptive -- reorders them, on PostgreSQL
+            -- only. SQLite reaches the same order by an unrelated route; see
+            -- createSqliteGuards(). Pinned by the trigger-order test in
+            -- Skill/Tests/Feature/ProficiencyScaleTest.php. See #37.
             CREATE TRIGGER pcs_scale_company_owner_guard_trigger
                 BEFORE UPDATE ON people_connector_skill_proficiency_scales
                 FOR EACH ROW EXECUTE FUNCTION pcs_company_owner_guard();
@@ -281,6 +289,18 @@ return new class extends Migration
             ." AND state = 'merged' AND merged_into_entity_id = NEW.company_entity_id)"
             ." BEGIN SELECT RAISE(ABORT, 'catalog row belongs to its company entity and cannot move to another company'); END",
         );
+        // The POSITION of this statement is load-bearing. SQLite fires
+        // BEFORE UPDATE triggers in reverse creation order -- OBSERVED, not
+        // documented: lang_createtrigger.html specifies no firing order for
+        // multiple triggers of the same kind, and this was measured on 3.45.1
+        // (pdo_sqlite) and 3.51.2 (CLI). Treat it as a fact about the builds
+        // we ship against, not a guarantee. The PostgreSQL half IS documented,
+        // which is why the two comments do not read alike. Being created
+        // after pcs_scale_update_guard is what makes the owner guard speak
+        // first when a write violates both. Moving it earlier -- which reads
+        // as tidying -- reorders them, on SQLite only. PostgreSQL reaches the
+        // same order by trigger name instead. Pinned by the trigger-order test
+        // in Skill/Tests/Feature/ProficiencyScaleTest.php. See #37.
         DB::statement(
             'CREATE TRIGGER pcs_scale_company_owner_guard BEFORE UPDATE ON people_connector_skill_proficiency_scales'
             .' WHEN NEW.company_entity_id != OLD.company_entity_id AND NOT EXISTS ('
