@@ -58,13 +58,16 @@ function connectorShareBecome(string $id, string $role): void
     $settings->set('data_share.instance.role', $role);
 }
 
-/** @return array{bundle: DataShareTransferOfferBundle, export: DataShareExportResult} */
-function connectorSharePublish(string $scope): array
+/**
+ * @param  array<string, list<string>>  $redactions  operator-chosen columns whose values leave as null (belimbing#530)
+ * @return array{bundle: DataShareTransferOfferBundle, export: DataShareExportResult}
+ */
+function connectorSharePublish(string $scope, array $redactions = []): array
 {
     connectorShareBecome('connector-source-dev', 'development');
     $tables = array_column(app(DataShareScopeCatalog::class)->scope($scope)->tables, 'table');
-    $preview = app(DataSharePackageExporter::class)->preview($scope, $tables);
-    $bundle = app(DataShareTransferOfferManager::class)->publish($scope, $tables, $preview->previewHash, actorId: 9001);
+    $preview = app(DataSharePackageExporter::class)->preview($scope, $tables, $redactions);
+    $bundle = app(DataShareTransferOfferManager::class)->publish($scope, $tables, $preview->previewHash, actorId: 9001, redactions: $redactions);
     $offer = DataShareTransferOffer::query()->where('offer_id', $bundle->offerId)->firstOrFail();
     $stream = Storage::disk('local')->readStream($offer->package_path);
 
@@ -236,4 +239,63 @@ test('a scope export is instance-level: one package carries every company in the
     // against its source: it is a faithful copy, secrets references included.
     $plan = app(DataShareImportPlanner::class)->plan(connectorShareReceive($bundle, $export));
     expect($plan->actions()->where('table_name', 'people_connector_connector_provider_credentials')->value('action'))->toBe('unchanged');
+});
+
+test('an operator can redact the credential reference on export, and the platform names what that costs', function (): void {
+    [$fixture] = connectorShareFixture();
+    $connections = app(ProviderConnectionStore::class);
+    $connection = $connections->active(ProviderScope::company((int) $fixture->alphaCompany->id));
+    $issuedAt = new DateTimeImmutable('2026-09-02T00:00:00+00:00');
+    app(ProviderCredentialStore::class)->issue(
+        new ProviderAuthenticationRequest($fixture->tenantId, (int) $connection->id, 'blb-people-connector', ['employee_directory:read']),
+        $connection,
+        'key-2026-09',
+        'base-integration:alpha-secret-reference',
+        $issuedAt,
+        $issuedAt->modify('+5 minutes'),
+    );
+    $table = 'people_connector_connector_provider_credentials';
+
+    // The platform's preview suggests the two columns whose names match its
+    // pattern, ticks nothing, and — once the operator ticks
+    // secret_reference — says exactly what this repository measured for
+    // #53: the column is NOT NULL, so every credential row becomes
+    // unrestorable at the destination.
+    connectorShareBecome('connector-source-dev', 'development');
+    $tables = array_column(app(DataShareScopeCatalog::class)->scope(PEOPLE_CONNECTOR_SHARE_SCOPE)->tables, 'table');
+    $preview = app(DataSharePackageExporter::class)->preview(PEOPLE_CONNECTOR_SHARE_SCOPE, $tables, [$table => ['secret_reference']]);
+    $columns = collect($preview->advisories[$table])->keyBy('name');
+
+    expect($columns['secret_reference']['suggested'])->toBeTrue()
+        ->and($columns['credential_id']['suggested'])->toBeTrue()
+        ->and($columns['key_id']['suggested'])->toBeFalse()
+        ->and($columns['secret_reference']['redacted'])->toBeTrue()
+        ->and($columns['secret_reference']['level'])->toBe('unrestorable')
+        ->and($columns['secret_reference']['message'])->toContain('1 rows')->toContain($table);
+
+    // With the redaction chosen, the reference does not leave, and the
+    // package re-plans the credential row as a conflict against its source.
+    ['bundle' => $bundle, 'export' => $export] = connectorSharePublish(PEOPLE_CONNECTOR_SHARE_SCOPE, [$table => ['secret_reference']]);
+    $records = [];
+    $stream = Storage::disk('local')->readStream($export->path);
+
+    try {
+        app(DataSharePackageReader::class)->inspect($stream, function ($scope, $tableDefinition, array $record) use (&$records): void {
+            $records[$tableDefinition->table][] = $record['values'];
+        });
+    } finally {
+        if (is_resource($stream)) {
+            fclose($stream);
+        }
+    }
+
+    // Presence and value asserted separately: `?? 'missing'` would read a
+    // present-but-null value (the redacted one) as absent.
+    expect((array) $export->manifest['redactions'])->toBe([$table => ['secret_reference']])
+        ->and(array_key_exists('secret_reference', $records[$table][0]))->toBeTrue()
+        ->and($records[$table][0]['secret_reference'])->toBeNull()
+        ->and($records[$table][0]['key_id'] ?? null)->toBe('key-2026-09');
+
+    $plan = app(DataShareImportPlanner::class)->plan(connectorShareReceive($bundle, $export));
+    expect($plan->actions()->where('table_name', $table)->value('action'))->toBe('conflict');
 });
