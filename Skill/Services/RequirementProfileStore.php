@@ -364,7 +364,7 @@ class RequirementProfileStore
                 );
             }
 
-            if (!$skill->active) {
+            if ($skill->active === false) {
                 throw new InvalidRequirementProfileException(
                     "Skill [{$item->skillId}] is inactive and cannot be added to a requirement profile.",
                 );

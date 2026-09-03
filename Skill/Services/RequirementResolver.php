@@ -122,7 +122,7 @@ class RequirementResolver
 
         foreach ($selectors as $selector) {
             $selectorMatch = $this->matchesSelector($selector, $employeeData);
-            if (!$selectorMatch['matches']) {
+            if ($selectorMatch['matches'] === false) {
                 return [
                     'matches' => false,
                     'explanation' => "Failed on selector: {$selectorMatch['explanation']}",
