@@ -35,7 +35,7 @@ final class SchedulerPrincipalGrants
         $companyId = $connection->company_id === null ? null : (int) $connection->company_id;
         $principalId = (int) $connection->id;
 
-        DB::transaction(function () use ($connection, $companyId, $principalId): void {
+        DB::transaction(function () use ($companyId, $principalId): void {
             foreach (self::directoryReadCapabilities() as $capability) {
                 $key = ProviderPortAuthorization::permissionFor($capability, 'read');
                 PrincipalCapability::query()->updateOrCreate(

@@ -1,5 +1,9 @@
 <?php
 
+use App\Base\Authz\Contracts\AuthorizationService;
+use App\Base\Authz\DTO\Actor;
+use App\Base\Authz\DTO\AuthorizationDecision;
+use App\Base\Authz\DTO\ResourceContext;
 use App\Base\Authz\Enums\PrincipalType;
 use App\Base\Authz\Models\PrincipalCapability;
 use App\Base\Tenancy\Contracts\TenantContext;
@@ -16,6 +20,7 @@ use App\Domains\PeopleConnector\Connector\Data\ProviderHealth;
 use App\Domains\PeopleConnector\Connector\Data\ProviderPortAuthorization;
 use App\Domains\PeopleConnector\Connector\Data\ProviderScope;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceChangePage;
+use App\Domains\PeopleConnector\Connector\Data\WorkforceChangeRequest;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceCompany;
 use App\Domains\PeopleConnector\Connector\Data\WorkforcePage;
 use App\Domains\PeopleConnector\Connector\Data\WorkforcePageRequest;
@@ -23,12 +28,13 @@ use App\Domains\PeopleConnector\Connector\Enums\CapabilityDelivery;
 use App\Domains\PeopleConnector\Connector\Enums\PeopleCapability;
 use App\Domains\PeopleConnector\Connector\Enums\ProviderHealthState;
 use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
-use App\Domains\PeopleConnector\Connector\Models\ProviderConnection;
 use App\Domains\PeopleConnector\Connector\Services\ProviderConnectionStore;
 use App\Domains\PeopleConnector\Connector\Services\ProviderRegistry;
 use App\Domains\PeopleConnector\Connector\Services\SchedulerPrincipal;
 use App\Domains\PeopleConnector\Connector\Services\SchedulerPrincipalGrants;
+use App\Domains\PeopleConnector\Connector\Services\SyncCheckpointStore;
 use App\Domains\PeopleConnector\Connector\Services\WorkforceFreshnessPolicy;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Artisan;
 
 afterEach(function (): void {
@@ -126,16 +132,16 @@ test('people-connector:sync bootstraps an active connection through the schedule
     // unless registered in platform authz.php. The runner's own suite stubs the
     // same way — this test is about minting the SCHEDULER actor and driving the
     // command, not about publishing every directory permission into Base Authz.
-    app()->instance(\App\Base\Authz\Contracts\AuthorizationService::class, new class implements \App\Base\Authz\Contracts\AuthorizationService
+    app()->instance(AuthorizationService::class, new class implements AuthorizationService
     {
-        public function can(\App\Base\Authz\DTO\Actor $actor, string $capability, ?\App\Base\Authz\DTO\ResourceContext $resource = null, array $context = []): \App\Base\Authz\DTO\AuthorizationDecision
+        public function can(Actor $actor, string $capability, ?ResourceContext $resource = null, array $context = []): AuthorizationDecision
         {
-            return \App\Base\Authz\DTO\AuthorizationDecision::allow();
+            return AuthorizationDecision::allow();
         }
 
-        public function authorize(\App\Base\Authz\DTO\Actor $actor, string $capability, ?\App\Base\Authz\DTO\ResourceContext $resource = null, array $context = []): void {}
+        public function authorize(Actor $actor, string $capability, ?ResourceContext $resource = null, array $context = []): void {}
 
-        public function filterAllowed(\App\Base\Authz\DTO\Actor $actor, string $capability, iterable $resources, array $context = []): \Illuminate\Support\Collection
+        public function filterAllowed(Actor $actor, string $capability, iterable $resources, array $context = []): Collection
         {
             return collect($resources);
         }
@@ -185,7 +191,7 @@ test('people-connector:sync bootstraps an active connection through the schedule
                     return $this->page;
                 }
 
-                public function changes(\App\Domains\PeopleConnector\Connector\Data\WorkforceChangeRequest $request): WorkforceChangePage
+                public function changes(WorkforceChangeRequest $request): WorkforceChangePage
                 {
                     return new WorkforceChangePage([], $this->page->asOf, resumeCursor: $this->page->resumeCursor, complete: true);
                 }
@@ -205,6 +211,6 @@ test('people-connector:sync bootstraps an active connection through the schedule
         ->and(Artisan::output())->toContain('pass=bootstrap');
 
     app(TenantContext::class)->set((int) $tenant->id);
-    expect(app(\App\Domains\PeopleConnector\Connector\Services\SyncCheckpointStore::class)
+    expect(app(SyncCheckpointStore::class)
         ->current((int) $connection->id, WorkforceFreshnessPolicy::stream()))->not->toBeNull();
 });

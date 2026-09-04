@@ -2,7 +2,9 @@
 
 namespace App\Domains\PeopleConnector\Connector\Console\Commands;
 
+use App\Base\Authz\DTO\Actor;
 use App\Base\Tenancy\Contracts\TenantContext;
+use App\Domains\PeopleConnector\Connector\Contracts\ProviderAdapter;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceSyncReport;
 use App\Domains\PeopleConnector\Connector\Exceptions\WorkforceSyncException;
 use App\Domains\PeopleConnector\Connector\Models\ProviderConnection;
@@ -105,8 +107,8 @@ final class SyncWorkforceCommand extends Command
     private function runPass(
         WorkforceSyncRunner $runner,
         SyncCheckpointStore $checkpoints,
-        \App\Base\Authz\DTO\Actor $actor,
-        \App\Domains\PeopleConnector\Connector\Contracts\ProviderAdapter $provider,
+        Actor $actor,
+        ProviderAdapter $provider,
         ProviderConnection $connection,
         bool $bootstrap,
     ): WorkforceSyncReport {
