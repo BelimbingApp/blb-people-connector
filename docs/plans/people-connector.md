@@ -64,12 +64,24 @@ This persistence foundation is only a partial delivery of [1004]/[1006]. It does
 
 ### Training lifecycle
 
-- [ ] Implement catalogues, sessions, and the event-level training register.
-- [ ] Implement requests, HOD/HR/approver decisions, and budgets.
+- [x] Implement catalogues, sessions, and the event-level training register.
+- [ ] Implement requests, HOD/HR/approver decisions, and budgets. {desktop-terra — people#33}
 - [ ] Implement participant attendance, results, certificates, evidence, and due dates.
 - [ ] Implement participant evaluations and HR follow-up.
 - [ ] Implement 30/60/90-day effectiveness review linked to verified reassessment.
 - [ ] Implement employee skill register, passport, print/export, and stale-provider disclosure.
+
+#### Training request aggregate
+
+Training requests are a connector-owned, company-scoped aggregate that records
+the business need and approval history before an event is linked. The aggregate
+must not create participant truth or update a skill score: a request can name a
+skill, a development-action reference, and a proposed course/event, but each is
+an optional source link with its own owner. The first slice establishes the
+immutable decision trail, controlled request lifecycle, company/tenant
+isolation, and explicit HOD, HR, and approver authority. A later participant
+slice resolves a group request to individual attendance rows; it must not reuse
+the request as a participant record.
 
 ### Adoption and release
 
