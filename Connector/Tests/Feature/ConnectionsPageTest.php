@@ -1,18 +1,47 @@
 <?php
 
+use App\Base\Authz\Contracts\AuthorizationService;
+use App\Base\Authz\DTO\Actor;
+use App\Base\Authz\DTO\AuthorizationDecision;
+use App\Base\Authz\DTO\ResourceContext;
+use App\Base\Authz\Enums\AuthorizationReasonCode;
 use App\Base\Tenancy\Contracts\TenantContext;
+use App\Core\User\Models\User;
 use App\Domains\PeopleConnector\Connector\Contracts\ProviderAdapter;
 use App\Domains\PeopleConnector\Connector\Data\CapabilitySet;
 use App\Domains\PeopleConnector\Connector\Data\ProviderDescriptor;
 use App\Domains\PeopleConnector\Connector\Data\ProviderHealth;
 use App\Domains\PeopleConnector\Connector\Enums\ProviderHealthState;
 use App\Domains\PeopleConnector\Connector\Livewire\Connections\Index;
+use App\Domains\PeopleConnector\Connector\Models\ProviderConnection;
 use App\Domains\PeopleConnector\Connector\Services\ProviderRegistry;
+use App\Domains\PeopleConnector\Connector\Testing\CompanyIsolationContract;
+use Illuminate\Support\Collection;
 use Livewire\Livewire;
 
 beforeEach(function (): void {
     app(TenantContext::class)->set(1);
 });
+
+function connectionsPageAllowingIdentityManagement(): void
+{
+    app()->instance(AuthorizationService::class, new class implements AuthorizationService
+    {
+        public function can(Actor $actor, string $capability, ?ResourceContext $resource = null, array $context = []): AuthorizationDecision
+        {
+            return $capability === 'people-connector.identity.manage'
+                ? AuthorizationDecision::allow()
+                : AuthorizationDecision::deny(AuthorizationReasonCode::DENIED_MISSING_CAPABILITY);
+        }
+
+        public function authorize(Actor $actor, string $capability, ?ResourceContext $resource = null, array $context = []): void {}
+
+        public function filterAllowed(Actor $actor, string $capability, iterable $resources, array $context = []): Collection
+        {
+            return collect($resources);
+        }
+    });
+}
 
 test('connections page renders the honest disconnected state when no adapter is configured', function (): void {
     app()->forgetInstance(ProviderRegistry::class);
@@ -102,4 +131,34 @@ test('connections page warns about a missing configured adapter even when anothe
     Livewire::test(Index::class)
         ->assertSee('configured People provider missing.adapter is unavailable')
         ->assertSee('Other Provider');
+});
+
+test('connections page links only reconciliation queues attributed to the signed-in company', function (): void {
+    $fixture = CompanyIsolationContract::twoCompaniesInOneTenant();
+    app(TenantContext::class)->set($fixture->tenantId);
+    $user = User::factory()->create(['company_id' => $fixture->alphaCompany->id]);
+    connectionsPageAllowingIdentityManagement();
+
+    $alphaConnection = ProviderConnection::query()
+        ->forTenant($fixture->tenantId)
+        ->where('company_id', $fixture->alphaCompany->id)
+        ->sole();
+    $siblingConnection = ProviderConnection::query()
+        ->forTenant($fixture->tenantId)
+        ->where('company_id', $fixture->betaCompany->id)
+        ->sole();
+    $unattributedConnection = ProviderConnection::query()->create([
+        'tenant_id' => $fixture->tenantId,
+        'company_id' => null,
+        'scope_key' => 'tenant',
+        'provider_id' => 'test.tenant-wide',
+        'status' => ProviderConnection::STATUS_ACTIVE,
+    ]);
+
+    Livewire::actingAs($user)
+        ->test(Index::class)
+        ->assertSee('Open reconciliation queue')
+        ->assertSee(route('admin.people-connector.reconciliation.index', $alphaConnection->id))
+        ->assertDontSee(route('admin.people-connector.reconciliation.index', $siblingConnection->id))
+        ->assertDontSee(route('admin.people-connector.reconciliation.index', $unattributedConnection->id));
 });

@@ -13,6 +13,7 @@ use App\Domains\PeopleConnector\Connector\Data\ExternalReference;
 use App\Domains\PeopleConnector\Connector\Data\ProviderScope;
 use App\Domains\PeopleConnector\Connector\Data\ReconciliationIssueDetails;
 use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
+use App\Domains\PeopleConnector\Connector\Exceptions\ConnectorRecordNotFoundException;
 use App\Domains\PeopleConnector\Connector\Exceptions\ReconciliationIssueConflictException;
 use App\Domains\PeopleConnector\Connector\Livewire\Reconciliation\Index;
 use App\Domains\PeopleConnector\Connector\Models\ReconciliationIssue;
@@ -65,6 +66,31 @@ function reconciliationPageDenyingAuthz(): void
         public function filterAllowed(Actor $actor, string $capability, iterable $resources, array $context = []): Collection
         {
             return collect();
+        }
+    });
+}
+
+/** @param array<int, array{actor: Actor, capability: string, context: array<string, mixed>}> $calls */
+function reconciliationPageCapturingAuthz(array &$calls): void
+{
+    app()->instance(AuthorizationService::class, new class($calls) implements AuthorizationService
+    {
+        /** @param array<int, array{actor: Actor, capability: string, context: array<string, mixed>}> $calls */
+        public function __construct(private array &$calls) {}
+
+        public function can(Actor $actor, string $capability, ?ResourceContext $resource = null, array $context = []): AuthorizationDecision
+        {
+            return AuthorizationDecision::allow();
+        }
+
+        public function authorize(Actor $actor, string $capability, ?ResourceContext $resource = null, array $context = []): void
+        {
+            $this->calls[] = compact('actor', 'capability', 'context');
+        }
+
+        public function filterAllowed(Actor $actor, string $capability, iterable $resources, array $context = []): Collection
+        {
+            return collect($resources);
         }
     });
 }
@@ -185,6 +211,31 @@ test('identity management permission is required before a queue can be opened', 
     Livewire::actingAs($user)
         ->test(Index::class, ['connectionId' => $connectionId])
         ->assertForbidden();
+});
+
+test('the HTTP queue route authorizes the exact identity manager actor and capability', function (): void {
+    [$tenant, $company] = createTenantWithCompany(['name' => 'Reconciliation Route Tenant']);
+    $connectionId = reconciliationPageConnection((int) $tenant->id, (int) $company->id);
+    $user = User::factory()->create(['company_id' => $company->id]);
+    $calls = [];
+    reconciliationPageCapturingAuthz($calls);
+    $this->withoutVite();
+
+    $this->actingAs($user)
+        ->get(route('admin.people-connector.reconciliation.index', $connectionId))
+        ->assertOk();
+
+    expect($calls)->toHaveCount(2);
+
+    foreach ($calls as $call) {
+        expect($call['capability'])->toBe('people-connector.identity.manage')
+            ->and($call['actor']->id)->toBe((int) $user->id)
+            ->and($call['actor']->companyId)->toBe((int) $company->id)
+            ->and($call['actor']->tenantId)->toBe((int) $tenant->id);
+    }
+
+    expect($calls[0]['context'])->toBe(['route' => 'admin.people-connector.reconciliation.index'])
+        ->and($calls[1]['context'])->toBe([]);
 });
 
 test('a connection id from another tenant is never visible to an identity manager', function (): void {
@@ -429,4 +480,37 @@ test('a post-mutation resolution rejection rolls back the reviewed merge decisio
         ->and($identities->resolve($connectionId, $old)->id)->toBe($oldIdentity->workforce_entity_id)
         ->and($identities->resolve($connectionId, $survivor)->id)->toBe($survivorIdentity->workforce_entity_id)
         ->and($oldIdentity->workforce_entity_id)->not->toBe($survivorIdentity->workforce_entity_id);
+});
+
+test('a post-mutation resolution rejection rolls back the reviewed remap decision', function (): void {
+    [$tenant, $company] = createTenantWithCompany(['name' => 'Reconciliation Remap Rollback Tenant']);
+    $connectionId = reconciliationPageConnection((int) $tenant->id, (int) $company->id);
+    $decisionAt = new DateTimeImmutable('2026-09-04T12:00:00+00:00');
+    $observedAt = $decisionAt->modify('-1 hour');
+    $old = new ExternalReference('test.reconciliation', WorkforceResourceType::Employee, 'EMP-REMAP-ROLLBACK-OLD');
+    $replacement = new ExternalReference('test.reconciliation', WorkforceResourceType::Employee, 'EMP-REMAP-ROLLBACK-NEW');
+    $identities = app(WorkforceIdentityStore::class);
+    $oldIdentity = $identities->resolveOrCreateIdentity($connectionId, $old, $observedAt);
+    $issue = app(ReconciliationIssueStore::class)->report(
+        $connectionId,
+        'sync:employee:EMP-REMAP-ROLLBACK-OLD',
+        'sync_conflict',
+        new ReconciliationIssueDetails(reasonCode: 'identity_collision'),
+        WorkforceResourceType::Employee->value,
+        'EMP-REMAP-ROLLBACK-OLD',
+        seenAt: $decisionAt->modify('+1 hour'),
+    );
+
+    expect(fn () => app(ReconciliationReviewService::class)->applyRemap(
+        $connectionId,
+        (int) $issue->id,
+        'EMP-REMAP-ROLLBACK-NEW',
+        'review-remap-rollback-84',
+        $decisionAt,
+    ))->toThrow(ReconciliationIssueConflictException::class, 'cannot resolve before its latest observation');
+
+    expect($issue->refresh()->status)->toBe(ReconciliationIssue::STATUS_OPEN)
+        ->and($identities->resolve($connectionId, $old)->id)->toBe($oldIdentity->workforce_entity_id)
+        ->and(fn () => $identities->resolve($connectionId, $replacement))
+        ->toThrow(ConnectorRecordNotFoundException::class);
 });
