@@ -8,7 +8,7 @@
         @if ($freshness->isStale())
             {{ __('Workforce projections are stale: :reason.', ['reason' => __($freshness->staleReason)]) }}
         @else
-            {{ __('Workforce projections are current as of :time.', ['time' => $freshness->asOf?->format('Y-m-d H:i T')]) }}
+            {{ __('Workforce projections are current as of') }} <x-ui.datetime :value="$freshness->asOf" />.
         @endif
     </x-ui.alert>
 
