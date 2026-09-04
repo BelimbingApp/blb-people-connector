@@ -23,8 +23,7 @@ final class ServiceProvider extends BaseServiceProvider
 
     public function boot(): void
     {
-        if (! interface_exists(ReadsNativeWorkforceBootstrap::class)
-            || ! interface_exists(ReadsNativeWorkforceChanges::class)) {
+        if (! $this->nativeReadersAreBound()) {
             return;
         }
 
@@ -32,5 +31,18 @@ final class ServiceProvider extends BaseServiceProvider
             $this->app->make(ProviderRegistry::class)
                 ->register($this->app->make(NativePeopleAdapter::class));
         });
+    }
+
+    private function nativeReadersAreBound(): bool
+    {
+        $contracts = [ReadsNativeWorkforceBootstrap::class, ReadsNativeWorkforceChanges::class];
+
+        foreach ($contracts as $contract) {
+            if (! interface_exists($contract) || ! $this->app->bound($contract)) {
+                return false;
+            }
+        }
+
+        return true;
     }
 }

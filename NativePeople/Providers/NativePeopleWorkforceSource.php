@@ -18,9 +18,9 @@ use App\Domains\PeopleConnector\Connector\Data\WorkforceChangeRequest;
 use App\Domains\PeopleConnector\Connector\Data\WorkforcePage;
 use App\Domains\PeopleConnector\Connector\Data\WorkforcePageRequest;
 use App\Domains\PeopleConnector\Connector\Exceptions\ProviderCompatibilityException;
-use App\Domains\PeopleConnector\Connector\Exceptions\ProviderTemporaryException;
 use App\Domains\PeopleConnector\Connector\Exceptions\ProviderValidationException;
 use App\Domains\PeopleConnector\NativePeople\NativePeopleWorkforceMapper;
+use Illuminate\Contracts\Container\BindingResolutionException;
 use Illuminate\Contracts\Container\Container;
 
 final readonly class NativePeopleWorkforceSource implements BootstrapsWorkforce, ReadsWorkforceChanges
@@ -45,10 +45,8 @@ final readonly class NativePeopleWorkforceSource implements BootstrapsWorkforce,
                 message: 'The native People bootstrap cursor was rejected.',
                 previous: $exception,
             );
-        } catch (WorkforceProjectionException|\InvalidArgumentException|\UnexpectedValueException $exception) {
+        } catch (BindingResolutionException|WorkforceProjectionException|\TypeError|\UnexpectedValueException|\ValueError $exception) {
             throw $this->compatibilityFailure('workforce.bootstrap', $exception);
-        } catch (\Throwable $exception) {
-            throw $this->temporaryFailure('workforce.bootstrap', $exception);
         }
     }
 
@@ -80,10 +78,8 @@ final readonly class NativePeopleWorkforceSource implements BootstrapsWorkforce,
                 message: 'The native People change cursor was rejected.',
                 previous: $exception,
             );
-        } catch (WorkforceProjectionException|\InvalidArgumentException|\UnexpectedValueException $exception) {
+        } catch (BindingResolutionException|WorkforceProjectionException|\TypeError|\UnexpectedValueException|\ValueError $exception) {
             throw $this->compatibilityFailure('workforce.changes', $exception);
-        } catch (\Throwable $exception) {
-            throw $this->temporaryFailure('workforce.changes', $exception);
         }
     }
 
@@ -93,16 +89,6 @@ final readonly class NativePeopleWorkforceSource implements BootstrapsWorkforce,
             providerId: NativePeopleAdapter::ID,
             operation: $operation,
             message: 'The native People projection does not match the supported adapter contract.',
-            previous: $exception,
-        );
-    }
-
-    private function temporaryFailure(string $operation, \Throwable $exception): ProviderTemporaryException
-    {
-        return new ProviderTemporaryException(
-            providerId: NativePeopleAdapter::ID,
-            operation: $operation,
-            message: 'The native People workforce reader is temporarily unavailable.',
             previous: $exception,
         );
     }

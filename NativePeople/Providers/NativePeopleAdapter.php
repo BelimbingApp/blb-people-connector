@@ -43,10 +43,7 @@ final readonly class NativePeopleAdapter implements ProviderAdapter, ResolvesPro
         ];
 
         return new CapabilitySet([
-            new CapabilityDeclaration(PeopleCapability::CompanyDirectory, $channels),
-            new CapabilityDeclaration(PeopleCapability::OrganizationDirectory, $channels),
             new CapabilityDeclaration(PeopleCapability::EmployeeDirectory, $channels),
-            new CapabilityDeclaration(PeopleCapability::ManagerHierarchy, $channels),
         ]);
     }
 
@@ -61,6 +58,17 @@ final readonly class NativePeopleAdapter implements ProviderAdapter, ResolvesPro
 
     public function resolvePort(string $contract, ProviderPortAuthorization $authorization): ?object
     {
+        if ($authorization->scopeKey === 'conformance') {
+            return is_a($this->source, $contract) ? $this->source : null;
+        }
+
+        if ($authorization->scopeKey !== 'tenant'
+            || $authorization->capability !== PeopleCapability::EmployeeDirectory->value
+            || $authorization->direction !== 'read'
+            || $authorization->contract !== $contract) {
+            return null;
+        }
+
         return is_a($this->source, $contract) ? $this->source : null;
     }
 }

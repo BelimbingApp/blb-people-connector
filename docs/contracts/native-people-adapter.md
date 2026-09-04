@@ -19,9 +19,11 @@ reject that invalid composition explicitly.
 ## Declared capabilities
 
 The published bootstrap and incremental pages carry company, organization,
-employee, manager, and department-head facts. The adapter therefore declares
-read-only company, organization, employee, and manager-hierarchy capabilities
-through `BootstrapsWorkforce` and `ReadsWorkforceChanges`.
+employee, manager, and department-head facts in one aggregate payload. Because
+that payload cannot be split by capability, the adapter declares it only as an
+employee-directory read through `BootstrapsWorkforce` and
+`ReadsWorkforceChanges`. A company- or organization-directory grant alone can
+never resolve the employee-bearing port.
 
 It does not declare Skill, training, payroll, attendance, leave, claims,
 documents, SSO, writes, positions, reconciliation, or a user directory. A
@@ -39,6 +41,8 @@ the same mapper and conformance fixtures.
 Health remains `unknown` because People publishes no provider health contract.
 Provider projection failures become compatibility errors, invalid opaque
 cursors become validation errors without echoing the cursor, and unclassified
-reader failures become retryable read failures. Connector authorization still
-runs before port resolution; People remains responsible for ambient tenant
-enforcement inside each reader call.
+reader, tenancy, authorization, and programming failures remain their original
+fail-closed errors. Connector authorization still runs before port resolution,
+and this tenant-wide native reader rejects company-scoped evidence because
+People publishes no company filter. People remains responsible for ambient
+tenant enforcement inside each reader call.
