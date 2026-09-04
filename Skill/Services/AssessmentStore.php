@@ -46,30 +46,40 @@ final class AssessmentStore
         return $this->write($companyEntityId, $draft, AssessmentStatus::Draft, employeeData: $employeeData);
     }
 
-    public function submit(int $companyEntityId, AssessmentDraft $draft, array $employeeData = []): SkillAssessment
+    public function submit(
+        int $companyEntityId,
+        AssessmentDraft $draft,
+        array $employeeData = [],
+        ?int $supersedesAssessmentId = null,
+    ): SkillAssessment
     {
-        return $this->write($companyEntityId, $draft, AssessmentStatus::Submitted, employeeData: $employeeData);
+        return $this->write(
+            $companyEntityId,
+            $draft,
+            AssessmentStatus::Submitted,
+            employeeData: $employeeData,
+            supersedesAssessmentId: $supersedesAssessmentId,
+        );
     }
 
     /**
-     * Atomically finalize many cells (HOD batch matrix save).
+     * Atomically submit many cells for HOD review.
      * Empty evidence cells are skipped; partial failure rolls the whole batch back.
      *
      * @param  list<AssessmentDraft>  $drafts
      * @param  array<string, mixed>  $employeeData  Optional overrides merged under per-employee projection context
      * @return list<SkillAssessment>
      */
-    public function finalizeBatch(
+    public function submitBatch(
         int $companyEntityId,
         array $drafts,
         array $employeeData = [],
-        ?int $finalizedByUserId = null,
     ): array {
         if ($drafts === []) {
-            throw new InvalidAssessmentException('Batch finalize requires at least one assessment cell.');
+            throw new InvalidAssessmentException('Batch submission requires at least one assessment cell.');
         }
 
-        return DB::transaction(function () use ($companyEntityId, $drafts, $employeeData, $finalizedByUserId): array {
+        return DB::transaction(function () use ($companyEntityId, $drafts, $employeeData): array {
             $saved = [];
 
             foreach ($drafts as $draft) {
@@ -77,11 +87,10 @@ final class AssessmentStore
                     throw new InvalidAssessmentException('Batch cells must be AssessmentDraft instances.');
                 }
 
-                $saved[] = $this->finalize(
+                $saved[] = $this->submit(
                     $companyEntityId,
                     $draft,
                     employeeData: $employeeData,
-                    finalizedByUserId: $finalizedByUserId,
                 );
             }
 
@@ -90,27 +99,136 @@ final class AssessmentStore
     }
 
     /**
-     * Finalize a new assessment (or supersede a prior finalized one).
+     * Move an assessor submission into the HOD review queue.
      *
-     * @param  array<string, mixed>  $employeeData  Attributes for ResolvesSkillRequirements
+     * The row is locked before the transition so retries cannot skip the
+     * submitted state or race a HOD decision.
      */
-    public function finalize(
+    public function requestHodVerification(int $companyEntityId, int $assessmentId): SkillAssessment
+    {
+        return DB::transaction(function () use ($companyEntityId, $assessmentId): SkillAssessment {
+            $assessment = $this->lockAssessment($companyEntityId, $assessmentId);
+
+            $this->queueHodVerification($assessment);
+
+            return $assessment->refresh();
+        });
+    }
+
+    /**
+     * Atomically move a submitted matrix into the HOD review queue.
+     *
+     * @param  list<int>  $assessmentIds
+     * @return list<SkillAssessment>
+     */
+    public function requestHodVerificationBatch(int $companyEntityId, array $assessmentIds): array
+    {
+        if ($assessmentIds === []) {
+            throw new InvalidAssessmentException('HOD verification requires at least one assessment.');
+        }
+
+        return DB::transaction(function () use ($companyEntityId, $assessmentIds): array {
+            $queued = [];
+
+            foreach ($assessmentIds as $assessmentId) {
+                if (! is_int($assessmentId)) {
+                    throw new InvalidAssessmentException('Assessment ids must be integers.');
+                }
+
+                $assessment = $this->lockAssessment($companyEntityId, $assessmentId);
+                $this->queueHodVerification($assessment);
+                $queued[] = $assessment->refresh();
+            }
+
+            return $queued;
+        });
+    }
+
+    /**
+     * Return an assessment without changing any score or downstream projection.
+     */
+    public function returnForCorrection(
         int $companyEntityId,
-        AssessmentDraft $draft,
-        array $employeeData = [],
-        ?int $supersedesAssessmentId = null,
-        ?int $finalizedByUserId = null,
+        int $assessmentId,
+        int $hodVerifierUserId,
+        ?string $decisionNotes = null,
     ): SkillAssessment {
-        return DB::transaction(function () use ($companyEntityId, $draft, $employeeData, $supersedesAssessmentId, $finalizedByUserId): SkillAssessment {
-            $assessment = $this->write(
-                $companyEntityId,
-                $draft,
-                AssessmentStatus::Finalized,
-                employeeData: $employeeData,
-                supersedesAssessmentId: $supersedesAssessmentId,
-                finalizedByUserId: $finalizedByUserId,
-                finalize: true,
-            );
+        return DB::transaction(function () use ($companyEntityId, $assessmentId, $hodVerifierUserId, $decisionNotes): SkillAssessment {
+            $assessment = $this->lockAssessment($companyEntityId, $assessmentId);
+            $this->assertHodReviewable($assessment, $hodVerifierUserId);
+
+            if (trim((string) $decisionNotes) === '') {
+                throw new InvalidAssessmentException('A return reason is required for an assessment correction request.');
+            }
+
+            $assessment->status = AssessmentStatus::Returned;
+            $assessment->hod_verification = HodVerification::Rejected;
+            $assessment->hod_verifier_user_id = $hodVerifierUserId;
+            $assessment->hod_verified_at = now();
+            $assessment->hod_decision_notes = $decisionNotes;
+            $assessment->save();
+
+            return $assessment->refresh();
+        });
+    }
+
+    /**
+     * Record the independent HOD decision. Finalization remains a separate
+     * transition so no score or downstream effect is visible prematurely.
+     */
+    public function verifyHod(
+        int $companyEntityId,
+        int $assessmentId,
+        int $hodVerifierUserId,
+        ?string $decisionNotes = null,
+    ): SkillAssessment {
+        return DB::transaction(function () use ($companyEntityId, $assessmentId, $hodVerifierUserId, $decisionNotes): SkillAssessment {
+            $assessment = $this->lockAssessment($companyEntityId, $assessmentId);
+            $this->assertHodReviewable($assessment, $hodVerifierUserId);
+
+            $assessment->hod_verification = HodVerification::Verified;
+            $assessment->hod_verifier_user_id = $hodVerifierUserId;
+            $assessment->hod_verified_at = now();
+            $assessment->hod_decision_notes = $decisionNotes;
+            $assessment->save();
+
+            return $assessment->refresh();
+        });
+    }
+
+    /**
+     * Finalize only a row carrying a committed, independent HOD verification.
+     *
+     */
+    public function finalizeVerified(
+        int $companyEntityId,
+        int $assessmentId,
+        int $finalizedByUserId,
+    ): SkillAssessment {
+        return DB::transaction(function () use ($companyEntityId, $assessmentId, $finalizedByUserId): SkillAssessment {
+            $assessment = $this->lockAssessment($companyEntityId, $assessmentId);
+
+            if ($assessment->status !== AssessmentStatus::PendingHodVerification) {
+                throw new InvalidAssessmentException(
+                    'Only an assessment pending HOD verification can be finalized.',
+                );
+            }
+
+            if (! $assessment->isHodVerified()) {
+                throw new InvalidAssessmentException(
+                    'HOD verification is required before an assessment can be finalized.',
+                );
+            }
+
+            if ($assessment->assessor_user_id !== null
+                && (int) $assessment->assessor_user_id === $finalizedByUserId) {
+                throw new InvalidAssessmentException('The assessor cannot finalize their own assessment.');
+            }
+
+            $assessment->status = AssessmentStatus::Finalized;
+            $assessment->finalized_at = now();
+            $assessment->finalized_by_user_id = $finalizedByUserId;
+            $assessment->save();
 
             $this->projectCurrentScore($assessment);
 
@@ -126,6 +244,40 @@ final class AssessmentStore
     }
 
     /**
+     * Direct draft finalization is intentionally removed from the public
+     * workflow. Keeping this method as a loud failure protects older callers
+     * from silently bypassing HOD verification.
+     *
+     * @param  array<string, mixed>  $employeeData  Attributes for ResolvesSkillRequirements
+     */
+    public function finalize(
+        int $companyEntityId,
+        AssessmentDraft $draft,
+        array $employeeData = [],
+        ?int $supersedesAssessmentId = null,
+        ?int $finalizedByUserId = null,
+    ): never {
+        throw new InvalidAssessmentException(
+            'Direct finalization is disabled; submit, request HOD verification, verify HOD, then finalizeVerified.',
+        );
+    }
+
+    /**
+     * @param  list<AssessmentDraft>  $drafts
+     * @param  array<string, mixed>  $employeeData
+     */
+    public function finalizeBatch(
+        int $companyEntityId,
+        array $drafts,
+        array $employeeData = [],
+        ?int $finalizedByUserId = null,
+    ): never {
+        throw new InvalidAssessmentException(
+            'Direct batch finalization is disabled; submit each cell for HOD verification first.',
+        );
+    }
+
+    /**
      * @param  array<string, mixed>  $employeeData
      */
     private function write(
@@ -134,8 +286,6 @@ final class AssessmentStore
         AssessmentStatus $status,
         array $employeeData = [],
         ?int $supersedesAssessmentId = null,
-        ?int $finalizedByUserId = null,
-        bool $finalize = false,
     ): SkillAssessment {
         $tenantId = $this->tenantContext->requireTenantId();
         $this->assertEntity($tenantId, $companyEntityId, WorkforceResourceType::Company);
@@ -174,8 +324,6 @@ final class AssessmentStore
         $resultBand = AssessmentResultBand::fromGap($gap, $draft->assessedLevel, $requirement->requiredLevel);
 
         $nextDue = $this->nextDue($draft, $requirement);
-        $now = now();
-
         if ($supersedesAssessmentId !== null) {
             $prior = SkillAssessment::query()
                 ->forCompany($tenantId, $companyEntityId)
@@ -224,8 +372,8 @@ final class AssessmentStore
             'valid_until' => $draft->validUntil,
             'next_assessment_due' => $nextDue,
             'supersedes_assessment_id' => $supersedesAssessmentId,
-            'finalized_at' => $finalize ? $now : null,
-            'finalized_by_user_id' => $finalize ? $finalizedByUserId : null,
+            'finalized_at' => null,
+            'finalized_by_user_id' => null,
         ]);
     }
 
@@ -363,7 +511,46 @@ final class AssessmentStore
                     'next_assessment_due' => $latest->next_assessment_due,
                     'valid_until' => $latest->valid_until,
                 ],
+        );
+    }
+
+    private function lockAssessment(int $companyEntityId, int $assessmentId): SkillAssessment
+    {
+        $tenantId = $this->tenantContext->requireTenantId();
+
+        return SkillAssessment::query()
+            ->forCompany($tenantId, $companyEntityId)
+            ->whereKey($assessmentId)
+            ->lockForUpdate()
+            ->first()
+            ?? throw new InvalidAssessmentException("Assessment [$assessmentId] was not found.");
+    }
+
+    private function assertHodReviewable(SkillAssessment $assessment, int $hodVerifierUserId): void
+    {
+        if ($assessment->status !== AssessmentStatus::PendingHodVerification
+            || $assessment->hod_verification !== HodVerification::Pending) {
+            throw new InvalidAssessmentException(
+                'Only a pending, undecided assessment can receive an HOD decision.',
             );
+        }
+
+        if ($assessment->assessor_user_id !== null
+            && (int) $assessment->assessor_user_id === $hodVerifierUserId) {
+            throw new InvalidAssessmentException('The assessor cannot verify their own assessment.');
+        }
+    }
+
+    private function queueHodVerification(SkillAssessment $assessment): void
+    {
+        if ($assessment->status !== AssessmentStatus::Submitted) {
+            throw new InvalidAssessmentException(
+                'Only a submitted assessment can enter HOD verification.',
+            );
+        }
+
+        $assessment->status = AssessmentStatus::PendingHodVerification;
+        $assessment->save();
     }
 
     private function assertEntity(int $tenantId, int $entityId, WorkforceResourceType $type): void

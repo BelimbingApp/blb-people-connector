@@ -1,7 +1,7 @@
 <div class="space-y-section-gap">
     <x-ui.page-header
         :title="__('Skill assessments')"
-        :subtitle="__('HOD batch matrix — scored cells save as official assessment history.')"
+        :subtitle="__('Assessment matrix — scored cells are submitted for independent HOD verification.')"
     />
 
     @if (session('status'))

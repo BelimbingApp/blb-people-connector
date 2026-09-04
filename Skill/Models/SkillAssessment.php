@@ -57,11 +57,16 @@ class SkillAssessment extends TenantOwnedModel implements ReferencesWorkforceEnt
             'cycle' => AssessmentCycle::class,
             'status' => AssessmentStatus::class,
             'assessed_at' => 'datetime',
+            'assessor_user_id' => 'integer',
+            'assessor_employee_entity_id' => 'integer',
             'hod_verification' => HodVerification::class,
-            'hod_verified_at' => 'datetime',
+            'hod_verifier_user_id' => 'integer',
+            'hod_verified_at' => 'immutable_datetime',
+            'hod_decision_notes' => 'string',
             'valid_until' => 'date',
             'next_assessment_due' => 'date',
             'finalized_at' => 'datetime',
+            'finalized_by_user_id' => 'integer',
         ];
     }
 
@@ -82,6 +87,19 @@ class SkillAssessment extends TenantOwnedModel implements ReferencesWorkforceEnt
     public function isFinalized(): bool
     {
         return $this->finalized_at !== null || $this->status === AssessmentStatus::Finalized;
+    }
+
+    public function isAwaitingHodVerification(): bool
+    {
+        return $this->status === AssessmentStatus::PendingHodVerification
+            && $this->hod_verification === HodVerification::Pending;
+    }
+
+    public function isHodVerified(): bool
+    {
+        return $this->hod_verification === HodVerification::Verified
+            && $this->hod_verifier_user_id !== null
+            && $this->hod_verified_at !== null;
     }
 
     public function getAuditSubject(): ?array

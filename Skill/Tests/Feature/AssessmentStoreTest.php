@@ -18,6 +18,7 @@ use App\Domains\PeopleConnector\Skill\Enums\AssessmentMethod;
 use App\Domains\PeopleConnector\Skill\Enums\AssessmentResultBand;
 use App\Domains\PeopleConnector\Skill\Enums\AssessmentStatus;
 use App\Domains\PeopleConnector\Skill\Enums\CriticalClassification;
+use App\Domains\PeopleConnector\Skill\Enums\HodVerification;
 use App\Domains\PeopleConnector\Skill\Enums\RequirementCriticality;
 use App\Domains\PeopleConnector\Skill\Enums\SelectorType;
 use App\Domains\PeopleConnector\Skill\Enums\SkillScope;
@@ -119,14 +120,32 @@ function assessmentDraft(int $employeeEntityId, int $skillId, array $overrides =
     return new AssessmentDraft(...array_merge($base, $overrides));
 }
 
+function finalizeVerifiedAssessment(
+    AssessmentStore $store,
+    int $companyEntityId,
+    AssessmentDraft $draft,
+    ?int $supersedesAssessmentId = null,
+    int $hodVerifierUserId = 10,
+): SkillAssessment {
+    $submitted = $store->submit(
+        $companyEntityId,
+        $draft,
+        supersedesAssessmentId: $supersedesAssessmentId,
+    );
+    $pending = $store->requestHodVerification($companyEntityId, (int) $submitted->id);
+    $store->verifyHod($companyEntityId, (int) $pending->id, $hodVerifierUserId, 'Verified against the submitted evidence.');
+
+    return $store->finalizeVerified($companyEntityId, (int) $pending->id, $hodVerifierUserId);
+}
+
 test('finalize snapshots requirement and projects gap from the published contract', function (): void {
     Event::fake([SkillAssessmentFinalized::class]);
     [$tenantId, $companyEntityId, $employeeEntityId, $skillId] = assessmentFixture();
 
-    $assessment = app(AssessmentStore::class)->finalize(
+    $assessment = finalizeVerifiedAssessment(
+        app(AssessmentStore::class),
         $companyEntityId,
         assessmentDraft($employeeEntityId, $skillId),
-        finalizedByUserId: 9,
     );
 
     expect($assessment->status)->toBe(AssessmentStatus::Finalized)
@@ -160,15 +179,45 @@ test('finalize snapshots requirement and projects gap from the published contrac
     Event::assertDispatched(SkillAssessmentFinalized::class);
 });
 
+test('score projection waits for an independent HOD decision', function (): void {
+    [$tenantId, $companyEntityId, $employeeEntityId, $skillId] = assessmentFixture();
+    $store = app(AssessmentStore::class);
+    $draft = assessmentDraft($employeeEntityId, $skillId);
+
+    $submitted = $store->submit($companyEntityId, $draft);
+    expect($submitted->status)->toBe(AssessmentStatus::Submitted)
+        ->and(EmployeeSkillScore::query()->forCompany($tenantId, $companyEntityId)->count())->toBe(0);
+
+    $pending = $store->requestHodVerification($companyEntityId, (int) $submitted->id);
+    expect($pending->status)->toBe(AssessmentStatus::PendingHodVerification)
+        ->and($pending->isAwaitingHodVerification())->toBeTrue();
+
+    expect(fn () => $store->verifyHod($companyEntityId, (int) $pending->id, 9))
+        ->toThrow(InvalidAssessmentException::class, 'assessor');
+
+    $returned = $store->returnForCorrection(
+        $companyEntityId,
+        (int) $pending->id,
+        10,
+        'Attach the observation record before resubmission.',
+    );
+    expect($returned->status)->toBe(AssessmentStatus::Returned)
+        ->and($returned->hod_verification)->toBe(HodVerification::Rejected)
+        ->and(EmployeeSkillScore::query()->forCompany($tenantId, $companyEntityId)->count())->toBe(0);
+
+    expect(fn () => $store->finalizeVerified($companyEntityId, (int) $returned->id, 10))
+        ->toThrow(InvalidAssessmentException::class, 'pending HOD verification');
+});
+
 test('evidence is mandatory and scale values fail closed', function (): void {
     [, $companyEntityId, $employeeEntityId, $skillId] = assessmentFixture();
     $store = app(AssessmentStore::class);
 
-    expect(fn () => $store->finalize($companyEntityId, assessmentDraft($employeeEntityId, $skillId, [
+    expect(fn () => finalizeVerifiedAssessment($store, $companyEntityId, assessmentDraft($employeeEntityId, $skillId, [
         'evidence' => '  ',
     ])))->toThrow(InvalidAssessmentException::class, 'Evidence');
 
-    expect(fn () => $store->finalize($companyEntityId, assessmentDraft($employeeEntityId, $skillId, [
+    expect(fn () => finalizeVerifiedAssessment($store, $companyEntityId, assessmentDraft($employeeEntityId, $skillId, [
         'assessedLevel' => 9,
     ])))->toThrow(InvalidAssessmentException::class, '0 and 5');
 });
@@ -177,9 +226,9 @@ test('finalized assessments are immutable; supersession keeps history and refres
     [$tenantId, $companyEntityId, $employeeEntityId, $skillId] = assessmentFixture();
     $store = app(AssessmentStore::class);
 
-    $first = $store->finalize($companyEntityId, assessmentDraft($employeeEntityId, $skillId, [
+    $first = finalizeVerifiedAssessment($store, $companyEntityId, assessmentDraft($employeeEntityId, $skillId, [
         'assessedLevel' => 1,
-    ]), finalizedByUserId: 1);
+    ]));
 
     expect(fn () => $first->update(['notes' => 'tamper']))
         ->toThrow(FinalizedAssessmentImmutableException::class);
@@ -190,11 +239,11 @@ test('finalized assessments are immutable; supersession keeps history and refres
         ->update(['notes' => 'raw tamper'])))
         ->toThrow(QueryException::class);
 
-    $second = $store->finalize(
+    $second = finalizeVerifiedAssessment(
+        $store,
         $companyEntityId,
         assessmentDraft($employeeEntityId, $skillId, ['assessedLevel' => 4]),
         supersedesAssessmentId: (int) $first->id,
-        finalizedByUserId: 2,
     );
 
     expect($second->supersedes_assessment_id)->toBe($first->id)
@@ -223,28 +272,33 @@ test('a sibling company cannot finalize against this catalog or employee spine',
         'first_seen_at' => now(),
     ]);
 
-    expect(fn () => app(AssessmentStore::class)->finalize(
+    expect(fn () => finalizeVerifiedAssessment(
+        app(AssessmentStore::class),
         (int) $sibling->id,
         assessmentDraft($employeeEntityId, $skillId),
     ))->toThrow(InvalidAssessmentException::class);
 });
 
-test('finalizeBatch is atomic: one bad cell rolls back the whole matrix save', function (): void {
+test('submitBatch is atomic: one bad cell rolls back the whole matrix submission', function (): void {
     [$tenantId, $companyEntityId, $employeeEntityId, $skillId] = assessmentFixture();
     $store = app(AssessmentStore::class);
 
     $good = assessmentDraft($employeeEntityId, $skillId, ['assessedLevel' => 3]);
     $bad = assessmentDraft($employeeEntityId, $skillId, ['assessedLevel' => 3, 'evidence' => '']);
 
-    expect(fn () => $store->finalizeBatch($companyEntityId, [$good, $bad], finalizedByUserId: 1))
+    expect(fn () => $store->submitBatch($companyEntityId, [$good, $bad]))
         ->toThrow(InvalidAssessmentException::class, 'Evidence');
 
     expect(SkillAssessment::query()->forCompany($tenantId, $companyEntityId)->count())->toBe(0)
         ->and(EmployeeSkillScore::query()->forCompany($tenantId, $companyEntityId)->count())->toBe(0);
 
-    $saved = $store->finalizeBatch($companyEntityId, [
+    $saved = $store->submitBatch($companyEntityId, [
         assessmentDraft($employeeEntityId, $skillId, ['assessedLevel' => 3]),
-    ], finalizedByUserId: 1);
+    ]);
+
+    $store->requestHodVerification($companyEntityId, (int) $saved[0]->id);
+    $store->verifyHod($companyEntityId, (int) $saved[0]->id, 10, 'Verified by the HOD.');
+    $store->finalizeVerified($companyEntityId, (int) $saved[0]->id, 10);
 
     expect($saved)->toHaveCount(1)
         ->and(SkillAssessment::query()->forCompany($tenantId, $companyEntityId)->count())->toBe(1);
@@ -254,15 +308,15 @@ test('a back-dated finalize does not regress the current-score projection', func
     [$tenantId, $companyEntityId, $employeeEntityId, $skillId] = assessmentFixture();
     $store = app(AssessmentStore::class);
 
-    $newer = $store->finalize($companyEntityId, assessmentDraft($employeeEntityId, $skillId, [
+    $newer = finalizeVerifiedAssessment($store, $companyEntityId, assessmentDraft($employeeEntityId, $skillId, [
         'assessedLevel' => 4,
         'assessedAt' => now()->subDays(1),
-    ]), finalizedByUserId: 1);
+    ]));
 
-    $older = $store->finalize($companyEntityId, assessmentDraft($employeeEntityId, $skillId, [
+    $older = finalizeVerifiedAssessment($store, $companyEntityId, assessmentDraft($employeeEntityId, $skillId, [
         'assessedLevel' => 1,
         'assessedAt' => now()->subDays(30),
-    ]), finalizedByUserId: 2);
+    ]));
 
     $score = EmployeeSkillScore::query()
         ->forCompany($tenantId, $companyEntityId)
@@ -388,10 +442,10 @@ test('finalize matches department-scoped requirements from the employee projecti
     $profiles->publish((int) $company->id, (int) $profile->id);
 
     // Real resolver — no fixture bind — must see department from the projection.
-    $assessment = app(AssessmentStore::class)->finalize(
+    $assessment = finalizeVerifiedAssessment(
+        app(AssessmentStore::class),
         (int) $company->id,
         assessmentDraft((int) $employee->id, (int) $skill->id, ['assessedLevel' => 2]),
-        finalizedByUserId: 1,
     );
 
     expect($assessment->requirement_reference)->toBe('dept.scoped')

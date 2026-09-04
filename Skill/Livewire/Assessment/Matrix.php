@@ -11,6 +11,7 @@ use App\Domains\PeopleConnector\Skill\Enums\AssessmentCycle;
 use App\Domains\PeopleConnector\Skill\Enums\AssessmentMethod;
 use App\Domains\PeopleConnector\Skill\Exceptions\InvalidAssessmentException;
 use App\Domains\PeopleConnector\Skill\Models\Skill;
+use App\Domains\PeopleConnector\Skill\Models\SkillAssessment;
 use App\Domains\PeopleConnector\Skill\Services\AssessmentStore;
 use App\Domains\PeopleConnector\Skill\Services\SkillAudience;
 use Illuminate\Contracts\View\View;
@@ -18,8 +19,8 @@ use Illuminate\Support\Facades\Auth;
 use Livewire\Component;
 
 /**
- * HOD batch assessment matrix — working surface that atomically finalizes
- * official assessment-history rows (blb-people#12). Not a second source of truth.
+ * Assessment matrix — working surface that atomically submits evidence-backed
+ * cells for independent HOD verification. Not a second source of truth.
  */
 class Matrix extends Component
 {
@@ -71,7 +72,7 @@ class Matrix extends Component
         }
     }
 
-    public function saveMatrix(AssessmentStore $store): void
+    public function saveMatrix(AssessmentStore $store, SkillAudience $audience): void
     {
         $companyEntityId = $this->authorizedCompanyForAssess();
 
@@ -123,11 +124,22 @@ class Matrix extends Component
             return;
         }
 
+        foreach ($drafts as $draft) {
+            $audience->authorizeAssessmentSubmission(
+                Auth::user(),
+                $companyEntityId,
+                $draft->employeeEntityId,
+            );
+        }
+
         try {
-            $store->finalizeBatch(
+            $submitted = $store->submitBatch(
                 $companyEntityId,
                 $drafts,
-                finalizedByUserId: (int) Auth::id(),
+            );
+            $store->requestHodVerificationBatch(
+                $companyEntityId,
+                array_map(static fn (SkillAssessment $assessment): int => (int) $assessment->id, $submitted),
             );
         } catch (InvalidAssessmentException $exception) {
             $this->addError('matrix', $exception->getMessage());
@@ -136,7 +148,7 @@ class Matrix extends Component
         }
 
         $this->reset('scores', 'evidence');
-        session()->flash('status', __('Assessment matrix saved to official history.'));
+        session()->flash('status', __('Assessment matrix submitted for HOD verification.'));
     }
 
     public function render(): View

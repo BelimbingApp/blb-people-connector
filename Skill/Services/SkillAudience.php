@@ -357,6 +357,53 @@ final class SkillAudience
 
         return ! $targetUnits->contains(null)
             && $targetUnits->every(fn (int $unitId): bool => in_array($unitId, $visibleUnits, true));
+
+    public function authorizeAssessmentSubmission(
+        User $user,
+        int $companyEntityId,
+        int $employeeEntityId,
+    ): void {
+        if (! $this->mayForEmployee(
+            $user,
+            'people-connector.skill.assessment.submit',
+            $companyEntityId,
+            $employeeEntityId,
+            [self::HR, self::HOD, self::ASSESSOR],
+        )) {
+            $this->deny();
+        }
+    }
+
+    public function authorizeHodVerification(
+        User $user,
+        int $companyEntityId,
+        int $employeeEntityId,
+    ): void {
+        if (! $this->mayForEmployee(
+            $user,
+            'people-connector.skill.assessment.hod-verify',
+            $companyEntityId,
+            $employeeEntityId,
+            [self::HOD],
+        )) {
+            $this->deny();
+        }
+    }
+
+    public function authorizeAssessmentFinalization(
+        User $user,
+        int $companyEntityId,
+        int $employeeEntityId,
+    ): void {
+        if (! $this->mayForEmployee(
+            $user,
+            'people-connector.skill.assessment.finalize',
+            $companyEntityId,
+            $employeeEntityId,
+            [self::HOD],
+        )) {
+            $this->deny();
+        }
     }
 
     public function boundEmployeeEntityId(User $user, int $companyEntityId): ?int
@@ -377,6 +424,29 @@ final class SkillAudience
 
         return $this->companies->mayActFor($user, $companyEntityId)
             && array_intersect($requiredAudiences, $audiences) !== [];
+    }
+
+    /** @param list<string> $requiredAudiences */
+    private function mayForEmployee(
+        User $user,
+        string $capability,
+        int $companyEntityId,
+        int $employeeEntityId,
+        array $requiredAudiences,
+    ): bool {
+        try {
+            $audiences = $this->authorizeAudience($user, $capability);
+        } catch (AuthorizationDeniedException) {
+            return false;
+        }
+
+        return $this->companies->mayActFor($user, $companyEntityId)
+            && array_intersect($requiredAudiences, $audiences) !== []
+            && in_array(
+                $employeeEntityId,
+                $this->visibleEmployeeEntityIds($user, $companyEntityId, manage: true),
+                true,
+            );
     }
 
     private function hasAudience(Actor $actor, string $audience): bool
