@@ -11,6 +11,7 @@ return [
             'icon' => 'heroicon-o-academic-cap',
             'route' => 'people-connector.skill.catalog.index',
             'permission' => 'people-connector.skill.catalog.view',
+            'condition' => 'people-connector.skill.catalog-audience',
             'parent' => 'people',
         ],
         [
@@ -19,6 +20,7 @@ return [
             'icon' => 'heroicon-o-clipboard-document-check',
             'route' => 'people-connector.skill.assessment.matrix',
             'permission' => 'people-connector.skill.assessment.view',
+            'condition' => 'people-connector.skill.assessment-audience',
             'parent' => 'people',
         ],
         [
