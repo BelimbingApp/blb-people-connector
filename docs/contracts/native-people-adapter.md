@@ -11,6 +11,11 @@ reader from the application container on every call. It never holds a tenant
 context across Octane requests and never reads People models, services, or
 tables outside the two published reader contracts.
 
+If a composition does not publish both provider reader contracts, the service
+provider does not advertise unusable capabilities during boot. The module's
+hard `people/provider` dependency then lets the platform dependency preflight
+reject that invalid composition explicitly.
+
 ## Declared capabilities
 
 The published bootstrap and incremental pages carry company, organization,
