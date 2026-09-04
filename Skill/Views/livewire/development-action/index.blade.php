@@ -139,5 +139,47 @@
                 @endforeach
             @endif
         </section>
+
+        <section class="space-y-4">
+            <div><h2 class="text-lg font-semibold">{{ __('Completed and cancelled') }}</h2><p class="text-sm text-muted">{{ __('Terminal commitments and their evidence remain available as the action register.') }}</p></div>
+            @if ($terminalActions->isEmpty())
+                <x-ui.alert variant="info">{{ __('No completed or cancelled development actions.') }}</x-ui.alert>
+            @else
+                @foreach ($terminalActions as $action)
+                    <x-ui.card wire:key="terminal-action-{{ $action->id }}"><article class="space-y-3">
+                        <div class="flex flex-wrap items-start justify-between gap-2">
+                            <div><h3 class="font-medium tracking-tight">{{ $action->employee_name_snapshot }} · {{ $skillNames[$action->skill_id] ?? __('Unknown skill') }}</h3><p class="text-sm text-muted">{{ $action->action_type->label() }} · {{ $action->status->label() }} · {{ $action->closure_status->label() }}</p></div>
+                            <div class="text-right text-sm"><p>{{ __('Owner: :owner', ['owner' => $employeeNames[$action->owner_employee_entity_id] ?? __('Unavailable')]) }}</p><p><x-ui.datetime :value="$action->updated_at" /></p></div>
+                        </div>
+                        <p>{{ $action->objective }}</p>
+                        <dl class="grid gap-2 text-sm md:grid-cols-3">
+                            <div><dt class="text-muted">{{ __('Completion evidence') }}</dt><dd>{{ $action->completion_evidence ?? __('Not applicable') }}</dd></div>
+                            <div><dt class="text-muted">{{ __('Reassessment result') }}</dt><dd>@if ($action->post_level !== null){{ __('Level :level · improvement :change', ['level' => $action->post_level, 'change' => $action->improvement]) }}@else{{ __('Not applicable') }}@endif</dd></div>
+                            <div><dt class="text-muted">{{ __('Due') }}</dt><dd><x-ui.datetime :value="$action->due_date" format="date" /></dd></div>
+                        </dl>
+                        <x-ui.disclosure :title="__('Full history (:count)', ['count' => ($history[$action->id] ?? collect())->count()])" panel-id="terminal-action-{{ $action->id }}-history">
+                            <ol class="space-y-2 text-sm">
+                                @foreach ($history[$action->id] ?? [] as $event)
+                                    @php($eventLabel = match ($event->event_type) {
+                                        'gap_proposed' => __('Proposed from assessed gap'),
+                                        'manually_proposed' => __('Manually proposed'),
+                                        'proposal_tailored' => __('Proposal tailored'),
+                                        'approved' => __('Approved'),
+                                        'started' => __('Started'),
+                                        'put_on_hold' => __('Put on hold'),
+                                        'intervention_completed' => __('Intervention completed'),
+                                        'reassessment_linked' => __('Reassessment linked'),
+                                        'cancelled' => __('Cancelled'),
+                                        'commented' => __('Comment added'),
+                                        default => __('Updated'),
+                                    })
+                                    <li><span class="font-medium">{{ $eventLabel }}</span> · <x-ui.datetime :value="$event->occurred_at" />@if ($event->comment)<p>{{ $event->comment }}</p>@endif @if ($event->evidence)<p class="text-muted">{{ $event->evidence }}</p>@endif</li>
+                                @endforeach
+                            </ol>
+                        </x-ui.disclosure>
+                    </article></x-ui.card>
+                @endforeach
+            @endif
+        </section>
     @endif
 </div>

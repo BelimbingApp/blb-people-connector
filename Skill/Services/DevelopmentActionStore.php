@@ -191,6 +191,9 @@ final class DevelopmentActionStore
         ?int $actorUserId = null,
     ): DevelopmentAction {
         $this->requireText($evidence, 'Completion evidence is required.');
+        if (Carbon::instance(\DateTimeImmutable::createFromInterface($reassessmentDue))->startOfDay()->isBefore(today())) {
+            throw new InvalidDevelopmentActionException('Reassessment due date cannot be before today.');
+        }
 
         return $this->transition($companyEntityId, $actionId,
             [DevelopmentActionStatus::NotStarted, DevelopmentActionStatus::Scheduled, DevelopmentActionStatus::InProgress, DevelopmentActionStatus::OnHold],
@@ -277,6 +280,16 @@ final class DevelopmentActionStore
             ->orderByDesc('mandatory_gate')
             ->orderByDesc('priority_score')
             ->orderBy('due_date');
+    }
+
+    /** Completed and cancelled commitments remain an auditable operational register. */
+    public function terminalQuery(int $companyEntityId): Builder
+    {
+        return DevelopmentAction::query()
+            ->forCompany($this->tenantContext->requireTenantId(), $companyEntityId)
+            ->whereIn('status', [DevelopmentActionStatus::Completed->value, DevelopmentActionStatus::Cancelled->value])
+            ->orderByDesc('completed_at')
+            ->orderByDesc('updated_at');
     }
 
     private function create(int $companyEntityId, DevelopmentActionDraft $draft, ?int $assessmentId, ?int $actorUserId): DevelopmentAction

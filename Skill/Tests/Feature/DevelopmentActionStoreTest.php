@@ -1,8 +1,10 @@
 <?php
 
 use App\Base\Authz\Enums\PrincipalType;
-use App\Base\Authz\Models\PrincipalCapability;
+use App\Base\Authz\Models\PrincipalRole;
+use App\Base\Authz\Models\Role;
 use App\Base\Tenancy\Contracts\TenantContext;
+use App\Core\Company\Models\Company;
 use App\Core\User\Models\User;
 use App\Domains\PeopleConnector\Connector\Models\ExternalIdentity;
 use App\Domains\PeopleConnector\Connector\Models\ProviderConnection;
@@ -32,7 +34,9 @@ use App\Domains\PeopleConnector\Skill\Models\EmployeeSkillScore;
 use App\Domains\PeopleConnector\Skill\Models\SkillAssessment;
 use App\Domains\PeopleConnector\Skill\Services\DevelopmentActionPriority;
 use App\Domains\PeopleConnector\Skill\Services\DevelopmentActionStore;
+use App\Domains\PeopleConnector\Skill\Services\SkillAudienceAssignmentStore;
 use App\Domains\PeopleConnector\Skill\Services\SkillCatalogStore;
+use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Livewire\Livewire;
@@ -41,8 +45,20 @@ afterEach(function (): void {
     app(TenantContext::class)->clear();
 });
 
-/** @return array{tenant: int, platform_company: int, company: int, employees: list<int>, skill: int} */
-function developmentActionFixture(int $employeeCount = 4): array
+function developmentActionRole(User $user, string $code): void
+{
+    setupAuthzRoles();
+    $role = Role::query()->whereNull('company_id')->where('code', $code)->sole();
+    PrincipalRole::query()->create([
+        'company_id' => $user->company_id,
+        'principal_type' => PrincipalType::USER->value,
+        'principal_id' => $user->id,
+        'role_id' => $role->id,
+    ]);
+}
+
+/** @return array{tenant: int, platform_company: int, company: int, connection: int, organization: int, employees: list<int>, skill: int} */
+function developmentActionFixture(int $employeeCount = 4, bool $tenantScoped = false): array
 {
     [$tenant, $platformCompany] = createTenantWithCompany(
         ['name' => 'Development Action Tenant'],
@@ -54,8 +70,9 @@ function developmentActionFixture(int $employeeCount = 4): array
         'tenant_id' => $tenantId, 'resource_type' => 'company', 'state' => 'active', 'first_seen_at' => now(),
     ]);
     $connection = ProviderConnection::query()->create([
-        'tenant_id' => $tenantId, 'company_id' => $platformCompany->id,
-        'scope_key' => 'company:'.$platformCompany->id, 'provider_id' => 'test.people', 'status' => 'active',
+        'tenant_id' => $tenantId, 'company_id' => $tenantScoped ? null : $platformCompany->id,
+        'scope_key' => $tenantScoped ? 'tenant' : 'company:'.$platformCompany->id,
+        'provider_id' => 'test.people', 'status' => 'active',
     ]);
     $companyIdentity = ExternalIdentity::query()->create([
         'tenant_id' => $tenantId, 'connection_id' => $connection->id, 'workforce_entity_id' => $company->id,
@@ -127,7 +144,8 @@ function developmentActionFixture(int $employeeCount = 4): array
     ));
 
     return ['tenant' => $tenantId, 'platform_company' => (int) $platformCompany->id,
-        'company' => (int) $company->id, 'employees' => $employees, 'skill' => (int) $skill->id];
+        'company' => (int) $company->id, 'connection' => (int) $connection->id,
+        'organization' => (int) $organization->id, 'employees' => $employees, 'skill' => (int) $skill->id];
 }
 
 function developmentAssessment(array $fixture, int $employeeId, int $level = 1, ?int $gap = null, ?DateTimeInterface $assessedAt = null, AssessmentCycle $cycle = AssessmentCycle::Annual): SkillAssessment
@@ -279,6 +297,10 @@ test('completion waits for a later independent reassessment before competence cl
     expect($action->objective)->toBe('Tailored permit objective.');
     $action = $store->approve($fixture['company'], (int) $action->id, 11);
     $action = $store->start($fixture['company'], (int) $action->id, 11);
+    expect(fn () => $store->completeIntervention($fixture['company'], (int) $action->id,
+        'Impossible schedule.', now()->subDay(), 11))
+        ->toThrow(InvalidDevelopmentActionException::class, 'cannot be before today')
+        ->and($action->refresh()->status)->toBe(DevelopmentActionStatus::InProgress);
     $action = $store->completeIntervention($fixture['company'], (int) $action->id,
         'Four signed observation sheets.', now()->addMonth(), 11);
 
@@ -338,18 +360,22 @@ test('cancellation closes with a reason and completed or cancelled work is never
         ->toThrow(InvalidDevelopmentActionException::class, 'append-only')
         ->and(fn () => DB::table('people_connector_skill_development_action_events')->where('id', $event->id)->update(['comment' => 'raw rewrite']))
         ->toThrow(QueryException::class);
+
+    $user = User::factory()->create(['company_id' => $fixture['platform_company']]);
+    developmentActionRole($user, 'people_hr');
+
+    Livewire::actingAs($user)->test(DevelopmentActionIndex::class)
+        ->assertViewHas('terminalActions', fn ($actions): bool => $actions->pluck('id')->contains($action->id))
+        ->assertSee('Cancelled')
+        ->assertSee('Employee transferred.')
+        ->assertSee('Full history (2)');
 });
 
 test('an authorized HOD or HR user can bulk-create selected gap proposals from the page', function (): void {
     $fixture = developmentActionFixture();
     $assessment = developmentAssessment($fixture, $fixture['employees'][0]);
     $user = User::factory()->create(['company_id' => $fixture['platform_company']]);
-    foreach (['people-connector.skill.development-action.view', 'people-connector.skill.development-action.manage'] as $capability) {
-        PrincipalCapability::query()->create([
-            'company_id' => $fixture['platform_company'], 'principal_type' => PrincipalType::USER->value,
-            'principal_id' => $user->id, 'capability_key' => $capability, 'is_allowed' => true,
-        ]);
-    }
+    developmentActionRole($user, 'people_hr');
 
     Livewire::actingAs($user)->test(DevelopmentActionIndex::class)
         ->set('selectedAssessmentIds', [(int) $assessment->id])
@@ -379,4 +405,113 @@ test('an authorized HOD or HR user can bulk-create selected gap proposals from t
         ->assertHasNoErrors('actions');
 
     expect($action->refresh()->closure_status)->toBe(DevelopmentActionClosure::ClosedCompetent);
+
+    Livewire::actingAs($user)->test(DevelopmentActionIndex::class)
+        ->assertViewHas('terminalActions', fn ($actions): bool => $actions->pluck('id')->contains($action->id))
+        ->assertSee('Completed and cancelled')
+        ->assertSee('Signed observation checklist.')
+        ->assertSee('Full history (5)');
+});
+
+test('a HOD sees and mutates only the confirmed reporting audience while HR retains company scope', function (): void {
+    $fixture = developmentActionFixture(5);
+    $siblingOrganization = WorkforceEntity::query()->create([
+        'tenant_id' => $fixture['tenant'], 'resource_type' => 'organization_unit',
+        'state' => WorkforceEntity::STATE_ACTIVE, 'first_seen_at' => now(),
+    ]);
+    $siblingOrganizationIdentity = ExternalIdentity::query()->create([
+        'tenant_id' => $fixture['tenant'], 'connection_id' => $fixture['connection'],
+        'workforce_entity_id' => $siblingOrganization->id, 'provider_id' => 'test.people',
+        'resource_type' => 'organization_unit', 'external_id' => 'organization-'.$siblingOrganization->id,
+        'external_id_hash' => hash('sha256', 'organization-'.$siblingOrganization->id),
+        'state' => ExternalIdentity::STATE_ACTIVE, 'effective_from' => now(), 'last_observed_at' => now(),
+    ]);
+    WorkforceOrganizationUnitProjection::query()->create([
+        'tenant_id' => $fixture['tenant'], 'company_entity_id' => $fixture['company'],
+        'workforce_entity_id' => $siblingOrganization->id, 'source_identity_id' => $siblingOrganizationIdentity->id,
+        'name' => 'Finance', 'active' => true, 'effective_at' => now(), 'observed_at' => now(),
+    ]);
+    WorkforceEmployeeProjection::query()
+        ->forCompany($fixture['tenant'], $fixture['company'])
+        ->where('workforce_entity_id', $fixture['employees'][4])
+        ->update(['organization_entity_id' => $siblingOrganization->id]);
+    $managedAssessment = developmentAssessment($fixture, $fixture['employees'][0]);
+    $outsideAssessment = developmentAssessment($fixture, $fixture['employees'][4]);
+    $store = app(DevelopmentActionStore::class);
+    $managed = $store->proposeFromAssessments($fixture['company'], [$managedAssessment->id],
+        developmentDraft($fixture, $fixture['employees'][0]), 10)[0];
+    $outside = $store->proposeFromAssessments($fixture['company'], [$outsideAssessment->id],
+        developmentDraft($fixture, $fixture['employees'][4]), 10)[0];
+
+    $hr = User::factory()->create(['company_id' => $fixture['platform_company']]);
+    $hod = User::factory()->create(['company_id' => $fixture['platform_company']]);
+    developmentActionRole($hr, 'people_hr');
+    developmentActionRole($hod, 'people_hod');
+
+    $hodUserEntity = WorkforceEntity::query()->create([
+        'tenant_id' => $fixture['tenant'], 'resource_type' => 'user',
+        'state' => WorkforceEntity::STATE_ACTIVE, 'first_seen_at' => now(),
+    ]);
+    WorkforceEmployeeProjection::query()
+        ->forCompany($fixture['tenant'], $fixture['company'])
+        ->where('workforce_entity_id', $fixture['employees'][1])
+        ->update(['user_entity_id' => $hodUserEntity->id]);
+    WorkforceEmployeeProjection::query()
+        ->forCompany($fixture['tenant'], $fixture['company'])
+        ->where('workforce_entity_id', $fixture['employees'][0])
+        ->update([
+            'manager_entity_id' => $fixture['employees'][1],
+            'department_head_entity_id' => $fixture['employees'][1],
+        ]);
+    app(SkillAudienceAssignmentStore::class)->confirmActor(
+        $hr, $hod, $fixture['company'], $fixture['employees'][1], 'review:development-action-hod',
+    );
+
+    Livewire::actingAs($hr)->test(DevelopmentActionIndex::class)
+        ->assertSee('Person 1')
+        ->assertSee('Person 5');
+
+    $component = Livewire::actingAs($hod)->test(DevelopmentActionIndex::class)
+        ->assertSee('Person 1')
+        ->assertDontSee('Person 5')
+        ->call('approve', (int) $managed->id)
+        ->assertOk();
+
+    expect(fn () => $component->call('approve', (int) $outside->id))
+        ->toThrow(ModelNotFoundException::class);
+
+    expect($managed->refresh()->status)->toBe(DevelopmentActionStatus::NotStarted)
+        ->and($outside->refresh()->status)->toBe(DevelopmentActionStatus::Proposed);
+});
+
+test('development action audience denies sibling companies and wrong tenants', function (): void {
+    $fixture = developmentActionFixture();
+    developmentAssessment($fixture, $fixture['employees'][0]);
+    $hr = User::factory()->create(['company_id' => $fixture['platform_company']]);
+    developmentActionRole($hr, 'people_hr');
+
+    Livewire::actingAs($hr)->test(DevelopmentActionIndex::class)->assertSee('Person 1');
+
+    $siblingCompany = Company::factory()->create(['tenant_id' => $fixture['tenant']]);
+    $siblingHr = User::factory()->create(['company_id' => $siblingCompany->id]);
+    developmentActionRole($siblingHr, 'people_hr');
+    Livewire::actingAs($siblingHr)->test(DevelopmentActionIndex::class)->assertDontSee('Person 1');
+
+    $otherTenant = createTenant(['name' => 'Wrong Development Action Tenant']);
+    app(TenantContext::class)->set((int) $otherTenant->id);
+    Livewire::actingAs($hr)->test(DevelopmentActionIndex::class)->assertDontSee('Person 1');
+});
+
+test('tenant-scoped development actions use only the single-company carve-out', function (): void {
+    $fixture = developmentActionFixture(4, tenantScoped: true);
+    developmentAssessment($fixture, $fixture['employees'][0]);
+    $hr = User::factory()->create(['company_id' => $fixture['platform_company']]);
+    developmentActionRole($hr, 'people_hr');
+
+    Livewire::actingAs($hr)->test(DevelopmentActionIndex::class)->assertSee('Person 1');
+
+    Company::factory()->create(['tenant_id' => $fixture['tenant']]);
+    Livewire::actingAs($hr)->test(DevelopmentActionIndex::class)
+        ->assertDontSee('Person 1')
+        ->assertSee('No company workforce data is synchronized yet.');
 });
