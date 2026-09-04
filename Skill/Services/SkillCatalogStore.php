@@ -120,7 +120,9 @@ class SkillCatalogStore
 
         $this->assertDraft($tenantId, $companyEntityId, $draft);
 
-        $skill->update($this->attributesFor($draft));
+        // Availability is owned by deactivateSkill / reactivateSkill so those
+        // lifecycle events stay the only writers of `active` (blb-people-connector#91).
+        $skill->update($this->reviseAttributesFor($draft));
 
         event(new SkillDefined($tenantId, (int) $skill->getKey(), $skill->code, created: false));
 
@@ -216,6 +218,21 @@ class SkillCatalogStore
             'owner_employee_entity_id' => $draft->ownerEmployeeEntityId,
             'active' => $draft->active,
         ];
+    }
+
+    /**
+     * Revise payload excludes `active` — toggling availability must go through
+     * {@see deactivateSkill()} / {@see reactivateSkill()} so the published
+     * lifecycle events cannot be skipped (blb-people-connector#91).
+     *
+     * @return array<string, mixed>
+     */
+    private function reviseAttributesFor(SkillDraft $draft): array
+    {
+        $attributes = $this->attributesFor($draft);
+        unset($attributes['active']);
+
+        return $attributes;
     }
 
     private function assertDraft(int $tenantId, int $companyEntityId, SkillDraft $draft): void
