@@ -1,0 +1,59 @@
+name: platform drift
+
+run-name: >-
+  platform drift · ${{ github.event_name == 'repository_dispatch'
+    && github.event.client_payload.platform_sha
+    || github.sha }}
+
+on:
+  repository_dispatch:
+    types:
+      - belimbing-platform-main-ci-succeeded
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/platform-drift.yml
+      - tests/ci/test_platform_drift_workflow.py
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    outputs:
+      platform_sha: ${{ steps.dispatch.outputs.platform_sha }}
+    steps:
+      - name: Checkout connector
+        uses: actions/checkout@v7 # NOSONAR — GitHub-maintained action; tag pinning is acceptable for internal projects
+
+      - name: Verify dispatch contract
+        run: python3 tests/ci/test_platform_drift_workflow.py
+
+      - name: Validate platform dispatch
+        id: dispatch
+        if: github.event_name == 'repository_dispatch'
+        env:
+          PLATFORM_REPOSITORY: ${{ github.event.client_payload.platform_repository }}
+          PLATFORM_REF: ${{ github.event.client_payload.platform_ref }}
+          PLATFORM_SHA: ${{ github.event.client_payload.platform_sha }}
+          PLATFORM_RUN_URL: ${{ github.event.client_payload.platform_run_url }}
+        run: |
+          test "$PLATFORM_REPOSITORY" = 'BelimbingApp/belimbing'
+          test "$PLATFORM_REF" = 'refs/heads/main'
+          [[ "$PLATFORM_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$PLATFORM_RUN_URL" =~ ^https://github\.com/BelimbingApp/belimbing/actions/runs/[0-9]+$ ]]
+          echo "platform_sha=$PLATFORM_SHA" >> "$GITHUB_OUTPUT"
+
+  ci:
+    if: github.event_name == 'repository_dispatch'
+    needs: contract
+    uses: BelimbingApp/belimbing/.github/workflows/domain-ci.yml@main
+    with:
+      domain-path: app/Domains/PeopleConnector
+      platform-ref: ${{ needs.contract.outputs.platform_sha }}
+      sonar-project-key: BelimbingApp_blb-people-connector
+      sonar-organization: belimbingapp
+    secrets:
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}

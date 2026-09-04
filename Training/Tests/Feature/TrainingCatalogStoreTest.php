@@ -11,10 +11,12 @@ use App\Domains\PeopleConnector\Training\Data\TrainingCourseDraft;
 use App\Domains\PeopleConnector\Training\Enums\DeliveryMode;
 use App\Domains\PeopleConnector\Training\Events\TrainingCourseDeactivated;
 use App\Domains\PeopleConnector\Training\Events\TrainingCourseDefined;
+use App\Domains\PeopleConnector\Training\Events\TrainingCourseReactivated;
 use App\Domains\PeopleConnector\Training\Exceptions\InvalidTrainingCatalogException;
 use App\Domains\PeopleConnector\Training\Exceptions\TrainingCatalogRecordNotFoundException;
 use App\Domains\PeopleConnector\Training\Models\TrainingCourse;
 use App\Domains\PeopleConnector\Training\Services\TrainingCatalogStore;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 
 afterEach(function (): void {
@@ -109,16 +111,64 @@ test('code stability is enforced at the model layer too, independent of the stor
 
 test('a course must map to at least one skill, and every mapped skill must belong to the same company', function (): void {
     [$tenantId, $companyEntityId, $skillId] = trainingCatalogFixture();
-    [, , $otherSkillId] = trainingCatalogFixture('Other Training Tenant');
     $store = app(TrainingCatalogStore::class);
 
-    app(TenantContext::class)->set($tenantId);
+    // Sibling company in the *same* tenant — the company axis, not a second tenant (#92).
+    $siblingCompanyId = (int) trainingCatalogWorkforceEntity($tenantId, 'company')->id;
+    $siblingCategory = app(SkillCatalogStore::class)->defineCategory($siblingCompanyId, 'safety', 'Safety');
+    $siblingSkill = app(SkillCatalogStore::class)->defineSkill($siblingCompanyId, new SkillDraft(
+        code: 'forklift.operation',
+        name: 'Forklift Operation',
+        definition: 'Sibling-company skill.',
+        categoryId: (int) $siblingCategory->id,
+        defaultAssessmentMethod: AssessmentMethod::DirectObservation,
+    ));
 
     expect(fn () => $store->defineCourse($companyEntityId, trainingCourseDraft($skillId, ['skillIds' => []])))
         ->toThrow(InvalidTrainingCatalogException::class, 'at least one skill');
 
-    expect(fn () => $store->defineCourse($companyEntityId, trainingCourseDraft($skillId, ['skillIds' => [$skillId, $otherSkillId]])))
-        ->toThrow(InvalidTrainingCatalogException::class, 'same company catalog');
+    expect(fn () => $store->defineCourse($companyEntityId, trainingCourseDraft($skillId, [
+        'skillIds' => [$skillId, (int) $siblingSkill->id],
+    ])))->toThrow(InvalidTrainingCatalogException::class, 'same company catalog');
+});
+
+test('blank titles and illegal codes fail closed (#92)', function (): void {
+    [, $companyEntityId, $skillId] = trainingCatalogFixture();
+    $store = app(TrainingCatalogStore::class);
+
+    expect(fn () => $store->defineCourse($companyEntityId, trainingCourseDraft($skillId, [
+        'title' => '   ',
+    ])))->toThrow(InvalidTrainingCatalogException::class, 'title');
+
+    expect(fn () => $store->defineCourse($companyEntityId, trainingCourseDraft($skillId, [
+        'code' => 'Bad Code!',
+    ])))->toThrow(InvalidTrainingCatalogException::class, 'lowercase');
+});
+
+test('mappedSkills drops a sibling-company skill planted on the join table (#92)', function (): void {
+    [$tenantId, $companyEntityId, $skillId] = trainingCatalogFixture();
+    $store = app(TrainingCatalogStore::class);
+    $course = $store->defineCourse($companyEntityId, trainingCourseDraft($skillId));
+
+    $siblingCompanyId = (int) trainingCatalogWorkforceEntity($tenantId, 'company')->id;
+    $siblingCategory = app(SkillCatalogStore::class)->defineCategory($siblingCompanyId, 'ops', 'Ops');
+    $siblingSkill = app(SkillCatalogStore::class)->defineSkill($siblingCompanyId, new SkillDraft(
+        code: 'sibling.skill',
+        name: 'Sibling Skill',
+        definition: 'Should not surface via mappedSkills.',
+        categoryId: (int) $siblingCategory->id,
+        defaultAssessmentMethod: AssessmentMethod::DirectObservation,
+    ));
+
+    // Plant a cross-company join row the store would never write.
+    DB::table('people_connector_training_course_skills')->insert([
+        'tenant_id' => $tenantId,
+        'course_id' => $course->id,
+        'skill_id' => $siblingSkill->id,
+    ]);
+
+    expect($course->skillIds())->toContain((int) $siblingSkill->id)
+        ->and($course->mappedSkills()->pluck('id')->all())->toBe([$skillId]);
 });
 
 test('revising a course replaces its skill mapping rather than accumulating it', function (): void {
@@ -157,17 +207,47 @@ test('deactivate and reactivate toggle the course and fire the deactivation even
     Event::assertDispatched(TrainingCourseDeactivated::class, fn (TrainingCourseDeactivated $event): bool => $event->code === 'forklift.induction');
 });
 
-test('a course cannot be reached, revised, or deactivated across a company or tenant boundary', function (): void {
-    [$tenantId, $companyEntityId, $skillId] = trainingCatalogFixture();
-    [, $otherCompanyEntityId] = trainingCatalogFixture('Cross-Company Training Tenant');
+test('reviseCourse does not change availability or skip lifecycle events (#91)', function (): void {
+    [, $companyEntityId, $skillId] = trainingCatalogFixture();
     $store = app(TrainingCatalogStore::class);
+    $course = $store->defineCourse($companyEntityId, trainingCourseDraft($skillId));
+    $store->deactivateCourse($companyEntityId, (int) $course->id);
 
-    app(TenantContext::class)->set($tenantId);
+    Event::fake([TrainingCourseDeactivated::class, TrainingCourseReactivated::class]);
+
+    // Ordinary draft defaults active=true — must not silently reactivate.
+    $revised = $store->reviseCourse($companyEntityId, (int) $course->id, trainingCourseDraft($skillId, [
+        'title' => 'Forklift Induction (Content only)',
+    ]));
+    expect($revised->active)->toBeFalse()
+        ->and($revised->title)->toBe('Forklift Induction (Content only)');
+
+    // Explicit active:false on revise must not deactivate via the revise path either.
+    $store->reactivateCourse($companyEntityId, (int) $course->id);
+    Event::fake([TrainingCourseDeactivated::class, TrainingCourseReactivated::class]);
+
+    $stillActive = $store->reviseCourse($companyEntityId, (int) $course->id, trainingCourseDraft($skillId, [
+        'active' => false,
+        'title' => 'Still active after revise',
+    ]));
+    expect($stillActive->active)->toBeTrue()
+        ->and($stillActive->title)->toBe('Still active after revise');
+
+    Event::assertNotDispatched(TrainingCourseDeactivated::class);
+    Event::assertNotDispatched(TrainingCourseReactivated::class);
+});
+
+test('a course cannot be reached, revised, or deactivated across a sibling company in the same tenant', function (): void {
+    [$tenantId, $companyEntityId, $skillId] = trainingCatalogFixture();
+    $siblingCompanyId = (int) trainingCatalogWorkforceEntity($tenantId, 'company')->id;
+    $store = app(TrainingCatalogStore::class);
     $course = $store->defineCourse($companyEntityId, trainingCourseDraft($skillId));
 
-    expect(fn () => $store->reviseCourse($otherCompanyEntityId, (int) $course->id, trainingCourseDraft($skillId)))
+    expect(fn () => $store->reviseCourse($siblingCompanyId, (int) $course->id, trainingCourseDraft($skillId)))
         ->toThrow(TrainingCatalogRecordNotFoundException::class)
-        ->and(fn () => $store->deactivateCourse($otherCompanyEntityId, (int) $course->id))
+        ->and(fn () => $store->deactivateCourse($siblingCompanyId, (int) $course->id))
+        ->toThrow(TrainingCatalogRecordNotFoundException::class)
+        ->and(fn () => $store->reactivateCourse($siblingCompanyId, (int) $course->id))
         ->toThrow(TrainingCatalogRecordNotFoundException::class);
 });
 

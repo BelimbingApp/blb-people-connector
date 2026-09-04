@@ -183,6 +183,34 @@ test('deactivation keeps history and category deactivation refuses while skills 
         ->toThrow(InvalidSkillCatalogException::class, 'category');
 });
 
+test('reviseSkill does not change availability or skip lifecycle events (#91)', function (): void {
+    [, $companyEntityId, $category] = skillCatalogFixture('Revise Active Tenant');
+    $store = app(SkillCatalogStore::class);
+    $skill = $store->defineSkill($companyEntityId, skillCatalogDraft($category));
+    $store->deactivateSkill($companyEntityId, (int) $skill->id);
+
+    Event::fake([SkillDeactivated::class, SkillReactivated::class]);
+
+    $revised = $store->reviseSkill($companyEntityId, (int) $skill->id, skillCatalogDraft($category, [
+        'name' => 'Forklift Operation (Revised)',
+    ]));
+    expect($revised->active)->toBeFalse()
+        ->and($revised->name)->toBe('Forklift Operation (Revised)');
+
+    $store->reactivateSkill($companyEntityId, (int) $skill->id);
+    Event::fake([SkillDeactivated::class, SkillReactivated::class]);
+
+    $stillActive = $store->reviseSkill($companyEntityId, (int) $skill->id, skillCatalogDraft($category, [
+        'active' => false,
+        'name' => 'Still active after revise',
+    ]));
+    expect($stillActive->active)->toBeTrue()
+        ->and($stillActive->name)->toBe('Still active after revise');
+
+    Event::assertNotDispatched(SkillDeactivated::class);
+    Event::assertNotDispatched(SkillReactivated::class);
+});
+
 test('reactivateSkill refuses when forCompany cannot resolve the category', function (): void {
     [$tenantId, $companyEntityId, $category] = skillCatalogFixture('Missing Category Tenant');
     $store = app(SkillCatalogStore::class);
