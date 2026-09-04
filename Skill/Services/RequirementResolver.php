@@ -3,9 +3,12 @@
 namespace App\Domains\PeopleConnector\Skill\Services;
 
 use App\Base\Tenancy\Contracts\TenantContext;
+use App\Domains\PeopleConnector\Skill\Contracts\ResolvesSkillRequirements;
+use App\Domains\PeopleConnector\Skill\Data\ResolvedSkillRequirement;
 use App\Domains\PeopleConnector\Skill\Enums\RequirementProfileStatus;
 use App\Domains\PeopleConnector\Skill\Enums\SelectorType;
 use App\Domains\PeopleConnector\Skill\Exceptions\InvalidRequirementProfileException;
+use App\Domains\PeopleConnector\Skill\Models\RequirementItem;
 use App\Domains\PeopleConnector\Skill\Models\RequirementProfile;
 use App\Domains\PeopleConnector\Skill\Models\RequirementProfileSelector;
 use DateTimeInterface;
@@ -14,8 +17,11 @@ use DateTimeInterface;
  * Resolves which requirement profile applies to an employee as of a date.
  * The resolver is deterministic, company/tenant safe, and returns an
  * explanation of the matching selectors.
+ *
+ * Also publishes the assessment-facing {@see ResolvesSkillRequirements} shape
+ * so gap/assessment code never imports profile selectors (blb-people#80).
  */
-class RequirementResolver
+class RequirementResolver implements ResolvesSkillRequirements
 {
     /**
      * Resolve the active requirement profile for an employee at a given date.
@@ -97,6 +103,40 @@ class RequirementResolver
             'explanation' => $hadPartialMatch ? $bestFailureExplanation : 'No published requirement profile matches this employee\'s attributes.',
             'matched_selectors' => [],
         ];
+    }
+
+    /**
+     * @param  array<string, mixed>  $employeeData
+     * @return list<ResolvedSkillRequirement>
+     */
+    public function requirementsFor(array $employeeData, ?DateTimeInterface $asOf = null): array
+    {
+        $resolved = $this->resolve($employeeData, $asOf);
+        $profile = $resolved['profile'];
+
+        if ($profile === null) {
+            return [];
+        }
+
+        $tenantId = app(TenantContext::class)->requireTenantId();
+        $items = RequirementItem::query()
+            ->forCompany($tenantId, (int) $profile->company_entity_id)
+            ->where('profile_id', $profile->getKey())
+            ->where('active', true)
+            ->orderBy('sequence')
+            ->get();
+
+        $reference = (string) $profile->code;
+        $version = (int) $profile->version;
+
+        return $items->map(fn (RequirementItem $item): ResolvedSkillRequirement => new ResolvedSkillRequirement(
+            requirementReference: $reference,
+            requirementVersion: $version,
+            skillId: (int) $item->skill_id,
+            requiredLevel: (int) $item->required_level,
+            criticality: $item->criticality,
+            mandatoryGate: (bool) $item->mandatory_gate,
+        ))->all();
     }
 
     /**

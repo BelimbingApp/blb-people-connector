@@ -6,6 +6,12 @@ use App\Base\Tenancy\Contracts\TenantContext;
 use App\Domains\PeopleConnector\Connector\Exceptions\ConnectorRecordNotFoundException;
 use App\Domains\PeopleConnector\Connector\Models\ProviderConnection;
 
+/**
+ * Resolves a tenant-scoped provider connection, optionally requesting a row lock.
+ *
+ * `$lock = true` is the PostgreSQL serialisation path. On SQLite it is a no-op —
+ * see docs/contracts/store-concurrency.md (#12).
+ */
 final class TenantConnectionLocator
 {
     public function __construct(private TenantContext $tenantContext) {}
@@ -16,6 +22,7 @@ final class TenantConnectionLocator
             ->forTenant($this->tenantContext->requireTenantId())
             ->whereKey($connectionId);
 
+        // PostgreSQL: FOR UPDATE. SQLite: no-op (docs/contracts/store-concurrency.md).
         if ($lock) {
             $query->lockForUpdate();
         }

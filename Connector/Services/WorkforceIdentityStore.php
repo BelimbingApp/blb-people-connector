@@ -25,6 +25,13 @@ use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Support\Facades\DB;
 
+/**
+ * Canonical workforce identity and merge operations for a provider connection.
+ *
+ * Mutating paths run inside `DB::transaction()` with `lock: true` so PostgreSQL
+ * writers serialise. SQLite ignores those locks; the production contract there
+ * is WAL + busy timeout with one attempt — docs/contracts/store-concurrency.md (#12).
+ */
 final class WorkforceIdentityStore
 {
     public function __construct(

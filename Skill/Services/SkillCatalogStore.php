@@ -147,7 +147,9 @@ class SkillCatalogStore
             ->forCompany((int) $skill->tenant_id, $companyEntityId)
             ->find($skill->category_id);
 
-        if ($category?->active === false) {
+        // Fail closed on a missing category (`?->` null): `=== false` would
+        // skip the guard and reactivate under a vanished category (#76).
+        if ($category?->active !== true) {
             throw new InvalidSkillCatalogException('Reactivate the skill category before reactivating its skills.');
         }
 
