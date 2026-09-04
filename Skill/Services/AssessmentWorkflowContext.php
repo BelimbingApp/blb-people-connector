@@ -2,8 +2,8 @@
 
 namespace App\Domains\PeopleConnector\Skill\Services;
 
-use Closure;
 use App\Domains\PeopleConnector\Skill\Exceptions\InvalidAssessmentException;
+use Closure;
 use Illuminate\Support\Facades\DB;
 use Throwable;
 
