@@ -23,7 +23,9 @@ use App\Domains\PeopleConnector\Training\Enums\DeliveryMode;
 use App\Domains\PeopleConnector\Training\Enums\TrainingEventStatus;
 use App\Domains\PeopleConnector\Training\Exceptions\InvalidTrainingEventException;
 use App\Domains\PeopleConnector\Training\Exceptions\TrainingEventNotFoundException;
+use App\Domains\PeopleConnector\Training\Livewire\Catalog\Index as CatalogIndex;
 use App\Domains\PeopleConnector\Training\Livewire\Event\Index;
+use App\Domains\PeopleConnector\Training\Models\TrainingCourse;
 use App\Domains\PeopleConnector\Training\Models\TrainingEventAuditEvent;
 use App\Domains\PeopleConnector\Training\Services\TrainingAudience;
 use App\Domains\PeopleConnector\Training\Services\TrainingCatalogStore;
@@ -222,6 +224,31 @@ test('training events preserve schedule snapshots and terminal audit history', f
         ->toThrow(QueryException::class)
         ->and(fn () => DB::transaction(fn () => DB::table('people_connector_training_event_audit_events')->where('id', $audit->id)->delete()))
         ->toThrow(QueryException::class);
+});
+
+test('HR can maintain the company-scoped course catalog without exposing a course to another company', function (): void {
+    $fixture = trainingEventFixture();
+    $hr = User::factory()->create(['company_id' => $fixture['platformCompany']->id]);
+    trainingEventRole($hr, 'people_hr');
+
+    Livewire::actingAs($hr)->test(CatalogIndex::class)
+        ->call('startCourse')
+        ->set('courseForm.code', 'confined.space')
+        ->set('courseForm.title', 'Confined space entry')
+        ->set('courseForm.delivery_mode', DeliveryMode::InternalOjt->value)
+        ->set('courseForm.skill_ids', [(int) $fixture['course']->skillIds()[0]])
+        ->set('courseForm.internal_trainer_employee_entity_id', (int) $fixture['trainer']->workforce_entity_id)
+        ->call('saveCourse')
+        ->assertHasNoErrors()
+        ->assertSee('Confined space entry');
+
+    $saved = TrainingCourse::query()->forCompany($fixture['tenantId'], (int) $fixture['company']->id)
+        ->where('code', 'confined.space')->sole();
+    expect($saved->mappedSkills()->pluck('id')->all())->toBe([(int) $fixture['course']->skillIds()[0]]);
+
+    $sibling = trainingEventEntity($fixture['tenantId'], 'company');
+    expect(TrainingCourse::query()->forCompany($fixture['tenantId'], (int) $sibling->id)->where('code', 'confined.space')->exists())
+        ->toBeFalse();
 });
 
 test('event schedule and transitions obey the event clock at the store boundary', function (): void {
