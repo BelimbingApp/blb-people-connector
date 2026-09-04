@@ -351,9 +351,15 @@ A is recorded as merged into B, any write that moves a catalog row from A to
 B is permitted by the database from then on. That is bounded — the row can
 only go where the merge would have sent it — and it is the price of a rule
 the database can check without a session flag; it is stated here so nobody
-reads it later as a bug. Projection tables get no trigger, because the
-database cannot tell a provider-side transfer from a mistake; there the named
-escape is the mechanism, and the sync store is the one caller.
+reads it later as a bug. Projection tables have a deliberately **narrower**
+backstop: on insert and whenever `company_entity_id` changes, a trigger checks
+that the target is a `company` workforce entity in the same tenant. It closes
+the malformed-owner hole that the composite foreign key leaves open — an
+organization unit, position, or employee is a real entity but cannot own a
+projection. It does **not** decide whether a transfer to a real company is
+authorised, and it does not require a named escape: the database cannot infer
+provider intent. `CompanyOwnedQuery` remains the stated-move mechanism and
+`WorkforceProjectionStore` remains the authorised sync writer.
 
 ### What the guard accepts
 
@@ -759,10 +765,9 @@ contract (blb-people-connector#53):
   on the restored rows because it is the model's — `RequireCompanyScope` in
   `CompanyOwned`, not anything in the package — and the skills-table
   triggers (skill code, company owner) hold because they are the
-  migration's, not the package's. The scale and
-  level guards are not exercised by that fixture, which creates no scales;
-  the round trip covers 4 of the 14 Connector tables today (#58 covers
-  the projection tables). This
+  migration's, not the package's. The fixture retains a published scale and
+  its levels as unchanged (the trigger makes them undeletable), then attempts
+  raw mutations after apply; both scale and level guards refuse them. This
   needed a platform fix: a row whose optional composite reference was null
   (a skill without a department) planned as a conflict until belimbing#528.
 - **A package is instance-level.** It carries every company in the tenant.

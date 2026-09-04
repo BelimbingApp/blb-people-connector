@@ -39,6 +39,7 @@ use App\Domains\PeopleConnector\Connector\Services\SyncCheckpointStore;
 use App\Domains\PeopleConnector\Connector\Services\WorkforceHistory;
 use App\Domains\PeopleConnector\Connector\Services\WorkforceIdentityStore;
 use App\Domains\PeopleConnector\Connector\Services\WorkforceProjectionStore;
+use Illuminate\Database\QueryException;
 
 afterEach(function (): void {
     app(TenantContext::class)->clear();
@@ -244,14 +245,19 @@ test('a projection changes company only through a sync pass that says so, never 
     $observedAt = new DateTimeImmutable('2026-08-30T09:00:00+00:00');
     $alpha = connectorPersistenceReference(WorkforceResourceType::Company, 'COMPANY-ALPHA');
     $beta = connectorPersistenceReference(WorkforceResourceType::Company, 'COMPANY-BETA');
+    $organization = connectorPersistenceReference(WorkforceResourceType::OrganizationUnit, 'TRANSFER-ORG');
+    $position = connectorPersistenceReference(WorkforceResourceType::Position, 'TRANSFER-POSITION');
     $employee = connectorPersistenceReference(WorkforceResourceType::Employee, 'TRANSFER-1');
 
     $projections->upsert((int) $connection->id, new WorkforceCompany($alpha, 'Alpha', true, $observedAt));
     $projections->upsert((int) $connection->id, new WorkforceCompany($beta, 'Beta', true, $observedAt));
+    $organizationProjection = $projections->upsert((int) $connection->id, new WorkforceOrganizationUnit($organization, $alpha, 'Transfer Organization', true, $observedAt, $observedAt));
+    $positionProjection = $projections->upsert((int) $connection->id, new WorkforcePosition($position, $alpha, 'Transfer Position', true, $observedAt, $observedAt, organizationReference: $organization));
     $projection = $projections->upsert((int) $connection->id, new WorkforceEmployee($employee, $alpha, 'Transferred Employee', true, $observedAt, $observedAt));
 
     $alphaEntityId = (int) $identities->resolve((int) $connection->id, $alpha)->id;
     $betaEntityId = (int) $identities->resolve((int) $connection->id, $beta)->id;
+    $organizationEntityId = (int) $identities->resolve((int) $connection->id, $organization)->id;
     expect((int) $projection->company_entity_id)->toBe($alphaEntityId);
 
     // Pinned on both axes, and beta is a real entity in the same tenant, so
@@ -264,6 +270,19 @@ test('a projection changes company only through a sync pass that says so, never 
         ->and(fn () => $projection->forceFill(['company_entity_id' => $betaEntityId])->save())
         ->toThrow(CompanyMoveRefusedException::class, 'would leave its company');
     expect((int) $projection->refresh()->company_entity_id)->toBe($alphaEntityId);
+
+    // These writes bypass Eloquent and its stated-move guard entirely. The
+    // projection trigger is intentionally narrower than that guard: it does
+    // not decide whether a transfer is authorised, but it must refuse every
+    // non-company workforce entity as an owner on all three projection tables.
+    foreach ([
+        ['people_connector_connector_workforce_organization_units', $organizationProjection->id],
+        ['people_connector_connector_workforce_positions', $positionProjection->id],
+        ['people_connector_connector_workforce_employees', $projection->id],
+    ] as [$table, $id]) {
+        expect(fn () => DB::transaction(fn () => DB::table($table)->where('id', $id)->update(['company_entity_id' => $organizationEntityId])))
+            ->toThrow(QueryException::class);
+    }
 
     // The provider says the employee now belongs to beta. That is the one
     // legitimate transfer, and the sync pass states it.
