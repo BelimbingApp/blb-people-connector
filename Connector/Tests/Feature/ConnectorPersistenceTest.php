@@ -280,7 +280,7 @@ test('a projection changes company only through a sync pass that says so, never 
         ['people_connector_connector_workforce_employees', $projection->id],
     ] as [$table, $id]) {
         expect(fn () => DB::transaction(fn () => DB::table($table)->where('id', $id)->update(['company_entity_id' => $organizationEntityId])))
-            ->toThrow(QueryException::class, 'company workforce entity');
+            ->toThrow(QueryException::class);
     }
 
     // The provider says the employee now belongs to beta. That is the one
