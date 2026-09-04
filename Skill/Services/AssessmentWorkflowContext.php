@@ -3,6 +3,7 @@
 namespace App\Domains\PeopleConnector\Skill\Services;
 
 use Closure;
+use App\Domains\PeopleConnector\Skill\Exceptions\InvalidAssessmentException;
 use Illuminate\Support\Facades\DB;
 use Throwable;
 
@@ -14,6 +15,7 @@ final class AssessmentWorkflowContext
     /** @internal Persistence authority issued by AssessmentStore only. */
     public static function runStoreMutation(Closure $callback): mixed
     {
+        self::assertStoreCaller();
         self::$depth++;
 
         try {
@@ -60,5 +62,25 @@ final class AssessmentWorkflowContext
     public static function active(): bool
     {
         return self::$depth > 0;
+    }
+
+    private static function assertStoreCaller(): void
+    {
+        $caller = debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS, 2)[1] ?? [];
+        $callerClass = $caller['class'] ?? null;
+        $callerFile = str_replace('\\', '/', (string) ($caller['file'] ?? ''));
+
+        // The production authority is private to AssessmentStore. Feature
+        // fixtures retain access only so they can exercise database guards
+        // with deliberately hostile writes; application code cannot activate
+        // this context around arbitrary query-builder mutations.
+        if ($callerClass === AssessmentStore::class
+            || str_contains($callerFile, '/Skill/Tests/')) {
+            return;
+        }
+
+        throw new InvalidAssessmentException(
+            'Assessment workflow authority is private to AssessmentStore.',
+        );
     }
 }
