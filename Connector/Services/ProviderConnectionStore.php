@@ -82,6 +82,8 @@ final class ProviderConnectionStore
                 );
 
             if ($connection->status === ProviderConnection::STATUS_ACTIVE) {
+                app(SchedulerPrincipalGrants::class)->grant($connection);
+
                 return $connection;
             }
 
@@ -94,6 +96,7 @@ final class ProviderConnectionStore
                         'status' => ProviderConnection::STATUS_INACTIVE,
                         'deactivated_at' => $now,
                     ])->save();
+                    app(SchedulerPrincipalGrants::class)->revoke($active);
                 });
 
             $connection->fill([
@@ -102,7 +105,9 @@ final class ProviderConnectionStore
                 'deactivated_at' => null,
             ])->save();
 
-            return $connection->refresh();
+            app(SchedulerPrincipalGrants::class)->grant($connection->refresh());
+
+            return $connection;
         });
     }
 
