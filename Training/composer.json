@@ -1,0 +1,28 @@
+{
+    "name": "blb/people-connector-training",
+    "type": "blb-module",
+    "description": "Connector-owned training course catalog, mapped to the Skill catalog.",
+    "license": "MIT",
+    "autoload": {
+        "psr-4": {
+            "App\\Domains\\PeopleConnector\\Training\\": ""
+        }
+    },
+    "extra": {
+        "blb": {
+            "module": "people-connector/training",
+            "version": "0.1.0",
+            "description": "Training course catalog foundation for the Skill and Training Management System.",
+            "requires-modules": {
+                "people-connector/connector": "*",
+                "people-connector/skill": "*"
+            },
+            "optional-modules": {},
+            "publishes-events": [
+                "App\\Domains\\PeopleConnector\\Training\\Events\\TrainingCourseDefined",
+                "App\\Domains\\PeopleConnector\\Training\\Events\\TrainingCourseDeactivated"
+            ],
+            "consumes-events": []
+        }
+    }
+}
