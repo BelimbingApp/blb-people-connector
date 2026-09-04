@@ -35,10 +35,10 @@
                     <tr wire:key="reconciliation-issue-{{ $issue->id }}">
                         <td class="px-table-cell-x py-table-cell-y align-top text-sm text-ink">
                             <x-ui.badge :variant="match ($issue->severity) { 'error' => 'danger', 'warning' => 'warning', default => 'secondary' }">
-                                {{ __($issue->severity) }}
+                                {{ match ($issue->severity) { 'error' => __('Needs attention'), 'warning' => __('Review needed'), default => __('Information') } }}
                             </x-ui.badge>
-                            <span class="mt-1 block font-medium">{{ __($issue->kind) }}</span>
-                            <span class="block text-xs text-muted">{{ $issue->details['reason_code'] ?? __('No reason code') }}</span>
+                            <span class="mt-1 block font-medium">{{ match ($issue->kind) { 'sync_merge_requested' => __('Merge review'), 'sync_conflict' => __('Synchronization conflict'), 'sync_feed_refused' => __('Synchronization refused'), 'sync_empty_bootstrap' => __('Empty initial synchronization'), default => __('Reconciliation issue') } }}</span>
+                            <span class="block text-xs text-muted">{{ match ($issue->details['reason_code'] ?? null) { 'review_required' => __('A human decision is required.'), 'projection_conflict' => __('The provider facts conflict with the current projection.'), 'record_not_found' => __('The provider record has no known identity.'), 'every_record_refused' => __('Every record in this synchronization was refused.'), 'no_records' => __('The provider reported no records.'), default => __('Review the recorded evidence.') } }}</span>
                         </td>
                         <td class="px-table-cell-x py-table-cell-y align-top text-sm text-ink">
                             <span class="font-medium">{{ $issue->resource_type ?? __('Connection') }}</span>

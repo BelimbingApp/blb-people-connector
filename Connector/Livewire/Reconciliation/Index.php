@@ -7,17 +7,13 @@ use App\Base\Authz\DTO\Actor;
 use App\Base\Foundation\Contracts\SemanticActionRecorder;
 use App\Base\Foundation\Livewire\Concerns\InteractsWithNotifications;
 use App\Core\User\Models\User;
-use App\Domains\PeopleConnector\Connector\Data\ExternalReference;
-use App\Domains\PeopleConnector\Connector\Data\WorkforceProvenance;
-use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
-use App\Domains\PeopleConnector\Connector\Exceptions\ConnectorRecordNotFoundException;
 use App\Domains\PeopleConnector\Connector\Models\ProviderConnection;
 use App\Domains\PeopleConnector\Connector\Models\ReconciliationIssue;
 use App\Domains\PeopleConnector\Connector\Services\CompanyAttribution;
 use App\Domains\PeopleConnector\Connector\Services\ReconciliationIssueStore;
+use App\Domains\PeopleConnector\Connector\Services\ReconciliationReviewService;
 use App\Domains\PeopleConnector\Connector\Services\TenantConnectionLocator;
 use App\Domains\PeopleConnector\Connector\Services\WorkforceFreshnessPolicy;
-use App\Domains\PeopleConnector\Connector\Services\WorkforceIdentityStore;
 use Illuminate\Contracts\View\View;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Validation\ValidationException;
@@ -48,8 +44,8 @@ final class Index extends Component
 
     public function resolveIssue(int $issueId, ReconciliationIssueStore $issues): void
     {
-        $issue = $this->openIssue($issueId, $issues);
         $this->authorizeConnection();
+        $issue = $this->openIssue($issueId, $issues);
         $note = $this->validatedNote($issueId);
         $issues->resolve($issueId);
 
@@ -61,25 +57,20 @@ final class Index extends Component
         $this->notify(__('Reconciliation issue resolved.'));
     }
 
-    public function applyMerge(int $issueId, ReconciliationIssueStore $issues, WorkforceIdentityStore $identities): void
+    public function applyMerge(int $issueId, ReconciliationIssueStore $issues, ReconciliationReviewService $reviews): void
     {
-        $issue = $this->openIssue($issueId, $issues);
         $this->authorizeConnection();
-        $this->validateMergeIssue($issue);
+        $issue = $this->openIssue($issueId, $issues);
         $reviewReference = $this->validatedReviewReference($issueId);
-        $connection = $this->connection();
-        $resourceType = WorkforceResourceType::from((string) $issue->resource_type);
         $survivorExternalId = (string) ($issue->details['related_external_id'] ?? '');
         $occurredAt = now();
 
-        $identities->merge(
+        $reviews->applyMerge(
             $this->connectionId,
-            new ExternalReference($connection->provider_id, $resourceType, (string) $issue->external_id),
-            new ExternalReference($connection->provider_id, $resourceType, $survivorExternalId),
+            $issueId,
+            $reviewReference,
             $occurredAt,
-            new WorkforceProvenance('reconciliation.review', $reviewReference),
         );
-        $issues->resolve($issueId, $occurredAt);
 
         $this->record('people_connector.reconciliation.merge_applied', __('Applied the reviewed merge for reconciliation issue :key.', ['key' => $issue->issue_key]), $issue, [
             'review_reference' => $reviewReference,
@@ -90,25 +81,22 @@ final class Index extends Component
         $this->notify(__('Reviewed merge applied and issue resolved.'));
     }
 
-    public function remapIdentity(int $issueId, ReconciliationIssueStore $issues, WorkforceIdentityStore $identities): void
+    public function remapIdentity(int $issueId, ReconciliationIssueStore $issues, ReconciliationReviewService $reviews): void
     {
-        $issue = $this->openIssue($issueId, $issues);
         $this->authorizeConnection();
+        $issue = $this->openIssue($issueId, $issues);
         $this->validateRemapIssue($issue, $issueId);
         $reviewReference = $this->validatedReviewReference($issueId);
-        $connection = $this->connection();
-        $resourceType = WorkforceResourceType::from((string) $issue->resource_type);
         $replacementExternalId = trim((string) $this->replacementExternalIds[$issueId]);
         $occurredAt = now();
 
-        $identities->remap(
+        $reviews->applyRemap(
             $this->connectionId,
-            new ExternalReference($connection->provider_id, $resourceType, (string) $issue->external_id),
-            new ExternalReference($connection->provider_id, $resourceType, $replacementExternalId),
+            $issueId,
+            $replacementExternalId,
+            $reviewReference,
             $occurredAt,
-            new WorkforceProvenance('reconciliation.review', $reviewReference),
         );
-        $issues->resolve($issueId, $occurredAt);
 
         $this->record('people_connector.reconciliation.identity_remapped', __('Remapped the reviewed identity for reconciliation issue :key.', ['key' => $issue->issue_key]), $issue, [
             'review_reference' => $reviewReference,
@@ -132,9 +120,7 @@ final class Index extends Component
 
     private function openIssue(int $issueId, ReconciliationIssueStore $issues): ReconciliationIssue
     {
-        return $issues->openForConnection($this->connectionId)
-            ->firstWhere('id', $issueId)
-            ?? throw new ConnectorRecordNotFoundException('The reconciliation issue is not open for this connection.');
+        return $issues->requireOpenForConnection($this->connectionId, $issueId);
     }
 
     private function connection(): ProviderConnection
@@ -167,17 +153,6 @@ final class Index extends Component
         return $this->validate([
             "reviewReferences.{$issueId}" => ['required', 'string', 'max:191', 'regex:/^[A-Za-z0-9]+(?:[._:\/-][A-Za-z0-9]+)*$/'],
         ])["reviewReferences.{$issueId}"];
-    }
-
-    private function validateMergeIssue(ReconciliationIssue $issue): void
-    {
-        if ($issue->kind !== 'sync_merge_requested'
-            || $issue->resource_type === null
-            || $issue->external_id === null
-            || ! is_string($issue->details['related_external_id'] ?? null)
-            || trim($issue->details['related_external_id']) === '') {
-            abort(422, 'This reconciliation issue does not contain a complete queued merge.');
-        }
     }
 
     private function validateRemapIssue(ReconciliationIssue $issue, int $issueId): void

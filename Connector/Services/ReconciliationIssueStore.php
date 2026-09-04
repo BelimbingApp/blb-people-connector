@@ -159,6 +159,23 @@ final class ReconciliationIssueStore
         });
     }
 
+    /**
+     * Finds one open issue for a connection, optionally taking the row lock
+     * that makes a reviewed identity decision and its queue resolution one
+     * unit of work.
+     */
+    public function requireOpenForConnection(int $connectionId, int $issueId, bool $lock = false): ReconciliationIssue
+    {
+        $query = $this->openQuery($connectionId)->whereKey($issueId);
+
+        if ($lock) {
+            $query->lockForUpdate();
+        }
+
+        return $query->first()
+            ?? throw new ConnectorRecordNotFoundException('The reconciliation issue is not open for this connection.');
+    }
+
     public function reopen(
         int $issueId,
         \DateTimeInterface $observedAt,
