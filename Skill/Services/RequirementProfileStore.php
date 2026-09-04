@@ -213,32 +213,35 @@ class RequirementProfileStore
         }
 
         $tenantId = app(TenantContext::class)->requireTenantId();
-        $profile = $this->requireProfile($tenantId, $companyEntityId, $profileId);
 
-        if ($profile->status !== RequirementProfileStatus::Published) {
-            throw new InvalidRequirementProfileException(
-                "Profile [{$profile->code}] v{$profile->version} is {$profile->status->value}; only a published profile can be retired.",
+        return DB::transaction(function () use ($tenantId, $companyEntityId, $profileId): RequirementProfile {
+            $profile = $this->requireProfile($tenantId, $companyEntityId, $profileId);
+
+            if ($profile->status !== RequirementProfileStatus::Published) {
+                throw new InvalidRequirementProfileException(
+                    "Profile [{$profile->code}] v{$profile->version} is {$profile->status->value}; only a published profile can be retired.",
+                );
+            }
+
+            app(RequirementProfileTransitionAuthority::class)->authorize(
+                $profile,
+                RequirementProfileStatus::Published,
+                RequirementProfileStatus::Retired,
             );
-        }
+            $profile->update([
+                'status' => RequirementProfileStatus::Retired,
+                'retired_at' => now(),
+            ]);
 
-        app(RequirementProfileTransitionAuthority::class)->authorize(
-            $profile,
-            RequirementProfileStatus::Published,
-            RequirementProfileStatus::Retired,
-        );
-        $profile->update([
-            'status' => RequirementProfileStatus::Retired,
-            'retired_at' => now(),
-        ]);
+            event(new RequirementProfileRetired(
+                $tenantId,
+                (int) $profile->getKey(),
+                (string) $profile->code,
+                (int) $profile->version,
+            ));
 
-        event(new RequirementProfileRetired(
-            $tenantId,
-            (int) $profile->getKey(),
-            (string) $profile->code,
-            (int) $profile->version,
-        ));
-
-        return $profile;
+            return $profile;
+        });
     }
 
     public function discardDraft(int $companyEntityId, int $profileId): void

@@ -2,11 +2,15 @@
 
 namespace App\Domains\PeopleConnector\Skill;
 
+use App\Base\Database\Services\DataShare\DataShareDestinationMapper;
+use App\Base\Database\Services\DataShare\DataShareScopeCatalog;
+use App\Base\Database\Services\DataShare\DataShareValueNormalizer;
 use App\Base\Menu\Services\MenuConditionRegistry;
 use App\Base\Workflow\Events\TransitionCompleted;
 use App\Core\User\Models\User;
 use App\Domains\PeopleConnector\Skill\Contracts\ResolvesSkillRequirements;
 use App\Domains\PeopleConnector\Skill\Listeners\SendRequirementProfileTransitionNotification;
+use App\Domains\PeopleConnector\Skill\Services\RequirementProfileDataShareDestinationMapper;
 use App\Domains\PeopleConnector\Skill\Services\RequirementResolver;
 use App\Domains\PeopleConnector\Skill\Services\SkillAudience;
 use App\Domains\PeopleConnector\Skill\Workflow\RequirementProfileTransitionAuthority;
@@ -20,6 +24,14 @@ class ServiceProvider extends BaseServiceProvider
     {
         $this->app->bind(ResolvesSkillRequirements::class, RequirementResolver::class);
         $this->app->singleton(RequirementProfileTransitionAuthority::class);
+        $this->app->extend(
+            DataShareDestinationMapper::class,
+            fn (): RequirementProfileDataShareDestinationMapper => new RequirementProfileDataShareDestinationMapper(
+                $this->app->make(DataShareValueNormalizer::class),
+                $this->app->make(DataShareScopeCatalog::class),
+                $this->app->make(RequirementProfileTransitionAuthority::class),
+            ),
+        );
     }
 
     public function boot(): void

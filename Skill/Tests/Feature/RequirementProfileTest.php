@@ -941,6 +941,19 @@ test('governed profiles require in-scope HOD review and HR approval before publi
         ->toThrow(PublishedRequirementImmutableException::class, 'must use the governed workflow');
     expect($profile->refresh()->status)->toBe(RequirementProfileStatus::Draft)
         ->and(StatusHistory::timeline(RequirementProfile::WORKFLOW_FLOW, (int) $profile->id))->toBeEmpty();
+    expect(fn () => DB::transaction(function () use ($profile): void {
+        app(RequirementProfileTransitionAuthority::class)->authorize(
+            $profile,
+            RequirementProfileStatus::Draft,
+            RequirementProfileStatus::PendingHodReview,
+        );
+        $profile->update([
+            'status' => RequirementProfileStatus::PendingHodReview->value,
+            'published_at' => now(),
+        ]);
+    }))->toThrow(QueryException::class);
+    expect($profile->refresh()->status)->toBe(RequirementProfileStatus::Draft)
+        ->and(DB::table('people_connector_skill_requirement_profile_transition_proofs')->count())->toBe(0);
     expect(fn () => DB::transaction(fn (): int => DB::table('people_connector_skill_requirement_profiles')
         ->where('id', $profile->id)
         ->update(['status' => RequirementProfileStatus::PendingHodReview->value])))
@@ -1128,18 +1141,20 @@ test('governed profiles require in-scope HOD review and HR approval before publi
         'version' => 99,
         'status' => RequirementProfileStatus::Draft,
     ]);
-    foreach ([
-        RequirementProfileStatus::PendingHodReview,
-        RequirementProfileStatus::PendingHrReview,
-        RequirementProfileStatus::Approved,
-    ] as $contenderStatus) {
-        app(RequirementProfileTransitionAuthority::class)->authorize(
-            $concurrentContender,
-            $concurrentContender->status,
-            $contenderStatus,
-        );
-        $concurrentContender->update(['status' => $contenderStatus]);
-    }
+    DB::transaction(function () use ($concurrentContender): void {
+        foreach ([
+            RequirementProfileStatus::PendingHodReview,
+            RequirementProfileStatus::PendingHrReview,
+            RequirementProfileStatus::Approved,
+        ] as $contenderStatus) {
+            app(RequirementProfileTransitionAuthority::class)->authorize(
+                $concurrentContender,
+                $concurrentContender->status,
+                $contenderStatus,
+            );
+            $concurrentContender->update(['status' => $contenderStatus]);
+        }
+    });
     expect(fn () => DB::transaction(fn (): int => DB::table('people_connector_skill_requirement_profiles')
         ->where('id', $concurrentContender->id)
         ->update(['status' => RequirementProfileStatus::Published->value, 'published_at' => now()])))

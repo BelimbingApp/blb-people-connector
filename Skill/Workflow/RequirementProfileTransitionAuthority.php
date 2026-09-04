@@ -4,6 +4,7 @@ namespace App\Domains\PeopleConnector\Skill\Workflow;
 
 use App\Base\Workflow\DTO\TransitionContext;
 use App\Domains\PeopleConnector\Skill\Enums\RequirementProfileStatus;
+use App\Domains\PeopleConnector\Skill\Exceptions\PublishedRequirementImmutableException;
 use App\Domains\PeopleConnector\Skill\Models\RequirementProfile;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -71,12 +72,78 @@ final class RequirementProfileTransitionAuthority
         RequirementProfileStatus $from,
         RequirementProfileStatus $to,
     ): void {
+        $this->requireTransaction();
+
         DB::table('people_connector_skill_requirement_profile_transition_proofs')->insert([
             'id' => (string) Str::uuid(),
             'tenant_id' => (int) $profile->tenant_id,
             'profile_id' => (int) $profile->getKey(),
+            'subject_id' => null,
+            'operation' => 'transition',
             'from_status' => $from->value,
             'to_status' => $to->value,
         ]);
+    }
+
+    /**
+     * Authorize one exact record emitted by the verified DataShare applier.
+     * The database consumes this row on insert; package failure rolls it back
+     * with the applier transaction.
+     *
+     * @param  array<string, mixed>  $values
+     */
+    public function authorizeDatabaseRestore(string $table, array $values): void
+    {
+        $this->requireTransaction();
+
+        [$operation, $profileId, $subjectId, $toStatus] = match ($table) {
+            'people_connector_skill_requirement_profiles' => [
+                'restore_profile',
+                (int) ($values['id'] ?? 0),
+                (int) ($values['id'] ?? 0),
+                (string) ($values['status'] ?? ''),
+            ],
+            'people_connector_skill_requirement_items' => [
+                'restore_item',
+                (int) ($values['profile_id'] ?? 0),
+                (int) ($values['id'] ?? 0),
+                null,
+            ],
+            'people_connector_skill_requirement_profile_selectors' => [
+                'restore_selector',
+                (int) ($values['profile_id'] ?? 0),
+                (int) ($values['id'] ?? 0),
+                null,
+            ],
+            default => throw new PublishedRequirementImmutableException(
+                "Table [{$table}] is not part of requirement-profile restore authority.",
+            ),
+        };
+
+        $tenantId = (int) ($values['tenant_id'] ?? 0);
+        if ($tenantId < 1 || $profileId < 1 || $subjectId < 1) {
+            throw new PublishedRequirementImmutableException(
+                'Requirement-profile restore authority requires exact tenant, profile, and record identifiers.',
+            );
+        }
+
+        DB::table('people_connector_skill_requirement_profile_transition_proofs')->insert([
+            'id' => (string) Str::uuid(),
+            'tenant_id' => $tenantId,
+            'profile_id' => $profileId,
+            'subject_id' => $subjectId,
+            'operation' => $operation,
+            'from_status' => null,
+            'to_status' => $toStatus,
+        ]);
+    }
+
+    private function requireTransaction(): void
+    {
+        if (DB::connection()->transactionLevel() < 1) {
+            throw new PublishedRequirementImmutableException(
+                'Requirement-profile persistence authority requires an active database transaction.',
+            );
+        }
     }
 }
