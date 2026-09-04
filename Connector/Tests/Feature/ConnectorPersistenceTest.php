@@ -35,6 +35,7 @@ use App\Domains\PeopleConnector\Connector\Models\WorkforcePositionProjection;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceSnapshot;
 use App\Domains\PeopleConnector\Connector\Services\ProviderConnectionStore;
 use App\Domains\PeopleConnector\Connector\Services\ReconciliationIssueStore;
+use App\Domains\PeopleConnector\Connector\Services\ReconciliationReviewService;
 use App\Domains\PeopleConnector\Connector\Services\SyncCheckpointStore;
 use App\Domains\PeopleConnector\Connector\Services\WorkforceHistory;
 use App\Domains\PeopleConnector\Connector\Services\WorkforceIdentityStore;
@@ -1079,6 +1080,12 @@ test('reconciliation issues are durable idempotent and tenant isolated', functio
         ])
         ->and(ReconciliationIssue::query()->forTenant((int) $tenantA->id)->count())->toBe(1);
 
+    $page = $issues->paginateOpenForConnection((int) $connection->id, 1);
+
+    expect($page->total())->toBe(1)
+        ->and($page->perPage())->toBe(1)
+        ->and($page->first()?->id)->toBe($repeat->id);
+
     $resolved = $issues->resolve((int) $repeat->id, $firstSeen->modify('+2 hours'));
     expect($resolved->status)->toBe(ReconciliationIssue::STATUS_RESOLVED)
         ->and($issues->openForConnection((int) $connection->id))->toHaveCount(0);
@@ -1141,6 +1148,58 @@ test('reconciliation issues are durable idempotent and tenant isolated', functio
     app(TenantContext::class)->set((int) $tenantB->id);
     expect(fn () => $issues->resolve((int) $repeat->id))
         ->toThrow(ConnectorRecordNotFoundException::class);
+});
+
+test('a reviewed merge resolves its locked queue issue atomically and refuses malformed evidence', function (): void {
+    [$tenant] = createTenantWithCompany(['name' => 'Reconciliation Review Tenant']);
+    $connection = connectorPersistenceConnection((int) $tenant->id);
+    $at = new DateTimeImmutable('2026-09-04T10:00:00+00:00');
+    $superseded = connectorPersistenceReference(WorkforceResourceType::Employee, 'EMP-OLD');
+    $survivor = connectorPersistenceReference(WorkforceResourceType::Employee, 'EMP-NEW');
+    $identities = app(WorkforceIdentityStore::class);
+    $identities->resolveOrCreateIdentity((int) $connection->id, $superseded, $at);
+    $survivingIdentity = $identities->resolveOrCreateIdentity((int) $connection->id, $survivor, $at);
+    $issues = app(ReconciliationIssueStore::class);
+
+    $merge = $issues->report(
+        (int) $connection->id,
+        'sync:merge:employee:EMP-OLD',
+        'sync_merge_requested',
+        new ReconciliationIssueDetails(reasonCode: 'review_required', relatedExternalId: 'EMP-NEW'),
+        WorkforceResourceType::Employee->value,
+        'EMP-OLD',
+        severity: 'warning',
+        seenAt: $at,
+    );
+
+    $resolved = app(ReconciliationReviewService::class)->applyMerge(
+        (int) $connection->id,
+        (int) $merge->id,
+        'review-2026-09-04',
+        $at->modify('+1 hour'),
+    );
+
+    expect($resolved->status)->toBe(ReconciliationIssue::STATUS_RESOLVED)
+        ->and($identities->resolve((int) $connection->id, $superseded)->id)->toBe($survivingIdentity->workforce_entity_id);
+
+    $malformed = $issues->report(
+        (int) $connection->id,
+        'sync:merge:employee:EMP-NEW',
+        'sync_merge_requested',
+        new ReconciliationIssueDetails(reasonCode: 'review_required', relatedExternalId: 'EMP-NEW'),
+        WorkforceResourceType::Employee->value,
+        'EMP-NEW',
+        severity: 'warning',
+        seenAt: $at->modify('+2 hours'),
+    );
+
+    expect(fn () => app(ReconciliationReviewService::class)->applyMerge(
+        (int) $connection->id,
+        (int) $malformed->id,
+        'review-2026-09-04-duplicate',
+        $at->modify('+3 hours'),
+    ))->toThrow(InvalidReconciliationIssueException::class, 'two distinct valid external identifiers')
+        ->and($malformed->refresh()->status)->toBe(ReconciliationIssue::STATUS_OPEN);
 });
 
 test('a deactivated workforce identity can be reactivated for a re-hire without losing the deactivation record', function (): void {
