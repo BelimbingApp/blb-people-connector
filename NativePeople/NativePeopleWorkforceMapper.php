@@ -17,6 +17,7 @@ use App\Domains\PeopleConnector\Connector\Data\WorkforceOrganizationUnit;
 use App\Domains\PeopleConnector\Connector\Data\WorkforcePage;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceUpsert;
 use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
+use App\Domains\PeopleConnector\NativePeople\Providers\NativePeopleAdapter;
 
 final class NativePeopleWorkforceMapper
 {
