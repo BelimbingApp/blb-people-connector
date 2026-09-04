@@ -18,7 +18,7 @@ final class RequirementProfileWorkflowSeeder extends Seeder
             ['code' => RequirementProfile::WORKFLOW_FLOW],
             [
                 'label' => 'Requirement Profile Governance',
-                'module' => 'people/skill',
+                'module' => 'people-connector/skill',
                 'description' => 'HOD technical review and HR governance before requirement-profile publication.',
                 'model_class' => RequirementProfile::class,
                 'is_active' => true,

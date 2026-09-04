@@ -7,6 +7,7 @@ use App\Base\Authz\Models\PrincipalRole;
 use App\Base\Authz\Models\Role;
 use App\Base\Tenancy\Contracts\TenantContext;
 use App\Base\Workflow\Models\StatusHistory;
+use App\Base\Workflow\Models\Workflow;
 use App\Base\Workflow\Notifications\TransitionNotification;
 use App\Core\Company\Models\Company;
 use App\Core\User\Models\User;
@@ -913,6 +914,10 @@ test('governed profiles require in-scope HOD review and HR approval before publi
         'review:hod-governance-binding',
     );
     (new RequirementProfileWorkflowSeeder)->run();
+    expect(Workflow::query()
+        ->forModule('people-connector/skill')
+        ->where('code', RequirementProfile::WORKFLOW_FLOW)
+        ->exists())->toBeTrue();
 
     $category = app(SkillCatalogStore::class)->defineCategory($companyEntityId, 'governed', 'Governed');
     $skill = app(SkillCatalogStore::class)->defineSkill($companyEntityId, new SkillDraft(
