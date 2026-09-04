@@ -9,6 +9,6 @@ return [
         'people-connector.skill.catalog.view',
         'people-connector.skill.catalog.manage',
         'people-connector.skill.assessment.view',
-        'people-connector.skill.assessment.assess',
+        'people-connector.skill.assessment.manage',
     ],
 ];

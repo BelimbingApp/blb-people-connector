@@ -211,7 +211,7 @@ class Matrix extends Component
     {
         return app(AuthorizationService::class)->can(
             Actor::forUser(Auth::user()),
-            'people-connector.skill.assessment.assess',
+            'people-connector.skill.assessment.manage',
         )->allowed;
     }
 
@@ -227,7 +227,7 @@ class Matrix extends Component
     {
         app(AuthorizationService::class)->authorize(
             Actor::forUser(Auth::user()),
-            'people-connector.skill.assessment.assess',
+            'people-connector.skill.assessment.manage',
         );
     }
 
