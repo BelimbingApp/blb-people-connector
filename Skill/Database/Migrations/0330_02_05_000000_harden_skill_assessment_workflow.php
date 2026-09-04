@@ -51,11 +51,11 @@ return new class extends Migration
         $this->dropDecisionGuards();
         $this->dropAssessmentWorkflowGuards();
         $this->unregisterTable('people_connector_skill_assessment_decisions');
+        Schema::dropIfExists('people_connector_skill_assessment_decisions');
         Schema::table('people_connector_skill_assessments', function (Blueprint $table): void {
             $table->dropUnique('pcs_assess_owner_uq');
             $table->dropUnique('pcs_assessment_correction_once_unique');
         });
-        Schema::dropIfExists('people_connector_skill_assessment_decisions');
     }
 
     private function createAssessmentWorkflowGuards(): void
