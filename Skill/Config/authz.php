@@ -2,7 +2,7 @@
 
 return [
     'domains' => [
-        'people-connector-skill' => 'Connector-owned skill catalog, assessments, and proficiency scales.',
+        'people-connector-skill' => 'Connector-owned skill catalog, assessments, development actions, and proficiency scales.',
     ],
 
     'capabilities' => [
@@ -15,6 +15,8 @@ return [
         'people-connector.skill-requirement.approve',
         'people-connector.skill-requirement-publication.approve',
         'people-connector.skill-requirement-retirement.approve',
+        'people-connector.skill.development-action.view',
+        'people-connector.skill.development-action.manage',
         'people-connector.skill.hr.view',
         'people-connector.skill.hod.view',
         'people-connector.skill.assessor.view',
@@ -38,6 +40,8 @@ return [
                 'people-connector.skill-requirement.approve',
                 'people-connector.skill-requirement-publication.approve',
                 'people-connector.skill-requirement-retirement.approve',
+                'people-connector.skill.development-action.view',
+                'people-connector.skill.development-action.manage',
                 'people-connector.skill.hr.view',
             ],
         ],
@@ -49,6 +53,8 @@ return [
                 'people-connector.skill.assessment.view',
                 'people-connector.skill.assessment.manage',
                 'people-connector.skill-requirement.hod-approve',
+                'people-connector.skill.development-action.view',
+                'people-connector.skill.development-action.manage',
                 'people-connector.skill.hod.view',
             ],
         ],

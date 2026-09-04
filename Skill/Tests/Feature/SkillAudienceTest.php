@@ -146,9 +146,11 @@ test('platform administration does not implicitly become connector HR', function
 
     expect(app(SkillAudience::class)->visibleEmployeeEntityIds($hr, $companyEntityId, manage: true))
         ->toEqualCanonicalizing([(int) $first->workforce_entity_id, (int) $second->workforce_entity_id])
+        ->and(app(SkillAudience::class)->visibleDevelopmentActionEmployeeEntityIds($hr, $companyEntityId, manage: true))
+        ->toEqualCanonicalizing([(int) $first->workforce_entity_id, (int) $second->workforce_entity_id])
         ->and(fn () => app(SkillAudience::class)->authorizeAudience(
             $platformAdmin,
-            'people-connector.skill.assessment.view',
+            'people-connector.skill.development-action.view',
         ))->toThrow(AuthorizationDeniedException::class);
 
     $this->actingAs($platformAdmin)
@@ -257,11 +259,15 @@ test('HOD assessor and employee audiences resolve department assignment and self
     $audience = app(SkillAudience::class);
     expect($audience->visibleEmployeeEntityIds($hod, $companyAEntityId, manage: true))
         ->toBe([(int) $teamWorker->workforce_entity_id])
+        ->and($audience->visibleDevelopmentActionEmployeeEntityIds($hod, $companyAEntityId, manage: true))
+        ->toBe([(int) $teamWorker->workforce_entity_id])
         ->and($audience->visibleEmployeeEntityIds($assessor, $companyAEntityId, manage: true))
         ->toBe([(int) $teamWorker->workforce_entity_id])
         ->and($audience->visibleEmployeeEntityIds($employee, $companyAEntityId, manage: false))
         ->toBe([(int) $teamWorker->workforce_entity_id])
         ->and($audience->visibleEmployeeEntityIds($hod, $companyBEntityId, manage: true))
+        ->toBe([])
+        ->and($audience->visibleDevelopmentActionEmployeeEntityIds($hod, $companyBEntityId, manage: true))
         ->toBe([])
         ->and($audience->allowedCompanies($hr, 'people-connector.skill.assessment.view'))
         ->toBe([$companyAEntityId => 'Workforce A']);
@@ -317,5 +323,7 @@ test('revocation and tenant changes invalidate a previously confirmed self bindi
 
     $tenantB = createTenant(['name' => 'Binding Tenant B']);
     app(TenantContext::class)->set((int) $tenantB->id);
-    expect(app(SkillAudience::class)->visibleEmployeeEntityIds($employee, $companyEntityId, manage: false))->toBe([]);
+    expect(app(SkillAudience::class)->visibleEmployeeEntityIds($employee, $companyEntityId, manage: false))->toBe([])
+        ->and(app(SkillAudience::class)->visibleDevelopmentActionEmployeeEntityIds($hr, $companyEntityId, manage: true))
+        ->toBe([]);
 });
