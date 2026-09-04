@@ -381,7 +381,7 @@ final class SkillAudience
     ): void {
         if (! $this->mayForEmployee(
             $user,
-            'people-connector.skill.assessment.hod-verify',
+            'people-connector.skill.assessment.verify',
             $companyEntityId,
             $employeeEntityId,
             [self::HOD],
@@ -397,7 +397,7 @@ final class SkillAudience
     ): void {
         if (! $this->mayForEmployee(
             $user,
-            'people-connector.skill.assessment.finalize',
+            'people-connector.skill.assessment.approve',
             $companyEntityId,
             $employeeEntityId,
             [self::HOD],
