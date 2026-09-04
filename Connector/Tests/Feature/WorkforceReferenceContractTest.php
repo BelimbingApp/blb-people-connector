@@ -21,6 +21,7 @@ use App\Domains\PeopleConnector\Skill\Enums\AssessmentMethod;
 use App\Domains\PeopleConnector\Skill\Enums\SkillScope;
 use App\Domains\PeopleConnector\Skill\Models\RequirementProfileSelector;
 use App\Domains\PeopleConnector\Skill\Models\Skill;
+use App\Domains\PeopleConnector\Skill\Models\SkillActorBinding;
 use App\Domains\PeopleConnector\Skill\Services\SkillCatalogStore;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -88,12 +89,13 @@ test('the two columns the merge forgot are now declared where the merge reads th
     ]);
 
     // Exact User list for the same reason the Position list used to be the
-    // probe isolation contract: only employee.user_entity_id today. When a
-    // real model declares another User column, EXTEND this array and move
-    // the probes to a resource type nothing real declares; do not weaken
-    // either exact list to toContain.
+    // probe isolation contract. Keep this exact as reviewed user references
+    // arrive; do not weaken the list to toContain.
     $forUsers = array_map(fn (array $pair): string => $pair[0].'.'.$pair[1]->column, DomainModels::referencing(WorkforceResourceType::User));
-    expect($forUsers)->toBe([WorkforceEmployeeProjection::class.'.user_entity_id']);
+    expect($forUsers)->toBe([
+        WorkforceEmployeeProjection::class.'.user_entity_id',
+        SkillActorBinding::class.'.user_entity_id',
+    ]);
 });
 
 /**
