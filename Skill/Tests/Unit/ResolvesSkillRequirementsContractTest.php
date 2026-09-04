@@ -144,6 +144,7 @@ test('assessment surface php sources never name requirement-profile tables', fun
         $absolute = $skillRoot.DIRECTORY_SEPARATOR.str_replace('/', DIRECTORY_SEPARATOR, $relative);
         if (is_file($absolute)) {
             $files[] = $absolute;
+
             continue;
         }
         if (is_dir($absolute)) {
