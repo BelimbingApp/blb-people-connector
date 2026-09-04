@@ -214,9 +214,9 @@ test('training events preserve schedule snapshots and terminal audit history', f
     $audit = TrainingEventAuditEvent::query()->forCompany($fixture['tenantId'], (int) $fixture['company']->id)->firstOrFail();
     expect(fn () => $audit->update(['comment' => 'rewrite']))
         ->toThrow(InvalidTrainingEventException::class)
-        ->and(fn () => DB::table('people_connector_training_event_audit_events')->where('id', $audit->id)->update(['comment' => 'rewrite']))
+        ->and(fn () => DB::transaction(fn () => DB::table('people_connector_training_event_audit_events')->where('id', $audit->id)->update(['comment' => 'rewrite'])))
         ->toThrow(QueryException::class)
-        ->and(fn () => DB::table('people_connector_training_event_audit_events')->where('id', $audit->id)->delete())
+        ->and(fn () => DB::transaction(fn () => DB::table('people_connector_training_event_audit_events')->where('id', $audit->id)->delete()))
         ->toThrow(QueryException::class);
 });
 
@@ -234,7 +234,7 @@ test('event invariants and sibling company or tenant access fail closed', functi
     expect(fn () => $store->schedule((int) $siblingCompany->id, trainingEventDraft($fixture)))
         ->toThrow(InvalidTrainingEventException::class, 'active training course');
 
-    expect(fn () => DB::table('people_connector_training_events')->insert([
+    expect(fn () => DB::transaction(fn () => DB::table('people_connector_training_events')->insert([
         'tenant_id' => $fixture['tenantId'],
         'company_entity_id' => $siblingCompany->id,
         'event_key' => (string) Str::uuid(),
@@ -249,7 +249,7 @@ test('event invariants and sibling company or tenant access fail closed', functi
         'status' => TrainingEventStatus::Scheduled->value,
         'created_at' => now(),
         'updated_at' => now(),
-    ]))->toThrow(QueryException::class);
+    ])))->toThrow(QueryException::class);
 
     $event = $store->schedule((int) $fixture['company']->id, trainingEventDraft($fixture));
     expect(fn () => $store->start((int) $siblingCompany->id, (int) $event->id))

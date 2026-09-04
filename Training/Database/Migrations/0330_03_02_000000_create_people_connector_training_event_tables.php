@@ -133,7 +133,7 @@ return new class extends Migration
                         AND NEW.evidence IS NOT DISTINCT FROM OLD.evidence
                         AND NEW.actor_user_id IS NOT DISTINCT FROM OLD.actor_user_id
                         AND NEW.actor_employee_entity_id IS NOT DISTINCT FROM OLD.actor_employee_entity_id
-                        AND NEW.metadata IS NOT DISTINCT FROM OLD.metadata
+                        AND NEW.metadata::jsonb IS NOT DISTINCT FROM OLD.metadata::jsonb
                         AND NEW.occurred_at = OLD.occurred_at
                         AND EXISTS (
                             SELECT 1 FROM people_connector_connector_workforce_entities
