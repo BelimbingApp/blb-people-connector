@@ -12,11 +12,9 @@ return new class extends Migration
     use IncubatingSchema;
     use RegistersTables;
 
-    private string $table = 'people_connector_skill_assessment_decisions';
-
     public function up(): void
     {
-        Schema::create($this->table, function (Blueprint $table): void {
+        Schema::create('people_connector_skill_assessment_decisions', function (Blueprint $table): void {
             $table->id();
             $table->unsignedBigInteger('tenant_id');
             $table->unsignedBigInteger('company_entity_id');
@@ -40,15 +38,15 @@ return new class extends Migration
 
         $this->createAssessmentWorkflowGuards();
         $this->createDecisionGuards();
-        $this->registerTable($this->table);
+        $this->registerTable('people_connector_skill_assessment_decisions');
     }
 
     public function down(): void
     {
         $this->dropDecisionGuards();
         $this->dropAssessmentWorkflowGuards();
-        $this->unregisterTable($this->table);
-        Schema::dropIfExists($this->table);
+        $this->unregisterTable('people_connector_skill_assessment_decisions');
+        Schema::dropIfExists('people_connector_skill_assessment_decisions');
     }
 
     private function createAssessmentWorkflowGuards(): void
