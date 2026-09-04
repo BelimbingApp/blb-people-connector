@@ -2,8 +2,11 @@
 
 namespace App\Domains\PeopleConnector\Connector;
 
+use App\Domains\PeopleConnector\Connector\Console\Commands\SyncWorkforceCommand;
 use App\Domains\PeopleConnector\Connector\Services\ProviderHealthStore;
 use App\Domains\PeopleConnector\Connector\Services\ProviderRegistry;
+use App\Domains\PeopleConnector\Connector\Services\WorkforceFreshnessPolicy;
+use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Support\ServiceProvider as BaseServiceProvider;
 
 class ServiceProvider extends BaseServiceProvider
@@ -28,10 +31,30 @@ class ServiceProvider extends BaseServiceProvider
         $this->mergeConfigFrom(__DIR__.'/Config/people-connector.php', 'people-connector');
         $this->app->singleton(ProviderRegistry::class);
         $this->app->singleton(ProviderHealthStore::class);
+
+        if ($this->app->runningInConsole()) {
+            $this->commands([
+                SyncWorkforceCommand::class,
+            ]);
+        }
     }
 
     public function boot(): void
     {
         $this->loadViewsFrom(__DIR__.'/Views', 'people-connector');
+
+        $this->app->booted(function (): void {
+            // Cadence must stay below max_age_minutes so freshness does not
+            // lapse between ticks by design (#70). Default max age is 24h;
+            // hourly is safely under that without thrashing adapters.
+            $maxAge = WorkforceFreshnessPolicy::maxAgeMinutes();
+            $minutes = max(1, min(60, intdiv($maxAge, 4)));
+
+            $this->app->make(Schedule::class)
+                ->command('people-connector:sync')
+                ->cron("*/{$minutes} * * * *")
+                ->onOneServer()
+                ->withoutOverlapping($minutes);
+        });
     }
 }
