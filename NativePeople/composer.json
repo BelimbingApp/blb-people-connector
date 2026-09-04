@@ -1,0 +1,25 @@
+{
+    "name": "blb/people-connector-native-people",
+    "type": "blb-module",
+    "description": "First-party adapter from the People provider boundary to the provider-neutral connector.",
+    "license": "MIT",
+    "autoload": {
+        "psr-4": {
+            "App\\Domains\\PeopleConnector\\NativePeople\\": ""
+        }
+    },
+    "extra": {
+        "blb": {
+            "module": "people-connector/native-people",
+            "version": "0.1.0",
+            "description": "Co-located first-party People workforce adapter.",
+            "requires-modules": {
+                "people-connector/connector": "*",
+                "people/provider": "*"
+            },
+            "optional-modules": {},
+            "publishes-events": [],
+            "consumes-events": []
+        }
+    }
+}
