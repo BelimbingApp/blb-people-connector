@@ -296,6 +296,24 @@ class RequirementProfileStore
             ->lockForUpdate()
             ->get();
 
+        $this->assertItems($tenantId, $companyEntityId, $items
+            ->map(static fn (RequirementItem $item): RequirementItemDraft => new RequirementItemDraft(
+                skillId: (int) $item->skill_id,
+                sequence: (int) $item->sequence,
+                requiredLevel: (int) $item->required_level,
+                criticality: $item->criticality,
+                weightPercent: (float) $item->weight_percent,
+                evidenceStandard: $item->evidence_standard,
+                mandatoryGate: (bool) $item->mandatory_gate,
+                reassessmentMonths: $item->reassessment_months === null ? null : (int) $item->reassessment_months,
+                active: (bool) $item->active,
+            ))->all());
+        $this->assertSelectors($tenantId, $companyEntityId, $selectors
+            ->map(static fn (RequirementProfileSelector $selector): RequirementSelectorDraft => new RequirementSelectorDraft(
+                selectorType: $selector->selector_type,
+                selectorValue: $selector->selector_value,
+                selectorEntityId: $selector->selector_entity_id === null ? null : (int) $selector->selector_entity_id,
+            ))->all());
         $this->assertPublishableItems($items->all());
         $this->assertNoOverlap($tenantId, $companyEntityId, $profile, $selectors);
     }
