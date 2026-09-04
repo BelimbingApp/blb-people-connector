@@ -66,7 +66,7 @@ final class AssessmentWorkflowContext
 
     private static function assertStoreCaller(): void
     {
-        $caller = debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS, 2)[1] ?? [];
+        $caller = debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS, 3)[2] ?? [];
         $callerClass = $caller['class'] ?? null;
         $callerFile = str_replace('\\', '/', (string) ($caller['file'] ?? ''));
 
