@@ -9,6 +9,7 @@ use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
 use App\Domains\PeopleConnector\Connector\Models\ExternalIdentity;
 use App\Domains\PeopleConnector\Connector\Models\ProviderConnection;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceCompanyProjection;
+use App\Domains\PeopleConnector\Connector\Models\WorkforceEntity;
 
 /**
  * Answers "which workforce companies may this user act for?".
@@ -27,8 +28,15 @@ use App\Domains\PeopleConnector\Connector\Models\WorkforceCompanyProjection;
  * CLOSED. The single carve-out is a tenant that has only ever held one
  * platform company: there is no cross-company boundary there to violate.
  *
- * Closing the gap properly needs a stored workforce-company → platform-company
- * link. That is a schema and product decision, tracked in
+ * Eligibility is the workforce entity's state, not the projection's `active`
+ * flag (#15). Deactivate retires the projection; reactivate restores the
+ * identity and entity but deliberately leaves the projection retired until the
+ * provider restates facts. Authorizing on that flag made skill catalog access
+ * silently vanish between reactivate and the next upsert. A retired projection
+ * under an active company entity is still the last known display name.
+ *
+ * Closing the attribution gap properly needs a stored workforce-company →
+ * platform-company link. That is a schema and product decision, tracked in
  * BelimbingApp/blb-people#21.
  */
 class CompanyAttribution
@@ -63,7 +71,14 @@ class CompanyAttribution
         $projections = WorkforceCompanyProjection::query()
             ->withoutCompanyScope('Enumerating which companies exist is what produces the company axis; it cannot itself be scoped to one.')
             ->forTenant($tenantId)
-            ->where('active', true)
+            ->whereIn(
+                'workforce_entity_id',
+                WorkforceEntity::query()
+                    ->forTenant($tenantId)
+                    ->where('resource_type', WorkforceResourceType::Company->value)
+                    ->where('state', WorkforceEntity::STATE_ACTIVE)
+                    ->select('id'),
+            )
             ->orderBy('name')
             ->get(['workforce_entity_id', 'source_identity_id', 'name']);
 
