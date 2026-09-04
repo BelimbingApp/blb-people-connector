@@ -57,6 +57,10 @@ class CompanyAttribution
             return [];
         }
 
+        if (! $this->actorCompanyBelongsToTenant($tenantId, (int) $actorCompanyId)) {
+            return [];
+        }
+
         return $this->resolve($tenantId, (int) $actorCompanyId);
     }
 
@@ -78,7 +82,9 @@ class CompanyAttribution
         $tenantId = $this->tenantContext->requireTenantId();
         $actorCompanyId = $actor?->getCompanyId();
 
-        if ($actorCompanyId === null || (int) $connection->tenant_id !== $tenantId) {
+        if ($actorCompanyId === null
+            || (int) $connection->tenant_id !== $tenantId
+            || ! $this->actorCompanyBelongsToTenant($tenantId, (int) $actorCompanyId)) {
             return false;
         }
 
@@ -178,5 +184,13 @@ class CompanyAttribution
     private function hasOnlyEverHadOneCompany(int $tenantId): bool
     {
         return Company::query()->withTrashed()->where('tenant_id', $tenantId)->count() === 1;
+    }
+
+    private function actorCompanyBelongsToTenant(int $tenantId, int $actorCompanyId): bool
+    {
+        return Company::query()
+            ->whereKey($actorCompanyId)
+            ->where('tenant_id', $tenantId)
+            ->exists();
     }
 }

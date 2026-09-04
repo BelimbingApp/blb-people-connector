@@ -237,6 +237,19 @@ test('a tenant-scoped queue is available in the single-company carve-out', funct
         ->assertSee('Reconciliation queue');
 });
 
+test('the single-company carve-out never admits an actor from another tenant', function (): void {
+    [$tenantA] = createTenantWithCompany(['name' => 'Single Company Tenant A']);
+    $connectionId = reconciliationPageConnection((int) $tenantA->id, null);
+    [$tenantB, $companyB] = createTenantWithCompany(['name' => 'Single Company Tenant B']);
+    $foreignUser = User::factory()->create(['company_id' => $companyB->id]);
+    app(TenantContext::class)->set((int) $tenantA->id);
+    reconciliationPageAllowingAuthz();
+
+    Livewire::actingAs($foreignUser)
+        ->test(Index::class, ['connectionId' => $connectionId])
+        ->assertForbidden();
+});
+
 test('a tenant-scoped queue fails closed when the tenant has multiple companies', function (): void {
     [$tenant, $company] = createTenantWithCompany(['name' => 'Multi Company Reconciliation Tenant']);
     Company::factory()->create(['tenant_id' => $tenant->id, 'name' => 'Sibling Company']);
