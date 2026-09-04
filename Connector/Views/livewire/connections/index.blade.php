@@ -78,4 +78,32 @@
             </x-slot:body>
         </x-ui.table>
     @endif
+
+    @if ($reconciliationConnections->isNotEmpty())
+        <x-ui.table>
+            <x-slot:head>
+                <tr>
+                    <x-ui.th>{{ __('Connection') }}</x-ui.th>
+                    <x-ui.th>{{ __('Scope') }}</x-ui.th>
+                    <x-ui.th><span class="sr-only">{{ __('Actions') }}</span></x-ui.th>
+                </tr>
+            </x-slot:head>
+            <x-slot:body>
+                @foreach ($reconciliationConnections as $connection)
+                    <tr wire:key="reconciliation-connection-{{ $connection->id }}">
+                        <td class="px-table-cell-x py-table-cell-y text-sm text-ink">
+                            <span class="font-medium">{{ $connection->provider_id }}</span>
+                            <span class="block text-muted">{{ $connection->label ?? $connection->provider_id }}</span>
+                        </td>
+                        <td class="px-table-cell-x py-table-cell-y text-sm text-ink">{{ $connection->scope_key }}</td>
+                        <td class="px-table-cell-x py-table-cell-y text-right">
+                            <x-ui.button as="a" size="sm" variant="secondary" href="{{ route('admin.people-connector.reconciliation.index', $connection->id) }}" wire:navigate>
+                                {{ __('Open reconciliation queue') }}
+                            </x-ui.button>
+                        </td>
+                    </tr>
+                @endforeach
+            </x-slot:body>
+        </x-ui.table>
+    @endif
 </div>

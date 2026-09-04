@@ -126,6 +126,17 @@ test('a user is offered only the workforce company their own platform company co
         ->and(app(CompanyAttribution::class)->mayActFor(null, $fixture->alphaCompanyEntityId))->toBeFalse();
 });
 
+test('company attribution directly rejects an actor whose platform company belongs to another tenant', function (): void {
+    $fixture = CompanyIsolationContract::twoCompaniesInOneTenant();
+    [, $foreignCompany] = createTenantWithCompany(['name' => 'Foreign Attribution Tenant']);
+    $foreignUser = User::factory()->create(['company_id' => $foreignCompany->id]);
+    app(TenantContext::class)->set($fixture->tenantId);
+    $attribution = app(CompanyAttribution::class);
+
+    expect($attribution->allowedCompanyEntities($foreignUser))->toBe([])
+        ->and($attribution->mayActFor($foreignUser, $fixture->alphaCompanyEntityId))->toBeFalse();
+});
+
 test('company attribution follows the workforce entity state, not the retired projection flag', function (): void {
     // #15: deactivate retires the company projection; reactivate restores the
     // entity but leaves the projection retired until the provider restates
