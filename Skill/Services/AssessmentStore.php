@@ -48,6 +48,44 @@ final class AssessmentStore
     }
 
     /**
+     * Atomically finalize many cells (HOD batch matrix save).
+     * Empty evidence cells are skipped; partial failure rolls the whole batch back.
+     *
+     * @param  list<AssessmentDraft>  $drafts
+     * @param  array<string, mixed>  $employeeData
+     * @return list<SkillAssessment>
+     */
+    public function finalizeBatch(
+        int $companyEntityId,
+        array $drafts,
+        array $employeeData = [],
+        ?int $finalizedByUserId = null,
+    ): array {
+        if ($drafts === []) {
+            throw new InvalidAssessmentException('Batch finalize requires at least one assessment cell.');
+        }
+
+        return DB::transaction(function () use ($companyEntityId, $drafts, $employeeData, $finalizedByUserId): array {
+            $saved = [];
+
+            foreach ($drafts as $draft) {
+                if (! $draft instanceof AssessmentDraft) {
+                    throw new InvalidAssessmentException('Batch cells must be AssessmentDraft instances.');
+                }
+
+                $saved[] = $this->finalize(
+                    $companyEntityId,
+                    $draft,
+                    employeeData: $employeeData,
+                    finalizedByUserId: $finalizedByUserId,
+                );
+            }
+
+            return $saved;
+        });
+    }
+
+    /**
      * Finalize a new assessment (or supersede a prior finalized one).
      *
      * @param  array<string, mixed>  $employeeData  Attributes for ResolvesSkillRequirements

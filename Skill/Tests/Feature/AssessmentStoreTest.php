@@ -210,3 +210,24 @@ test('a sibling company cannot finalize against this catalog or employee spine',
         assessmentDraft($employeeEntityId, $skillId),
     ))->toThrow(InvalidAssessmentException::class);
 });
+
+test('finalizeBatch is atomic: one bad cell rolls back the whole matrix save', function (): void {
+    [$tenantId, $companyEntityId, $employeeEntityId, $skillId] = assessmentFixture();
+    $store = app(AssessmentStore::class);
+
+    $good = assessmentDraft($employeeEntityId, $skillId, ['assessedLevel' => 3]);
+    $bad = assessmentDraft($employeeEntityId, $skillId, ['assessedLevel' => 3, 'evidence' => '']);
+
+    expect(fn () => $store->finalizeBatch($companyEntityId, [$good, $bad], finalizedByUserId: 1))
+        ->toThrow(InvalidAssessmentException::class, 'Evidence');
+
+    expect(SkillAssessment::query()->forCompany($tenantId, $companyEntityId)->count())->toBe(0)
+        ->and(EmployeeSkillScore::query()->forCompany($tenantId, $companyEntityId)->count())->toBe(0);
+
+    $saved = $store->finalizeBatch($companyEntityId, [
+        assessmentDraft($employeeEntityId, $skillId, ['assessedLevel' => 3]),
+    ], finalizedByUserId: 1);
+
+    expect($saved)->toHaveCount(1)
+        ->and(SkillAssessment::query()->forCompany($tenantId, $companyEntityId)->count())->toBe(1);
+});
