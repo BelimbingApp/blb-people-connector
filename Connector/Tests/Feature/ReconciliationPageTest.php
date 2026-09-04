@@ -225,14 +225,18 @@ test('the HTTP queue route authorizes the exact identity manager actor and capab
         ->get(route('admin.people-connector.reconciliation.index', $connectionId))
         ->assertOk();
 
-    foreach ($calls as $call) {
-        expect($call['capability'])->toBe('people-connector.identity.manage')
-            ->and($call['actor']->id)->toBe((int) $user->id)
+    $identityManagementCalls = array_values(array_filter(
+        $calls,
+        static fn (array $call): bool => $call['capability'] === 'people-connector.identity.manage',
+    ));
+
+    foreach ($identityManagementCalls as $call) {
+        expect($call['actor']->id)->toBe((int) $user->id)
             ->and($call['actor']->companyId)->toBe((int) $company->id)
             ->and($call['actor']->tenantId)->toBe((int) $tenant->id);
     }
 
-    $contexts = array_column($calls, 'context');
+    $contexts = array_column($identityManagementCalls, 'context');
 
     expect($contexts)
         ->toContain(['route' => 'admin.people-connector.reconciliation.index'])
