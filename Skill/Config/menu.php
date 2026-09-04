@@ -13,5 +13,13 @@ return [
             'permission' => 'people-connector.skill.catalog.view',
             'parent' => 'people',
         ],
+        [
+            'id' => 'people.skill-assessments',
+            'label' => 'Skill assessments',
+            'icon' => 'heroicon-o-clipboard-document-check',
+            'route' => 'people-connector.skill.assessment.matrix',
+            'permission' => 'people-connector.skill.assessment.view',
+            'parent' => 'people',
+        ],
     ],
 ];
