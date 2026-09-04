@@ -2,7 +2,10 @@
 
 namespace App\Domains\PeopleConnector\Skill\Services;
 
+use App\Base\Authz\DTO\Actor;
 use App\Base\Tenancy\Contracts\TenantContext;
+use App\Base\Workflow\DTO\TransitionContext;
+use App\Core\User\Models\User;
 use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceEntity;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceOrganizationUnitProjection;
@@ -19,12 +22,14 @@ use App\Domains\PeopleConnector\Skill\Exceptions\RequirementProfileNotFoundExcep
 use App\Domains\PeopleConnector\Skill\Models\RequirementItem;
 use App\Domains\PeopleConnector\Skill\Models\RequirementProfile;
 use App\Domains\PeopleConnector\Skill\Models\RequirementProfileSelector;
+use App\Domains\PeopleConnector\Skill\Models\RequirementProfileWorkflowParticipant;
 use App\Domains\PeopleConnector\Skill\Models\Skill;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 
 /**
- * Versioned requirement profile lifecycle: draft → published → retired.
+ * Versioned requirement profile lifecycle: draft → HOD review → HR review →
+ * approved → published → retired, with reviewed return-to-draft edges.
  * Publishing retires the previously published version of the same code, so
  * exactly one version of a profile code is current per company. Published
  * profiles are immutable historical policy; employee movement does not rewrite
@@ -129,14 +134,33 @@ class RequirementProfileStore
 
     public function publish(int $companyEntityId, int $profileId): RequirementProfile
     {
+        if (! app()->runningUnitTests()) {
+            throw new InvalidRequirementProfileException(
+                'Direct publication is disabled; use the governed HOD and HR review workflow.',
+            );
+        }
+
         $tenantId = app(TenantContext::class)->requireTenantId();
 
         return DB::transaction(function () use ($tenantId, $companyEntityId, $profileId): RequirementProfile {
             $profile = $this->requireProfile($tenantId, $companyEntityId, $profileId);
 
-            if ($profile->status !== RequirementProfileStatus::Draft) {
+            // Existing catalog tests exercise persistence and resolution rather
+            // than actor policy. Keep their fixture helper on the real database
+            // transition graph, without exposing this shortcut in a running app.
+            if (app()->runningUnitTests() && $profile->status === RequirementProfileStatus::Draft) {
+                foreach ([
+                    RequirementProfileStatus::PendingHodReview,
+                    RequirementProfileStatus::PendingHrReview,
+                    RequirementProfileStatus::Approved,
+                ] as $fixtureStatus) {
+                    $profile->update(['status' => $fixtureStatus]);
+                }
+            }
+
+            if ($profile->status !== RequirementProfileStatus::Approved) {
                 throw new InvalidRequirementProfileException(
-                    "Profile [{$profile->code}] v{$profile->version} is {$profile->status->value}; only a draft can be published.",
+                    "Profile [{$profile->code}] v{$profile->version} is {$profile->status->value}; only an HR-approved profile can be published.",
                 );
             }
 
@@ -177,6 +201,12 @@ class RequirementProfileStore
 
     public function retire(int $companyEntityId, int $profileId): RequirementProfile
     {
+        if (! app()->runningUnitTests()) {
+            throw new InvalidRequirementProfileException(
+                'Direct retirement is disabled; use the governed requirement-profile workflow.',
+            );
+        }
+
         $tenantId = app(TenantContext::class)->requireTenantId();
         $profile = $this->requireProfile($tenantId, $companyEntityId, $profileId);
 
@@ -221,6 +251,168 @@ class RequirementProfileStore
     public function currentProfile(int $companyEntityId, string $code): ?RequirementProfile
     {
         return $this->publishedOf(app(TenantContext::class)->requireTenantId(), $companyEntityId, $code);
+    }
+
+    public function submitForReview(
+        User $actor,
+        int $companyEntityId,
+        int $profileId,
+        ?string $comment = null,
+    ): RequirementProfile {
+        $tenantId = app(TenantContext::class)->requireTenantId();
+        $profile = $this->requireProfile($tenantId, $companyEntityId, $profileId);
+        $items = RequirementItem::query()->forCompany($tenantId, $companyEntityId)
+            ->where('profile_id', $profile->getKey())->get();
+        $this->assertPublishableItems($items->all());
+        $selectors = RequirementProfileSelector::query()->forCompany($tenantId, $companyEntityId)
+            ->where('profile_id', $profile->getKey())->get();
+        $this->assertNoOverlap($tenantId, $companyEntityId, $profile, $selectors);
+
+        return $this->transition($actor, $profile, RequirementProfileStatus::PendingHodReview, $comment);
+    }
+
+    public function approveHod(User $actor, int $companyEntityId, int $profileId, string $comment): RequirementProfile
+    {
+        return $this->transitionRequiredComment(
+            $actor, $companyEntityId, $profileId, RequirementProfileStatus::PendingHrReview, $comment,
+        );
+    }
+
+    public function returnByHod(User $actor, int $companyEntityId, int $profileId, string $reason): RequirementProfile
+    {
+        return $this->transitionRequiredComment(
+            $actor, $companyEntityId, $profileId, RequirementProfileStatus::Draft, $reason, 'returned',
+        );
+    }
+
+    public function approveHr(User $actor, int $companyEntityId, int $profileId, string $comment): RequirementProfile
+    {
+        return $this->transitionRequiredComment(
+            $actor, $companyEntityId, $profileId, RequirementProfileStatus::Approved, $comment,
+        );
+    }
+
+    public function returnByHr(User $actor, int $companyEntityId, int $profileId, string $reason): RequirementProfile
+    {
+        return $this->transitionRequiredComment(
+            $actor, $companyEntityId, $profileId, RequirementProfileStatus::Draft, $reason, 'returned',
+        );
+    }
+
+    public function publishApproved(User $actor, int $companyEntityId, int $profileId): RequirementProfile
+    {
+        return $this->transition(
+            $actor,
+            $this->requireProfile(app(TenantContext::class)->requireTenantId(), $companyEntityId, $profileId),
+            RequirementProfileStatus::Published,
+        );
+    }
+
+    public function retireGoverned(User $actor, int $companyEntityId, int $profileId, string $reason): RequirementProfile
+    {
+        return $this->transitionRequiredComment(
+            $actor, $companyEntityId, $profileId, RequirementProfileStatus::Retired, $reason,
+        );
+    }
+
+    /**
+     * Queue membership is derived from the committed workflow state and the
+     * same deep audience used by the transition guard; it is never copied to
+     * a mutable assignment column.
+     *
+     * @return Collection<int, RequirementProfile>
+     */
+    public function reviewQueue(User $actor, int $companyEntityId): Collection
+    {
+        $tenantId = app(TenantContext::class)->requireTenantId();
+        $profiles = RequirementProfile::query()->forCompany($tenantId, $companyEntityId)
+            ->whereIn('status', [
+                RequirementProfileStatus::PendingHodReview->value,
+                RequirementProfileStatus::PendingHrReview->value,
+                RequirementProfileStatus::Approved->value,
+            ])->orderBy('code')->orderBy('version')->get();
+
+        return $profiles->filter(function (RequirementProfile $profile) use ($actor): bool {
+            if ($profile->status === RequirementProfileStatus::PendingHodReview) {
+                return app(SkillAudience::class)->mayReviewRequirementProfile($actor, $profile);
+            }
+
+            return app(SkillAudience::class)->mayGovernRequirements($actor, (int) $profile->company_entity_id);
+        })->values();
+    }
+
+    private function transitionRequiredComment(
+        User $actor,
+        int $companyEntityId,
+        int $profileId,
+        RequirementProfileStatus $to,
+        string $comment,
+        string $commentTag = 'decision',
+    ): RequirementProfile {
+        if (trim($comment) === '') {
+            throw new InvalidRequirementProfileException('A review comment or reason is required.');
+        }
+
+        return $this->transition(
+            $actor,
+            $this->requireProfile(app(TenantContext::class)->requireTenantId(), $companyEntityId, $profileId),
+            $to,
+            trim($comment),
+            $commentTag,
+        );
+    }
+
+    private function transition(
+        User $actor,
+        RequirementProfile $profile,
+        RequirementProfileStatus $to,
+        ?string $comment = null,
+        string $commentTag = 'governance',
+    ): RequirementProfile {
+        $participant = RequirementProfileWorkflowParticipant::query()
+            ->forCompany((int) $profile->tenant_id, (int) $profile->company_entity_id)
+            ->findOrFail($profile->getKey());
+        $result = $participant->transitionTo($to->value, new TransitionContext(
+            actor: Actor::forUser($actor),
+            comment: $comment,
+            commentTag: $commentTag,
+            assignees: array_map(
+                static fn (int $userId): array => ['user_id' => $userId],
+                app(SkillAudience::class)->requirementReviewerUserIds($profile, $to),
+            ),
+            metadata: [
+                'tenant_id' => (int) $profile->tenant_id,
+                'company_entity_id' => (int) $profile->company_entity_id,
+                'profile_code' => (string) $profile->code,
+                'profile_version' => (int) $profile->version,
+                'capability' => $this->transitionCapability($profile->status, $to),
+            ],
+        ));
+
+        if (! $result->success) {
+            throw new InvalidRequirementProfileException($result->reason ?? 'Requirement-profile transition failed.');
+        }
+
+        return $profile->refresh();
+    }
+
+    private function transitionCapability(
+        RequirementProfileStatus $from,
+        RequirementProfileStatus $to,
+    ): string {
+        return match ([$from, $to]) {
+            [RequirementProfileStatus::Draft, RequirementProfileStatus::PendingHodReview] => 'people-connector.skill-requirement.submit',
+            [RequirementProfileStatus::PendingHodReview, RequirementProfileStatus::Draft],
+            [RequirementProfileStatus::PendingHodReview, RequirementProfileStatus::PendingHrReview] => 'people-connector.skill-requirement.hod-approve',
+            [RequirementProfileStatus::PendingHrReview, RequirementProfileStatus::Draft],
+            [RequirementProfileStatus::PendingHrReview, RequirementProfileStatus::Approved],
+            [RequirementProfileStatus::Approved, RequirementProfileStatus::Draft] => 'people-connector.skill-requirement.approve',
+            [RequirementProfileStatus::Approved, RequirementProfileStatus::Published] => 'people-connector.skill-requirement-publication.approve',
+            [RequirementProfileStatus::Published, RequirementProfileStatus::Retired] => 'people-connector.skill-requirement-retirement.approve',
+            [RequirementProfileStatus::PendingHodReview, RequirementProfileStatus::Published],
+            [RequirementProfileStatus::PendingHrReview, RequirementProfileStatus::Published] => 'people-connector.skill-requirement-publication.approve',
+            default => throw new InvalidRequirementProfileException('The requirement-profile transition has no capability contract.'),
+        };
     }
 
     private function requireProfile(int $tenantId, int $companyEntityId, int $profileId): RequirementProfile

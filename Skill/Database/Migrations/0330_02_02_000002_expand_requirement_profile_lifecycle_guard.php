@@ -1,0 +1,193 @@
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Support\Facades\DB;
+
+return new class extends Migration
+{
+    public function up(): void
+    {
+        if (in_array(DB::connection()->getDriverName(), ['pgsql', 'sqlite'], true)) {
+            DB::statement(
+                'CREATE UNIQUE INDEX IF NOT EXISTS pcs_req_profile_current_uq'
+                .' ON people_connector_skill_requirement_profiles (tenant_id, company_entity_id, code)'
+                ." WHERE status = 'published'",
+            );
+        }
+
+        if (DB::connection()->getDriverName() === 'pgsql') {
+            DB::unprepared(<<<'SQL'
+                CREATE OR REPLACE FUNCTION pcs_req_profile_guard() RETURNS trigger AS $$
+                DECLARE
+                    is_company_merge boolean;
+                    valid_transition boolean;
+                BEGIN
+                    IF TG_OP = 'DELETE' THEN
+                        IF OLD.published_at IS NOT NULL THEN
+                            RAISE EXCEPTION 'requirement profile % has been published and cannot be deleted', OLD.id;
+                        END IF;
+                        RETURN OLD;
+                    END IF;
+
+                    valid_transition := (OLD.status = 'draft' AND NEW.status = 'pending_hod_review')
+                        OR (OLD.status = 'pending_hod_review' AND NEW.status IN ('draft', 'pending_hr_review'))
+                        OR (OLD.status = 'pending_hr_review' AND NEW.status IN ('draft', 'approved'))
+                        OR (OLD.status = 'approved' AND NEW.status IN ('draft', 'published'))
+                        OR (OLD.status = 'published' AND NEW.status = 'retired');
+
+                    IF valid_transition
+                        AND NEW.tenant_id = OLD.tenant_id
+                        AND NEW.company_entity_id = OLD.company_entity_id
+                        AND NEW.code = OLD.code
+                        AND NEW.name = OLD.name
+                        AND NEW.version = OLD.version
+                        AND NEW.effective_date IS NOT DISTINCT FROM OLD.effective_date
+                        AND NEW.owner_employee_entity_id IS NOT DISTINCT FROM OLD.owner_employee_entity_id
+                        AND NEW.created_at IS NOT DISTINCT FROM OLD.created_at
+                        AND (NEW.status = 'published' OR NEW.published_at IS NOT DISTINCT FROM OLD.published_at)
+                        AND (NEW.status = 'retired' OR NEW.retired_at IS NOT DISTINCT FROM OLD.retired_at) THEN
+                        RETURN NEW;
+                    END IF;
+
+                    IF OLD.status = 'draft' AND NEW.status = 'draft' THEN
+                        RETURN NEW;
+                    END IF;
+
+                    IF NEW.company_entity_id IS DISTINCT FROM OLD.company_entity_id
+                        AND NEW.id = OLD.id AND NEW.tenant_id = OLD.tenant_id
+                        AND NEW.code = OLD.code AND NEW.name = OLD.name AND NEW.version = OLD.version
+                        AND NEW.status = OLD.status
+                        AND NEW.effective_date IS NOT DISTINCT FROM OLD.effective_date
+                        AND NEW.published_at IS NOT DISTINCT FROM OLD.published_at
+                        AND NEW.retired_at IS NOT DISTINCT FROM OLD.retired_at
+                        AND NEW.owner_employee_entity_id IS NOT DISTINCT FROM OLD.owner_employee_entity_id
+                        AND NEW.created_at IS NOT DISTINCT FROM OLD.created_at THEN
+                        SELECT EXISTS(
+                            SELECT 1 FROM people_connector_connector_workforce_entities
+                            WHERE tenant_id = OLD.tenant_id AND id = OLD.company_entity_id
+                            AND state = 'merged' AND merged_into_entity_id = NEW.company_entity_id
+                        ) INTO is_company_merge;
+                        IF is_company_merge THEN RETURN NEW; END IF;
+                    END IF;
+
+                    RAISE EXCEPTION 'requirement profile % is % and immutable or transition is invalid', OLD.id, OLD.status;
+                END;
+                $$ LANGUAGE plpgsql;
+                SQL);
+
+            return;
+        }
+
+        if (DB::connection()->getDriverName() !== 'sqlite') {
+            return;
+        }
+
+        DB::statement('DROP TRIGGER IF EXISTS pcs_req_profile_update_guard');
+        DB::statement(
+            'CREATE TRIGGER pcs_req_profile_update_guard BEFORE UPDATE ON people_connector_skill_requirement_profiles'
+            .' WHEN NOT ('
+            ." (OLD.status = 'draft' AND NEW.status = 'draft')"
+            .' OR ('
+            ." ((OLD.status = 'draft' AND NEW.status = 'pending_hod_review')"
+            ." OR (OLD.status = 'pending_hod_review' AND NEW.status IN ('draft', 'pending_hr_review'))"
+            ." OR (OLD.status = 'pending_hr_review' AND NEW.status IN ('draft', 'approved'))"
+            ." OR (OLD.status = 'approved' AND NEW.status IN ('draft', 'published'))"
+            ." OR (OLD.status = 'published' AND NEW.status = 'retired'))"
+            .' AND NEW.tenant_id IS OLD.tenant_id AND NEW.company_entity_id IS OLD.company_entity_id'
+            .' AND NEW.code IS OLD.code AND NEW.name IS OLD.name AND NEW.version IS OLD.version'
+            .' AND NEW.effective_date IS OLD.effective_date AND NEW.owner_employee_entity_id IS OLD.owner_employee_entity_id'
+            .' AND NEW.created_at IS OLD.created_at'
+            ." AND (NEW.status = 'published' OR NEW.published_at IS OLD.published_at)"
+            ." AND (NEW.status = 'retired' OR NEW.retired_at IS OLD.retired_at))"
+            .' OR (NEW.company_entity_id IS NOT OLD.company_entity_id'
+            .' AND NEW.id IS OLD.id AND NEW.tenant_id IS OLD.tenant_id AND NEW.code IS OLD.code AND NEW.name IS OLD.name'
+            .' AND NEW.version IS OLD.version AND NEW.status IS OLD.status'
+            .' AND NEW.effective_date IS OLD.effective_date AND NEW.published_at IS OLD.published_at'
+            .' AND NEW.retired_at IS OLD.retired_at AND NEW.owner_employee_entity_id IS OLD.owner_employee_entity_id'
+            .' AND NEW.created_at IS OLD.created_at'
+            .' AND EXISTS(SELECT 1 FROM people_connector_connector_workforce_entities'
+            ." WHERE tenant_id = OLD.tenant_id AND id = OLD.company_entity_id AND state = 'merged'"
+            .' AND merged_into_entity_id = NEW.company_entity_id))'
+            .')'
+            ." BEGIN SELECT RAISE(ABORT, 'requirement profile is immutable or transition is invalid'); END",
+        );
+    }
+
+    public function down(): void
+    {
+        if (in_array(DB::connection()->getDriverName(), ['pgsql', 'sqlite'], true)) {
+            DB::statement('DROP INDEX IF EXISTS pcs_req_profile_current_uq');
+        }
+
+        if (DB::connection()->getDriverName() === 'pgsql') {
+            DB::unprepared(<<<'SQL'
+                CREATE OR REPLACE FUNCTION pcs_req_profile_guard() RETURNS trigger AS $$
+                DECLARE
+                    is_company_merge boolean;
+                BEGIN
+                    IF TG_OP = 'DELETE' THEN
+                        IF OLD.published_at IS NOT NULL THEN
+                            RAISE EXCEPTION 'requirement profile % has been published and cannot be deleted', OLD.id;
+                        END IF;
+                        RETURN OLD;
+                    END IF;
+                    IF OLD.status = 'draft' THEN
+                        RETURN NEW;
+                    END IF;
+                    IF OLD.status = 'published' AND NEW.status = 'retired'
+                        AND NEW.tenant_id = OLD.tenant_id
+                        AND NEW.company_entity_id = OLD.company_entity_id
+                        AND NEW.code = OLD.code
+                        AND NEW.name = OLD.name
+                        AND NEW.version = OLD.version
+                        AND NEW.published_at IS NOT DISTINCT FROM OLD.published_at THEN
+                        RETURN NEW;
+                    END IF;
+                    IF NEW.company_entity_id IS DISTINCT FROM OLD.company_entity_id
+                        AND NEW.id = OLD.id AND NEW.tenant_id = OLD.tenant_id
+                        AND NEW.code = OLD.code AND NEW.name = OLD.name AND NEW.version = OLD.version
+                        AND NEW.status = OLD.status
+                        AND NEW.effective_date IS NOT DISTINCT FROM OLD.effective_date
+                        AND NEW.published_at IS NOT DISTINCT FROM OLD.published_at
+                        AND NEW.retired_at IS NOT DISTINCT FROM OLD.retired_at
+                        AND NEW.owner_employee_entity_id IS NOT DISTINCT FROM OLD.owner_employee_entity_id
+                        AND NEW.created_at IS NOT DISTINCT FROM OLD.created_at THEN
+                        SELECT EXISTS(
+                            SELECT 1 FROM people_connector_connector_workforce_entities
+                            WHERE tenant_id = OLD.tenant_id AND id = OLD.company_entity_id
+                            AND state = 'merged' AND merged_into_entity_id = NEW.company_entity_id
+                        ) INTO is_company_merge;
+                        IF is_company_merge THEN RETURN NEW; END IF;
+                    END IF;
+                    RAISE EXCEPTION 'requirement profile % is % and immutable; draft a new version instead', OLD.id, OLD.status;
+                END;
+                $$ LANGUAGE plpgsql;
+                SQL);
+
+            return;
+        }
+
+        if (DB::connection()->getDriverName() !== 'sqlite') {
+            return;
+        }
+
+        DB::statement('DROP TRIGGER IF EXISTS pcs_req_profile_update_guard');
+        DB::statement(
+            'CREATE TRIGGER pcs_req_profile_update_guard BEFORE UPDATE ON people_connector_skill_requirement_profiles'
+            ." WHEN NOT (OLD.status = 'draft' OR (OLD.status = 'published' AND NEW.status = 'retired'"
+            .' AND NEW.tenant_id = OLD.tenant_id AND NEW.company_entity_id = OLD.company_entity_id'
+            .' AND NEW.code = OLD.code AND NEW.name = OLD.name AND NEW.version = OLD.version'
+            .' AND NEW.published_at IS OLD.published_at)'
+            .' OR (NEW.company_entity_id != OLD.company_entity_id'
+            .' AND NEW.id = OLD.id AND NEW.tenant_id = OLD.tenant_id AND NEW.code = OLD.code AND NEW.name = OLD.name'
+            .' AND NEW.version = OLD.version AND NEW.status = OLD.status'
+            .' AND NEW.effective_date IS OLD.effective_date AND NEW.published_at IS OLD.published_at'
+            .' AND NEW.retired_at IS OLD.retired_at AND NEW.owner_employee_entity_id IS OLD.owner_employee_entity_id'
+            .' AND NEW.created_at IS OLD.created_at'
+            .' AND EXISTS(SELECT 1 FROM people_connector_connector_workforce_entities'
+            ." WHERE tenant_id = OLD.tenant_id AND id = OLD.company_entity_id AND state = 'merged'"
+            .' AND merged_into_entity_id = NEW.company_entity_id)))'
+            ." BEGIN SELECT RAISE(ABORT, 'requirement profile is published and immutable; draft a new version instead'); END",
+        );
+    }
+};

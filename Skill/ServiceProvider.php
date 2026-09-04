@@ -3,11 +3,14 @@
 namespace App\Domains\PeopleConnector\Skill;
 
 use App\Base\Menu\Services\MenuConditionRegistry;
+use App\Base\Workflow\Events\TransitionCompleted;
 use App\Core\User\Models\User;
 use App\Domains\PeopleConnector\Skill\Contracts\ResolvesSkillRequirements;
+use App\Domains\PeopleConnector\Skill\Listeners\SendRequirementProfileTransitionNotification;
 use App\Domains\PeopleConnector\Skill\Services\RequirementResolver;
 use App\Domains\PeopleConnector\Skill\Services\SkillAudience;
 use Illuminate\Contracts\Auth\Authenticatable;
+use Illuminate\Support\Facades\Event;
 use Illuminate\Support\ServiceProvider as BaseServiceProvider;
 
 class ServiceProvider extends BaseServiceProvider
@@ -20,6 +23,7 @@ class ServiceProvider extends BaseServiceProvider
     public function boot(): void
     {
         $this->loadViewsFrom(__DIR__.'/Views', 'people-connector-skill');
+        Event::listen(TransitionCompleted::class, SendRequirementProfileTransitionNotification::class);
 
         $this->app->afterResolving(MenuConditionRegistry::class, function (MenuConditionRegistry $registry): void {
             $registry->register(
