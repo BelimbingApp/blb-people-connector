@@ -61,9 +61,6 @@
                         class="rounded border px-2 py-1 {{ in_array($skill->id, $selectedSkillIds, true) ? 'border-accent bg-accent/10' : 'border-edge' }}"
                     >
                         {{ $skill->code }}
-                        @if (isset($requiredLevels[$skill->id]))
-                            <span class="text-muted">({{ __('req') }} {{ $requiredLevels[$skill->id] }})</span>
-                        @endif
                     </button>
                 @endforeach
             </div>
@@ -82,9 +79,6 @@
                             @foreach ($selectedSkills as $skill)
                                 <th class="p-2">
                                     {{ $skill->code }}
-                                    @if (isset($requiredLevels[$skill->id]))
-                                        <div class="text-xs text-muted">{{ __('Required') }} {{ $requiredLevels[$skill->id] }}</div>
-                                    @endif
                                 </th>
                             @endforeach
                         </tr>
@@ -96,6 +90,9 @@
                                 @foreach ($selectedSkills as $skill)
                                     @php($key = $employee->workforce_entity_id.':'.$skill->id)
                                     <td class="p-2 align-top">
+                                        @if (isset($requiredLevels[$key]))
+                                            <div class="mb-1 text-xs text-muted">{{ __('Required') }} {{ $requiredLevels[$key] }}</div>
+                                        @endif
                                         <x-ui.input
                                             type="number"
                                             min="0"

@@ -4,6 +4,7 @@ namespace App\Domains\PeopleConnector\Skill\Services;
 
 use App\Base\Tenancy\Contracts\TenantContext;
 use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
+use App\Domains\PeopleConnector\Connector\Models\WorkforceEmployeeProjection;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceEntity;
 use App\Domains\PeopleConnector\Skill\Contracts\ResolvesSkillRequirements;
 use App\Domains\PeopleConnector\Skill\Data\AssessmentDraft;
@@ -11,10 +12,12 @@ use App\Domains\PeopleConnector\Skill\Data\ResolvedSkillRequirement;
 use App\Domains\PeopleConnector\Skill\Enums\AssessmentResultBand;
 use App\Domains\PeopleConnector\Skill\Enums\AssessmentStatus;
 use App\Domains\PeopleConnector\Skill\Enums\HodVerification;
+use App\Domains\PeopleConnector\Skill\Enums\ProficiencyScaleStatus;
 use App\Domains\PeopleConnector\Skill\Enums\RequirementCriticality;
 use App\Domains\PeopleConnector\Skill\Events\SkillAssessmentFinalized;
 use App\Domains\PeopleConnector\Skill\Exceptions\InvalidAssessmentException;
 use App\Domains\PeopleConnector\Skill\Models\EmployeeSkillScore;
+use App\Domains\PeopleConnector\Skill\Models\ProficiencyScale;
 use App\Domains\PeopleConnector\Skill\Models\Skill;
 use App\Domains\PeopleConnector\Skill\Models\SkillAssessment;
 use Carbon\Carbon;
@@ -35,6 +38,7 @@ final class AssessmentStore
     public function __construct(
         private readonly TenantContext $tenantContext,
         private readonly ResolvesSkillRequirements $requirements,
+        private readonly ProficiencyScaleStore $scales,
     ) {}
 
     public function draft(int $companyEntityId, AssessmentDraft $draft, array $employeeData = []): SkillAssessment
@@ -52,7 +56,7 @@ final class AssessmentStore
      * Empty evidence cells are skipped; partial failure rolls the whole batch back.
      *
      * @param  list<AssessmentDraft>  $drafts
-     * @param  array<string, mixed>  $employeeData
+     * @param  array<string, mixed>  $employeeData  Optional overrides merged under per-employee projection context
      * @return list<SkillAssessment>
      */
     public function finalizeBatch(
@@ -155,8 +159,13 @@ final class AssessmentStore
             throw new InvalidAssessmentException("Skill [{$skill->code}] is inactive.");
         }
 
-        $employeeData = array_merge(['company_entity_id' => $companyEntityId], $employeeData);
+        $employeeData = $this->employeeRequirementContext(
+            $companyEntityId,
+            $draft->employeeEntityId,
+            $employeeData,
+        );
         $requirement = $this->requirementForSkill($employeeData, (int) $skill->getKey(), $draft->assessedAt);
+        $scale = $this->resolveScaleSnapshot($companyEntityId, $draft);
 
         $gap = $requirement->gap($draft->assessedLevel);
         $weight = $draft->weightPercent ?? 1.0;
@@ -195,8 +204,8 @@ final class AssessmentStore
             'criticality' => $requirement->criticality,
             'weight_percent' => $weight,
             'mandatory_gate' => $requirement->mandatoryGate,
-            'scale_id' => $draft->scaleId,
-            'scale_version' => $draft->scaleVersion,
+            'scale_id' => $scale['id'],
+            'scale_version' => $scale['version'],
             'assessed_level' => $draft->assessedLevel,
             'gap' => $gap,
             'weighted_gap' => $weightedGap,
@@ -218,6 +227,74 @@ final class AssessmentStore
             'finalized_at' => $finalize ? $now : null,
             'finalized_by_user_id' => $finalize ? $finalizedByUserId : null,
         ]);
+    }
+
+    /**
+     * Build opaque ResolvesSkillRequirements context from the workforce projection.
+     * Caller overrides win, but company/department/position from the spine fill gaps.
+     *
+     * @param  array<string, mixed>  $overrides
+     * @return array<string, mixed>
+     */
+    private function employeeRequirementContext(int $companyEntityId, int $employeeEntityId, array $overrides): array
+    {
+        $tenantId = $this->tenantContext->requireTenantId();
+        $context = array_merge([
+            'company_entity_id' => $companyEntityId,
+        ], $overrides);
+        $context['company_entity_id'] = $companyEntityId;
+
+        $projection = WorkforceEmployeeProjection::query()
+            ->forCompany($tenantId, $companyEntityId)
+            ->where('workforce_entity_id', $employeeEntityId)
+            ->first();
+
+        if ($projection === null) {
+            return $context;
+        }
+
+        if (! array_key_exists('department_entity_id', $overrides)
+            && $projection->organization_entity_id !== null) {
+            $context['department_entity_id'] = (int) $projection->organization_entity_id;
+        }
+
+        if (! array_key_exists('position_entity_id', $overrides)
+            && $projection->position_entity_id !== null) {
+            $context['position_entity_id'] = (int) $projection->position_entity_id;
+        }
+
+        return $context;
+    }
+
+    /**
+     * @return array{id: int, version: int}
+     */
+    private function resolveScaleSnapshot(int $companyEntityId, AssessmentDraft $draft): array
+    {
+        if ($draft->scaleId !== null && $draft->scaleVersion !== null) {
+            return ['id' => $draft->scaleId, 'version' => $draft->scaleVersion];
+        }
+
+        $scale = $this->scales->currentScale($companyEntityId, SkillCatalogDefaults::SCALE_CODE)
+            ?? $this->publishedScaleFallback($companyEntityId);
+
+        if ($scale === null) {
+            throw new InvalidAssessmentException(
+                'A published proficiency scale is required before assessments can be finalized.',
+            );
+        }
+
+        return ['id' => (int) $scale->getKey(), 'version' => (int) $scale->version];
+    }
+
+    private function publishedScaleFallback(int $companyEntityId): ?ProficiencyScale
+    {
+        return ProficiencyScale::query()
+            ->forCompany($this->tenantContext->requireTenantId(), $companyEntityId)
+            ->where('status', ProficiencyScaleStatus::Published->value)
+            ->orderByDesc('published_at')
+            ->orderByDesc('id')
+            ->first();
     }
 
     /**
@@ -249,29 +326,42 @@ final class AssessmentStore
 
     private function projectCurrentScore(SkillAssessment $assessment): void
     {
-        EmployeeSkillScore::query()
+        $latest = SkillAssessment::query()
             ->forCompany((int) $assessment->tenant_id, (int) $assessment->company_entity_id)
+            ->where('employee_entity_id', $assessment->employee_entity_id)
+            ->where('skill_id', $assessment->skill_id)
+            ->where('status', AssessmentStatus::Finalized->value)
+            ->orderByDesc('assessed_at')
+            ->orderByDesc('id')
+            ->first();
+
+        if ($latest === null) {
+            return;
+        }
+
+        EmployeeSkillScore::query()
+            ->forCompany((int) $latest->tenant_id, (int) $latest->company_entity_id)
             ->updateOrCreate(
                 [
-                    'tenant_id' => $assessment->tenant_id,
-                    'employee_entity_id' => $assessment->employee_entity_id,
-                    'skill_id' => $assessment->skill_id,
+                    'tenant_id' => $latest->tenant_id,
+                    'employee_entity_id' => $latest->employee_entity_id,
+                    'skill_id' => $latest->skill_id,
                 ],
                 [
-                    'company_entity_id' => $assessment->company_entity_id,
-                    'source_assessment_id' => $assessment->getKey(),
-                    'requirement_reference' => $assessment->requirement_reference,
-                    'requirement_version' => $assessment->requirement_version,
-                    'required_level' => $assessment->required_level,
-                    'current_level' => $assessment->assessed_level,
-                    'gap' => $assessment->gap,
-                    'mandatory_gate' => $assessment->mandatory_gate,
-                    'criticality' => $assessment->criticality instanceof RequirementCriticality
-                        ? $assessment->criticality
-                        : RequirementCriticality::from((string) $assessment->criticality),
-                    'assessed_at' => $assessment->assessed_at,
-                    'next_assessment_due' => $assessment->next_assessment_due,
-                    'valid_until' => $assessment->valid_until,
+                    'company_entity_id' => $latest->company_entity_id,
+                    'source_assessment_id' => $latest->getKey(),
+                    'requirement_reference' => $latest->requirement_reference,
+                    'requirement_version' => $latest->requirement_version,
+                    'required_level' => $latest->required_level,
+                    'current_level' => $latest->assessed_level,
+                    'gap' => $latest->gap,
+                    'mandatory_gate' => $latest->mandatory_gate,
+                    'criticality' => $latest->criticality instanceof RequirementCriticality
+                        ? $latest->criticality
+                        : RequirementCriticality::from((string) $latest->criticality),
+                    'assessed_at' => $latest->assessed_at,
+                    'next_assessment_due' => $latest->next_assessment_due,
+                    'valid_until' => $latest->valid_until,
                 ],
             );
     }

@@ -128,7 +128,6 @@ class Matrix extends Component
             $store->finalizeBatch(
                 $companyEntityId,
                 $drafts,
-                employeeData: ['company_entity_id' => $companyEntityId],
                 finalizedByUserId: (int) Auth::id(),
             );
         } catch (InvalidAssessmentException $exception) {
@@ -186,15 +185,30 @@ class Matrix extends Component
     }
 
     /**
-     * @return array<int, int> skillId => required level
+     * Required levels keyed by employeeEntityId:skillId from each employee's
+     * workforce projection context (company + department/position).
+     *
+     * @return array<string, int>
      */
     private function requiredLevels(int $companyEntityId): array
     {
+        $resolver = app(ResolvesSkillRequirements::class);
         $levels = [];
-        foreach (app(ResolvesSkillRequirements::class)->requirementsFor([
-            'company_entity_id' => $companyEntityId,
-        ]) as $requirement) {
-            $levels[$requirement->skillId] = $requirement->requiredLevel;
+
+        foreach ($this->employees($companyEntityId) as $employee) {
+            $context = [
+                'company_entity_id' => $companyEntityId,
+            ];
+            if ($employee->organization_entity_id !== null) {
+                $context['department_entity_id'] = (int) $employee->organization_entity_id;
+            }
+            if ($employee->position_entity_id !== null) {
+                $context['position_entity_id'] = (int) $employee->position_entity_id;
+            }
+
+            foreach ($resolver->requirementsFor($context) as $requirement) {
+                $levels[$employee->workforce_entity_id.':'.$requirement->skillId] = $requirement->requiredLevel;
+            }
         }
 
         return $levels;
