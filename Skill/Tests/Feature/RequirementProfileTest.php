@@ -41,6 +41,7 @@ use App\Domains\PeopleConnector\Skill\Events\RequirementProfileRetired;
 use App\Domains\PeopleConnector\Skill\Exceptions\InvalidRequirementProfileException;
 use App\Domains\PeopleConnector\Skill\Exceptions\PublishedRequirementImmutableException;
 use App\Domains\PeopleConnector\Skill\Exceptions\RequirementProfileNotFoundException;
+use App\Domains\PeopleConnector\Skill\Livewire\RequirementProfile\Show as RequirementProfileShow;
 use App\Domains\PeopleConnector\Skill\Models\RequirementItem;
 use App\Domains\PeopleConnector\Skill\Models\RequirementProfile;
 use App\Domains\PeopleConnector\Skill\Models\RequirementProfileSelector;
@@ -56,6 +57,7 @@ use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\Facades\Notification;
+use Livewire\Livewire;
 
 afterEach(function (): void {
     app(TenantContext::class)->clear();
@@ -195,7 +197,7 @@ test('a requirement profile carries workbook parity fields and fires lifecycle e
 
     $store = app(RequirementProfileStore::class);
 
-    expect(fn () => DB::table('people_connector_skill_requirement_profiles')->insert([
+    expect(fn () => DB::transaction(fn (): bool => DB::table('people_connector_skill_requirement_profiles')->insert([
         'tenant_id' => $tenantId,
         'company_entity_id' => $companyEntityId,
         'code' => 'hostile.published',
@@ -205,7 +207,7 @@ test('a requirement profile carries workbook parity fields and fires lifecycle e
         'published_at' => now(),
         'created_at' => now(),
         'updated_at' => now(),
-    ]))->toThrow(QueryException::class);
+    ])))->toThrow(QueryException::class);
     $profile = $store->draft($companyEntityId, simpleProfileDraft($skillA, $skillB));
 
     $itemCount = RequirementItem::query()->forCompany($tenantId, $companyEntityId)->where('profile_id', $profile->id)->count();
@@ -1097,8 +1099,10 @@ test('governed profiles require in-scope HOD review and HR approval before publi
     expect($notificationUrl)->toBe(route('people-connector.skill.requirement-profiles.show', [
         'profileId' => $revision->id,
     ]));
-    $this->actingAs($hr)->get($notificationUrl)
-        ->assertOk()
+    $this->actingAs($hr);
+    Livewire::test(RequirementProfileShow::class, [
+        'profileId' => $revision->id,
+    ])
         ->assertSee('Governed Profile Revised')
         ->assertSee('v2');
 
@@ -1122,8 +1126,8 @@ test('governed profiles require in-scope HOD review and HR approval before publi
         );
         $concurrentContender->update(['status' => $contenderStatus]);
     }
-    expect(fn () => DB::table('people_connector_skill_requirement_profiles')
+    expect(fn () => DB::transaction(fn (): int => DB::table('people_connector_skill_requirement_profiles')
         ->where('id', $concurrentContender->id)
-        ->update(['status' => RequirementProfileStatus::Published->value, 'published_at' => now()]))
+        ->update(['status' => RequirementProfileStatus::Published->value, 'published_at' => now()])))
         ->toThrow(QueryException::class);
 });
