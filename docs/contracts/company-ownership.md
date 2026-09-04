@@ -136,6 +136,8 @@ guessing is how the connector reached three identical defects.
 | `..._skill_employee_scores` | **C** | `company_entity_id` | The current-score projection belongs to the same company as its source assessment. |
 | `..._skill_development_actions` | **C** | `company_entity_id` | A gap-closing commitment is company-owned and validates its employee, accountable owner, HR coordinator, trainer, skill, assessments, and optional course against that same company. |
 | `..._skill_development_action_events` | **C** | `company_entity_id` | Append-only comments, evidence, and lifecycle history remain directly company-addressable during provider outage. |
+| `..._skill_actor_bindings` | **C** | `company_entity_id` | A reviewed platform-user to workforce-employee assertion is valid only inside the workforce company that supplied the confirmed user projection. |
+| `..._skill_assessor_assignments` | **C** | `company_entity_id` | An assessor's authority is an explicit assignment to one employee in one workforce company, never a tenant-wide consequence of holding a role. |
 
 ### Training module
 
