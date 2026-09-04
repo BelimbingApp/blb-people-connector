@@ -2,12 +2,15 @@
 
 namespace App\Domains\PeopleConnector\Skill\Models;
 
+use App\Domains\PeopleConnector\Connector\Contracts\ReferencesWorkforceEntities;
+use App\Domains\PeopleConnector\Connector\Data\WorkforceReference;
+use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
 use App\Domains\PeopleConnector\Connector\Models\Concerns\CompanyOwned;
 use App\Domains\PeopleConnector\Connector\Models\TenantOwnedModel;
 use App\Domains\PeopleConnector\Skill\Exceptions\InvalidAssessmentException;
 
 /** Immutable append-only record of every governed assessment decision. */
-final class AssessmentDecision extends TenantOwnedModel
+final class AssessmentDecision extends TenantOwnedModel implements ReferencesWorkforceEntities
 {
     use CompanyOwned;
 
@@ -33,6 +36,12 @@ final class AssessmentDecision extends TenantOwnedModel
     public function companyOwnerColumn(): ?string
     {
         return 'company_entity_id';
+    }
+
+    /** @return list<WorkforceReference> */
+    public function workforceReferences(): array
+    {
+        return [new WorkforceReference('employee_entity_id', WorkforceResourceType::Employee)];
     }
 
     public function getAuditSubject(): ?array

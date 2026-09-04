@@ -57,6 +57,20 @@ final class AssessmentFixtureRequirements implements ResolvesSkillRequirements
 /**
  * @return array{int, int, int, int} [tenantId, companyEntityId, employeeEntityId, skillId]
  */
+function assessmentWorkflowTestAudience(): void
+{
+    app()->instance(SkillAudience::class, new class extends SkillAudience
+    {
+        public function __construct() {}
+
+        public function authorizeAssessmentSubmission(User $user, int $companyEntityId, int $employeeEntityId): void {}
+
+        public function authorizeHodVerification(User $user, int $companyEntityId, int $employeeEntityId): void {}
+
+        public function authorizeAssessmentFinalization(User $user, int $companyEntityId, int $employeeEntityId): void {}
+    });
+}
+
 function assessmentFixture(): array
 {
     $tenant = createTenant(['name' => 'Assessment Tenant']);
@@ -102,16 +116,7 @@ function assessmentFixture(): array
         ),
     ]));
 
-    app()->instance(SkillAudience::class, new class extends SkillAudience
-    {
-        public function __construct() {}
-
-        public function authorizeAssessmentSubmission(User $user, int $companyEntityId, int $employeeEntityId): void {}
-
-        public function authorizeHodVerification(User $user, int $companyEntityId, int $employeeEntityId): void {}
-
-        public function authorizeAssessmentFinalization(User $user, int $companyEntityId, int $employeeEntityId): void {}
-    });
+    assessmentWorkflowTestAudience();
 
     return [$tenantId, (int) $company->id, (int) $employee->id, (int) $skill->id];
 }
@@ -413,6 +418,7 @@ test('a back-dated finalize does not regress the current-score projection', func
 });
 
 test('finalize matches department-scoped requirements from the employee projection', function (): void {
+    assessmentWorkflowTestAudience();
     $tenant = createTenant(['name' => 'Scoped Assessment Tenant']);
     app(TenantContext::class)->set((int) $tenant->id);
     $tenantId = (int) $tenant->id;
