@@ -10,7 +10,6 @@ use App\Base\Workflow\Models\StatusTransition;
 use App\Core\User\Models\User;
 use App\Domains\PeopleConnector\Skill\Enums\RequirementProfileStatus;
 use App\Domains\PeopleConnector\Skill\Models\RequirementProfile;
-use App\Domains\PeopleConnector\Skill\Services\RequirementProfileStore;
 use App\Domains\PeopleConnector\Skill\Services\SkillAudience;
 use Illuminate\Database\Eloquent\Model;
 
@@ -18,7 +17,6 @@ final class RequirementProfileTransitionGuard implements ContextualTransitionGua
 {
     public function __construct(
         private readonly SkillAudience $audience,
-        private readonly RequirementProfileStore $profiles,
         private readonly RequirementProfileTransitionAuthority $authority,
     ) {}
 
@@ -65,10 +63,6 @@ final class RequirementProfileTransitionGuard implements ContextualTransitionGua
         if ($this->requiresDecisionComment($from, $to)
             && trim((string) $context?->comment) === '') {
             return GuardResult::deny('A review comment or reason is required.');
-        }
-
-        if ($from === RequirementProfileStatus::Draft && $to === RequirementProfileStatus::PendingHodReview) {
-            $this->profiles->validateSubmission($model);
         }
 
         $this->authority->authorize($model, $from, $to);

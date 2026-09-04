@@ -276,10 +276,10 @@ class RequirementProfileStore
     }
 
     /**
-     * Validate and freeze the exact child set while WorkflowEngine holds the
-     * profile row lock. PostgreSQL child guards acquire a parent lock too, so
-     * concurrent inserts serialize on the same boundary instead of slipping
-     * between validation and the draft-to-review transition.
+     * Validate the exact child set after WorkflowEngine has frozen the parent
+     * in PendingHodReview inside its transaction. PostgreSQL insert guards
+     * acquire the same parent lock, so concurrent child writes either commit
+     * before this snapshot or fail after the workflow transaction commits.
      */
     public function validateSubmission(RequirementProfile $profile): void
     {
