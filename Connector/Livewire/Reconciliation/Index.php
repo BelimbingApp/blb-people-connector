@@ -7,6 +7,8 @@ use App\Base\Authz\DTO\Actor;
 use App\Base\Foundation\Contracts\SemanticActionRecorder;
 use App\Base\Foundation\Livewire\Concerns\InteractsWithNotifications;
 use App\Core\User\Models\User;
+use App\Domains\PeopleConnector\Connector\Exceptions\ConnectorRecordNotFoundException;
+use App\Domains\PeopleConnector\Connector\Exceptions\InvalidReconciliationIssueException;
 use App\Domains\PeopleConnector\Connector\Models\ProviderConnection;
 use App\Domains\PeopleConnector\Connector\Models\ReconciliationIssue;
 use App\Domains\PeopleConnector\Connector\Services\CompanyAttribution;
@@ -45,9 +47,9 @@ final class Index extends Component
     public function resolveIssue(int $issueId, ReconciliationIssueStore $issues): void
     {
         $this->authorizeConnection();
-        $issue = $this->openIssue($issueId, $issues);
         $note = $this->validatedNote($issueId);
-        $issues->resolve($issueId);
+        $this->openIssue($issueId, $issues);
+        $issue = $issues->resolve($issueId);
 
         $this->record('people_connector.reconciliation.resolved', __('Resolved reconciliation issue :key.', ['key' => $issue->issue_key]), $issue, [
             'note' => $note,
@@ -57,20 +59,30 @@ final class Index extends Component
         $this->notify(__('Reconciliation issue resolved.'));
     }
 
-    public function applyMerge(int $issueId, ReconciliationIssueStore $issues, ReconciliationReviewService $reviews): void
+    public function applyMerge(int $issueId, ReconciliationReviewService $reviews): void
     {
         $this->authorizeConnection();
-        $issue = $this->openIssue($issueId, $issues);
         $reviewReference = $this->validatedReviewReference($issueId);
-        $survivorExternalId = (string) ($issue->details['related_external_id'] ?? '');
         $occurredAt = now();
 
-        $reviews->applyMerge(
-            $this->connectionId,
-            $issueId,
-            $reviewReference,
-            $occurredAt,
-        );
+        // The service returns the issue it locked and resolved. Build the audit
+        // evidence from that decision, never from an earlier unlocked read that
+        // a concurrent sync observation could have superseded.
+        try {
+            $issue = $reviews->applyMerge(
+                $this->connectionId,
+                $issueId,
+                $reviewReference,
+                $occurredAt,
+            );
+        } catch (ConnectorRecordNotFoundException) {
+            abort(404);
+        } catch (InvalidReconciliationIssueException $exception) {
+            throw ValidationException::withMessages([
+                "reviewReferences.{$issueId}" => $exception->getMessage(),
+            ]);
+        }
+        $survivorExternalId = (string) ($issue->details['related_external_id'] ?? '');
 
         $this->record('people_connector.reconciliation.merge_applied', __('Applied the reviewed merge for reconciliation issue :key.', ['key' => $issue->issue_key]), $issue, [
             'review_reference' => $reviewReference,
@@ -90,13 +102,21 @@ final class Index extends Component
         $replacementExternalId = trim((string) $this->replacementExternalIds[$issueId]);
         $occurredAt = now();
 
-        $reviews->applyRemap(
-            $this->connectionId,
-            $issueId,
-            $replacementExternalId,
-            $reviewReference,
-            $occurredAt,
-        );
+        try {
+            $issue = $reviews->applyRemap(
+                $this->connectionId,
+                $issueId,
+                $replacementExternalId,
+                $reviewReference,
+                $occurredAt,
+            );
+        } catch (ConnectorRecordNotFoundException) {
+            abort(404);
+        } catch (InvalidReconciliationIssueException $exception) {
+            throw ValidationException::withMessages([
+                "replacementExternalIds.{$issueId}" => $exception->getMessage(),
+            ]);
+        }
 
         $this->record('people_connector.reconciliation.identity_remapped', __('Remapped the reviewed identity for reconciliation issue :key.', ['key' => $issue->issue_key]), $issue, [
             'review_reference' => $reviewReference,
@@ -120,12 +140,20 @@ final class Index extends Component
 
     private function openIssue(int $issueId, ReconciliationIssueStore $issues): ReconciliationIssue
     {
-        return $issues->requireOpenForConnection($this->connectionId, $issueId);
+        try {
+            return $issues->requireOpenForConnection($this->connectionId, $issueId);
+        } catch (ConnectorRecordNotFoundException) {
+            abort(404);
+        }
     }
 
     private function connection(): ProviderConnection
     {
-        return app(TenantConnectionLocator::class)->get($this->connectionId);
+        try {
+            return app(TenantConnectionLocator::class)->get($this->connectionId);
+        } catch (ConnectorRecordNotFoundException) {
+            abort(404);
+        }
     }
 
     private function authorizeConnection(): void
