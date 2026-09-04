@@ -1,7 +1,6 @@
 <?php
 
 use App\Base\Authz\Enums\PrincipalType;
-use App\Base\Authz\Exceptions\AuthorizationDeniedException;
 use App\Base\Authz\Models\PrincipalCapability;
 use App\Base\Tenancy\Contracts\TenantContext;
 use App\Core\User\Models\User;
@@ -57,8 +56,20 @@ function assessmentPageCompanyEntity(int $tenantId, string $name, ?int $platform
     return (int) $entity->id;
 }
 
+function assessmentPageGrantHr(User $user): void
+{
+    PrincipalCapability::query()->create([
+        'company_id' => $user->company_id,
+        'principal_type' => PrincipalType::USER->value,
+        'principal_id' => $user->id,
+        'capability_key' => 'people-connector.skill.hr.view',
+        'is_allowed' => true,
+    ]);
+}
+
 test('the assessment matrix route requires the view capability', function (): void {
     $admin = createAdminUser();
+    assessmentPageGrantHr($admin);
     $tenantId = (int) app(TenantContext::class)->currentTenantId();
     assessmentPageCompanyEntity($tenantId, 'Assess Co', (int) $admin->company_id);
 
@@ -69,7 +80,6 @@ test('the assessment matrix route requires the view capability', function (): vo
         'capability_key' => 'people-connector.skill.assessment.view',
         'is_allowed' => true,
     ]);
-
     $this->actingAs($admin)
         ->get(route('people-connector.skill.assessment.matrix'))
         ->assertOk();
@@ -92,8 +102,17 @@ test('saveMatrix refuses viewers without manage capability', function (): void {
         'capability_key' => 'people-connector.skill.assessment.view',
         'is_allowed' => true,
     ]);
+    PrincipalCapability::query()->create([
+        'company_id' => $company->id,
+        'principal_type' => PrincipalType::USER->value,
+        'principal_id' => $viewer->id,
+        'capability_key' => 'people-connector.skill.employee.view',
+        'is_allowed' => true,
+    ]);
     assessmentPageCompanyEntity((int) $tenant->id, 'Matrix View Workforce', (int) $company->id);
 
-    expect(fn () => Livewire::actingAs($viewer)->test(Matrix::class)->call('saveMatrix'))
-        ->toThrow(AuthorizationDeniedException::class);
+    Livewire::actingAs($viewer)
+        ->test(Matrix::class)
+        ->call('saveMatrix')
+        ->assertForbidden();
 });

@@ -1,7 +1,6 @@
 <?php
 
 use App\Base\Authz\Enums\PrincipalType;
-use App\Base\Authz\Exceptions\AuthorizationDeniedException;
 use App\Base\Authz\Models\PrincipalCapability;
 use App\Base\Tenancy\Contracts\TenantContext;
 use App\Core\Company\Models\Company;
@@ -83,7 +82,26 @@ function catalogPageViewer(int $companyId): User
         'is_allowed' => true,
     ]);
 
+    PrincipalCapability::query()->create([
+        'company_id' => $companyId,
+        'principal_type' => PrincipalType::USER->value,
+        'principal_id' => $viewer->id,
+        'capability_key' => 'people-connector.skill.hod.view',
+        'is_allowed' => true,
+    ]);
+
     return $viewer;
+}
+
+function catalogPageGrantHr(User $user): void
+{
+    PrincipalCapability::query()->create([
+        'company_id' => $user->company_id,
+        'principal_type' => PrincipalType::USER->value,
+        'principal_id' => $user->id,
+        'capability_key' => 'people-connector.skill.hr.view',
+        'is_allowed' => true,
+    ]);
 }
 
 /**
@@ -105,6 +123,7 @@ function catalogPageProbeDraft(int $companyEntityId): ProficiencyScale
 
 test('the catalog page states honestly that no company is synchronized yet', function (): void {
     $admin = createAdminUser();
+    catalogPageGrantHr($admin);
 
     Livewire::actingAs($admin)
         ->test(Index::class)
@@ -113,6 +132,7 @@ test('the catalog page states honestly that no company is synchronized yet', fun
 
 test('HR can install the starter pack and administer the catalog end to end', function (): void {
     $admin = createAdminUser();
+    catalogPageGrantHr($admin);
     $companyEntityId = catalogPageCompanyEntity(
         (int) app(TenantContext::class)->currentTenantId(),
         'SBG Manufacturing',
@@ -150,6 +170,7 @@ test('HR can install the starter pack and administer the catalog end to end', fu
 
 test('a viewer can read the catalog but every manage action is refused', function (): void {
     $admin = createAdminUser();
+    catalogPageGrantHr($admin);
     $tenantId = (int) app(TenantContext::class)->currentTenantId();
     $companyEntityId = catalogPageCompanyEntity($tenantId, 'SBG Manufacturing', (int) $admin->company_id);
     app(SkillCatalogDefaults::class)->install($companyEntityId);
@@ -186,10 +207,10 @@ test('a viewer can read the catalog but every manage action is refused', functio
     $draft = catalogPageProbeDraft($companyEntityId);
 
     $refused = function (string $action, array $args = []) use ($viewer, $companyEntityId): void {
-        expect(fn () => Livewire::actingAs($viewer)->test(Index::class)
+        Livewire::actingAs($viewer)->test(Index::class)
             ->set('companyEntityId', $companyEntityId)
-            ->call($action, ...$args))
-            ->toThrow(AuthorizationDeniedException::class);
+            ->call($action, ...$args)
+            ->assertForbidden();
     };
 
     $refused('installStarterPack');
@@ -211,6 +232,7 @@ test('a viewer can read the catalog but every manage action is refused', functio
 
 test('the page never leaks another tenant catalog', function (): void {
     $admin = createAdminUser();
+    catalogPageGrantHr($admin);
     $tenantId = (int) app(TenantContext::class)->currentTenantId();
     $companyEntityId = catalogPageCompanyEntity($tenantId, 'Tenant A Co', (int) $admin->company_id);
     app(SkillCatalogDefaults::class)->install($companyEntityId);
@@ -220,6 +242,7 @@ test('the page never leaks another tenant catalog', function (): void {
     catalogPageCompanyEntity((int) $tenantB->id, 'Tenant B Co');
 
     $adminB = createAdminUser(); // fresh company + tenant context of its own
+    catalogPageGrantHr($adminB);
 
     Livewire::actingAs($adminB)
         ->test(Index::class)
@@ -228,6 +251,7 @@ test('the page never leaks another tenant catalog', function (): void {
 
 test('the route requires the view capability', function (): void {
     $admin = createAdminUser();
+    catalogPageGrantHr($admin);
 
     $this->actingAs($admin)
         ->get(route('people-connector.skill.catalog.index'))
@@ -241,6 +265,7 @@ test('the route requires the view capability', function (): void {
 
 test('an actor in one company cannot reach a sibling company catalog in the same tenant', function (): void {
     $adminAlpha = createAdminUser();
+    catalogPageGrantHr($adminAlpha);
     $tenantId = (int) app(TenantContext::class)->currentTenantId();
     $alphaEntity = catalogPageCompanyEntity($tenantId, 'Alpha Workforce', (int) $adminAlpha->company_id);
 
@@ -287,7 +312,7 @@ test('a single-company tenant with a tenant-scoped provider stays visible, then 
     app(TenantContext::class)->set((int) $tenant->id);
 
     $user = User::factory()->create(['company_id' => $company->id]);
-    foreach (['people-connector.skill.catalog.view', 'people-connector.skill.catalog.manage'] as $capability) {
+    foreach (['people-connector.skill.catalog.view', 'people-connector.skill.catalog.manage', 'people-connector.skill.hr.view'] as $capability) {
         PrincipalCapability::query()->create([
             'company_id' => $company->id,
             'principal_type' => PrincipalType::USER->value,
@@ -319,6 +344,7 @@ test('every mutating catalog action refuses a company the actor may not act for'
     // selectCompany, installStarterPack and startSkill, and none of those
     // writes anything.
     $adminAlpha = createAdminUser();
+    catalogPageGrantHr($adminAlpha);
     $tenantId = (int) app(TenantContext::class)->currentTenantId();
     catalogPageCompanyEntity($tenantId, 'Alpha Workforce', (int) $adminAlpha->company_id);
 
