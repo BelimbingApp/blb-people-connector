@@ -183,6 +183,7 @@ test('finalize snapshots requirement and projects gap from the published contrac
 });
 
 test('score projection waits for an independent HOD decision', function (): void {
+    Event::fake([SkillAssessmentFinalized::class]);
     [$tenantId, $companyEntityId, $employeeEntityId, $skillId] = assessmentFixture();
     $store = app(AssessmentStore::class);
     $draft = assessmentDraft($employeeEntityId, $skillId);
@@ -210,6 +211,8 @@ test('score projection waits for an independent HOD decision', function (): void
 
     expect(fn () => $store->finalizeVerified($companyEntityId, (int) $returned->id, 10))
         ->toThrow(InvalidAssessmentException::class, 'pending HOD verification');
+
+    Event::assertNotDispatched(SkillAssessmentFinalized::class);
 });
 
 test('evidence is mandatory and scale values fail closed', function (): void {

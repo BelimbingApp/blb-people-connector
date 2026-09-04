@@ -428,7 +428,7 @@ final class AssessmentStore
 
         if ($scale === null) {
             throw new InvalidAssessmentException(
-                'A published proficiency scale is required before assessments can be finalized.',
+                'A published proficiency scale is required before assessments can be submitted.',
             );
         }
 
