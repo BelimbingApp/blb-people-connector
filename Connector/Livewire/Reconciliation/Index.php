@@ -143,16 +143,20 @@ final class Index extends Component
 
     private function validatedNote(int $issueId): string
     {
-        return $this->validate([
+        $this->validate([
             "resolutionNotes.{$issueId}" => ['required', 'string', 'max:1000'],
-        ])["resolutionNotes.{$issueId}"];
+        ]);
+
+        return trim((string) $this->resolutionNotes[$issueId]);
     }
 
     private function validatedReviewReference(int $issueId): string
     {
-        return $this->validate([
+        $this->validate([
             "reviewReferences.{$issueId}" => ['required', 'string', 'max:191', 'regex:/^[A-Za-z0-9]+(?:[._:\/-][A-Za-z0-9]+)*$/'],
-        ])["reviewReferences.{$issueId}"];
+        ]);
+
+        return trim((string) $this->reviewReferences[$issueId]);
     }
 
     private function validateRemapIssue(ReconciliationIssue $issue, int $issueId): void
