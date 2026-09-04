@@ -13,6 +13,7 @@ use App\Base\Tenancy\Contracts\TenantContext;
 use App\Core\User\Models\User;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceEmployeeProjection;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceEntity;
+use App\Domains\PeopleConnector\Connector\Models\WorkforceOrganizationUnitProjection;
 use App\Domains\PeopleConnector\Connector\Services\CompanyAttribution;
 use App\Domains\PeopleConnector\Skill\Models\SkillActorBinding;
 use App\Domains\PeopleConnector\Skill\Models\SkillAssessorAssignment;
@@ -133,6 +134,47 @@ final class SkillAudience
         return array_values(array_unique($allowed));
     }
 
+    /**
+     * Resolve department/team ownership for consumers whose records are
+     * department-owned rather than employee-owned (for example training plans).
+     *
+     * @return list<int> workforce organization-unit entity ids
+     */
+    public function visibleOrganizationUnitEntityIds(
+        User $user,
+        int $companyEntityId,
+        string $functionalCapability,
+    ): array {
+        $audiences = $this->authorizeAudience($user, $functionalCapability);
+        if (! $this->companies->mayActFor($user, $companyEntityId)) {
+            return [];
+        }
+
+        $tenantId = $this->tenantContext->requireTenantId();
+        $units = WorkforceOrganizationUnitProjection::query()
+            ->forCompany($tenantId, $companyEntityId)
+            ->where('active', true);
+
+        if (in_array(self::HR, $audiences, true)) {
+            return $units->pluck('workforce_entity_id')->map(intval(...))->all();
+        }
+
+        if (! in_array(self::HOD, $audiences, true) || ($binding = $this->activeBinding($user, $companyEntityId)) === null) {
+            return [];
+        }
+
+        $departmentIds = WorkforceEmployeeProjection::query()
+            ->forCompany($tenantId, $companyEntityId)
+            ->where('active', true)
+            ->where('department_head_entity_id', $binding->employee_entity_id)
+            ->whereNotNull('organization_entity_id')
+            ->distinct()
+            ->pluck('organization_entity_id');
+
+        return $units->whereIn('workforce_entity_id', $departmentIds)
+            ->pluck('workforce_entity_id')->map(intval(...))->all();
+    }
+
     /** @return list<string> */
     public function authorizeAudience(User $user, string $functionalCapability): array
     {
@@ -156,6 +198,13 @@ final class SkillAudience
         if (! $this->may($user, 'people-connector.skill.catalog.manage', $companyEntityId, [self::HR])) {
             $this->deny();
         }
+    }
+
+    public function boundEmployeeEntityId(User $user, int $companyEntityId): ?int
+    {
+        return ($binding = $this->activeBinding($user, $companyEntityId)) === null
+            ? null
+            : (int) $binding->employee_entity_id;
     }
 
     /** @param list<string> $requiredAudiences */
