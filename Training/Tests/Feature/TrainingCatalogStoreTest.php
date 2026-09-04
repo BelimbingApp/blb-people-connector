@@ -16,6 +16,7 @@ use App\Domains\PeopleConnector\Training\Exceptions\InvalidTrainingCatalogExcept
 use App\Domains\PeopleConnector\Training\Exceptions\TrainingCatalogRecordNotFoundException;
 use App\Domains\PeopleConnector\Training\Models\TrainingCourse;
 use App\Domains\PeopleConnector\Training\Services\TrainingCatalogStore;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 
@@ -145,7 +146,7 @@ test('blank titles and illegal codes fail closed (#92)', function (): void {
     ])))->toThrow(InvalidTrainingCatalogException::class, 'lowercase');
 });
 
-test('mappedSkills drops a sibling-company skill planted on the join table (#92)', function (): void {
+test('database rejects a sibling-company skill planted on the course join table (#92)', function (): void {
     [$tenantId, $companyEntityId, $skillId] = trainingCatalogFixture();
     $store = app(TrainingCatalogStore::class);
     $course = $store->defineCourse($companyEntityId, trainingCourseDraft($skillId));
@@ -155,19 +156,20 @@ test('mappedSkills drops a sibling-company skill planted on the join table (#92)
     $siblingSkill = app(SkillCatalogStore::class)->defineSkill($siblingCompanyId, new SkillDraft(
         code: 'sibling.skill',
         name: 'Sibling Skill',
-        definition: 'Should not surface via mappedSkills.',
+        definition: 'Must not attach across company ownership.',
         categoryId: (int) $siblingCategory->id,
         defaultAssessmentMethod: AssessmentMethod::DirectObservation,
     ));
 
-    // Plant a cross-company join row the store would never write.
-    DB::table('people_connector_training_course_skills')->insert([
+    // Raw insert must fail closed at the company-owner DB guard (not only via mappedSkills).
+    // Savepoint-wrapped: a trigger abort poisons the test transaction on Postgres.
+    expect(fn () => DB::transaction(fn () => DB::table('people_connector_training_course_skills')->insert([
         'tenant_id' => $tenantId,
         'course_id' => $course->id,
         'skill_id' => $siblingSkill->id,
-    ]);
+    ])))->toThrow(QueryException::class);
 
-    expect($course->skillIds())->toContain((int) $siblingSkill->id)
+    expect($course->fresh()->skillIds())->toBe([$skillId])
         ->and($course->mappedSkills()->pluck('id')->all())->toBe([$skillId]);
 });
 
