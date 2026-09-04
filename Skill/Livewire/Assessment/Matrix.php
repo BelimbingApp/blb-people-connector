@@ -2,11 +2,9 @@
 
 namespace App\Domains\PeopleConnector\Skill\Livewire\Assessment;
 
-use App\Base\Authz\Contracts\AuthorizationService;
-use App\Base\Authz\DTO\Actor;
+use App\Base\Authz\Exceptions\AuthorizationDeniedException;
 use App\Base\Tenancy\Contracts\TenantContext;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceEmployeeProjection;
-use App\Domains\PeopleConnector\Connector\Services\CompanyAttribution;
 use App\Domains\PeopleConnector\Skill\Contracts\ResolvesSkillRequirements;
 use App\Domains\PeopleConnector\Skill\Data\AssessmentDraft;
 use App\Domains\PeopleConnector\Skill\Enums\AssessmentCycle;
@@ -14,6 +12,7 @@ use App\Domains\PeopleConnector\Skill\Enums\AssessmentMethod;
 use App\Domains\PeopleConnector\Skill\Exceptions\InvalidAssessmentException;
 use App\Domains\PeopleConnector\Skill\Models\Skill;
 use App\Domains\PeopleConnector\Skill\Services\AssessmentStore;
+use App\Domains\PeopleConnector\Skill\Services\SkillAudience;
 use Illuminate\Contracts\View\View;
 use Illuminate\Support\Facades\Auth;
 use Livewire\Component;
@@ -176,8 +175,15 @@ class Matrix extends Component
 
     private function employees(int $companyEntityId)
     {
+        $employeeEntityIds = app(SkillAudience::class)->visibleEmployeeEntityIds(
+            Auth::user(),
+            $companyEntityId,
+            manage: $this->canAssess(),
+        );
+
         return WorkforceEmployeeProjection::query()
             ->forCompany(app(TenantContext::class)->requireTenantId(), $companyEntityId)
+            ->whereIn('workforce_entity_id', $employeeEntityIds)
             ->where('active', true)
             ->orderBy('display_name')
             ->limit(50)
@@ -217,32 +223,48 @@ class Matrix extends Component
     /** @return array<int, string> */
     private function allowedCompanies(): array
     {
-        return $this->allowedCompanies ??= app(CompanyAttribution::class)
-            ->allowedCompanyEntities(Auth::user());
-    }
-
-    private function canAssess(): bool
-    {
-        return app(AuthorizationService::class)->can(
-            Actor::forUser(Auth::user()),
-            'people-connector.skill.assessment.manage',
-        )->allowed;
-    }
-
-    private function authorizeView(): void
-    {
-        app(AuthorizationService::class)->authorize(
-            Actor::forUser(Auth::user()),
+        return $this->allowedCompanies ??= app(SkillAudience::class)->allowedCompanies(
+            Auth::user(),
             'people-connector.skill.assessment.view',
         );
     }
 
+    private function canAssess(): bool
+    {
+        try {
+            app(SkillAudience::class)->authorizeAudience(
+                Auth::user(),
+                'people-connector.skill.assessment.manage',
+            );
+
+            return true;
+        } catch (AuthorizationDeniedException) {
+            return false;
+        }
+    }
+
+    private function authorizeView(): void
+    {
+        try {
+            app(SkillAudience::class)->authorizeAudience(
+                Auth::user(),
+                'people-connector.skill.assessment.view',
+            );
+        } catch (AuthorizationDeniedException) {
+            abort(403);
+        }
+    }
+
     private function authorizeAssess(): void
     {
-        app(AuthorizationService::class)->authorize(
-            Actor::forUser(Auth::user()),
-            'people-connector.skill.assessment.manage',
-        );
+        try {
+            app(SkillAudience::class)->authorizeAudience(
+                Auth::user(),
+                'people-connector.skill.assessment.manage',
+            );
+        } catch (AuthorizationDeniedException) {
+            abort(403);
+        }
     }
 
     private function authorizedCompanyForAssess(): int
@@ -252,6 +274,15 @@ class Matrix extends Component
             $this->companyEntityId !== null
             && array_key_exists($this->companyEntityId, $this->allowedCompanies()),
             404,
+        );
+
+        abort_if(
+            app(SkillAudience::class)->visibleEmployeeEntityIds(
+                Auth::user(),
+                (int) $this->companyEntityId,
+                manage: true,
+            ) === [],
+            403,
         );
 
         return (int) $this->companyEntityId;
