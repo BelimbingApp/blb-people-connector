@@ -245,13 +245,20 @@ test('the skill scope restores into an emptied catalog identically, with the com
     expect(Skill::query()->forCompany($fixture->tenantId, $fixture->alphaCompanyEntityId)->pluck('code')->all())->toBe(['alpha.forklift'])
         ->and(Skill::query()->forCompany($fixture->tenantId, $fixture->betaCompanyEntityId)->pluck('code')->all())->toBe(['beta.forklift']);
 
-    // The database guards on the skills table — the skill-code trigger and
-    // the company-owner trigger — are the migration's, not the package's.
-    // The scale and level guards are not exercised here: this fixture
-    // creates no scales.
+    // The database guards are the migration's, not the package's. The
+    // published scale and its levels were retained as unchanged during apply,
+    // so deliberately write them now: an unchanged plan does not fire a
+    // write-trigger by itself.
     expect(fn () => DB::transaction(fn () => DB::table('people_connector_skill_skills')->where('id', $alphaSkill->id)->update(['code' => 'renamed'])))
         ->toThrow(QueryException::class);
     expect(fn () => DB::transaction(fn () => DB::table('people_connector_skill_skills')->where('id', $betaSkill->id)->update(['company_entity_id' => $fixture->alphaCompanyEntityId])))
+        ->toThrow(QueryException::class);
+
+    $scaleId = DB::table('people_connector_skill_proficiency_scales')->where('code', 'share-scale')->value('id');
+    expect($scaleId)->not->toBeNull();
+    expect(fn () => DB::transaction(fn () => DB::table('people_connector_skill_proficiency_scales')->where('id', $scaleId)->update(['name' => 'Rewritten after restore'])))
+        ->toThrow(QueryException::class);
+    expect(fn () => DB::transaction(fn () => DB::table('people_connector_skill_proficiency_scale_levels')->where('scale_id', $scaleId)->where('level', 0)->update(['name' => 'Rewritten level after restore'])))
         ->toThrow(QueryException::class);
 });
 
@@ -288,6 +295,7 @@ test('connector projections restore optional hierarchy and assignment references
 
     $company = $fixture->alphaCompanyEntityId;
     $report = WorkforceEmployeeProjection::query()->forCompany($fixture->tenantId, $company)->where('display_name', 'Share Report')->sole();
+    $manager = WorkforceEmployeeProjection::query()->forCompany($fixture->tenantId, $company)->where('display_name', 'Share Manager')->sole();
     $unassigned = WorkforceEmployeeProjection::query()->forCompany($fixture->tenantId, $company)->where('display_name', 'Share Unassigned Employee')->sole();
     $child = WorkforceOrganizationUnitProjection::query()->forCompany($fixture->tenantId, $company)->where('name', 'Share Child')->sole();
     $root = WorkforceOrganizationUnitProjection::query()->forCompany($fixture->tenantId, $company)->where('name', 'Share Root')->sole();
@@ -296,11 +304,12 @@ test('connector projections restore optional hierarchy and assignment references
 
     expect($report->organization_entity_id)->toBe($child->workforce_entity_id)
         ->and($report->position_entity_id)->toBe($assigned->workforce_entity_id)
-        ->and($report->manager_entity_id)->not->toBeNull()
-        ->and($report->department_head_entity_id)->not->toBeNull()
+        ->and($report->manager_entity_id)->toBe($manager->workforce_entity_id)
+        ->and($report->department_head_entity_id)->toBe($manager->workforce_entity_id)
         ->and($unassigned->organization_entity_id)->toBeNull()
         ->and($unassigned->position_entity_id)->toBeNull()
         ->and($unassigned->manager_entity_id)->toBeNull()
+        ->and($unassigned->department_head_entity_id)->toBeNull()
         ->and($child->parent_entity_id)->toBe($root->workforce_entity_id)
         ->and($root->parent_entity_id)->toBeNull()
         ->and($assigned->organization_entity_id)->toBe($child->workforce_entity_id)
