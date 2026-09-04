@@ -974,6 +974,46 @@ test('governed profiles require in-scope HOD review and HR approval before publi
     });
     expect($profile->refresh()->status)->toBe(RequirementProfileStatus::Draft)
         ->and(DB::table('people_connector_skill_requirement_profile_transition_proofs')->count())->toBe(0);
+
+    $dispatcher = RequirementProfile::getEventDispatcher();
+    $updatingEvent = 'eloquent.updating: '.RequirementProfile::class;
+    $originalUpdatingListeners = $dispatcher->getRawListeners()[$updatingEvent] ?? [];
+
+    try {
+        RequirementProfile::updating(
+            fn (RequirementProfile $candidate): ?bool => $candidate->is($profile) ? false : null,
+        );
+
+        DB::transaction(function () use ($profile): void {
+            app(RequirementProfileTransitionAuthority::class)->authorize(
+                $profile,
+                RequirementProfileStatus::Draft,
+                RequirementProfileStatus::PendingHodReview,
+            );
+
+            expect($profile->update([
+                'status' => RequirementProfileStatus::PendingHodReview->value,
+            ]))->toBeFalse()
+                ->and(DB::table('people_connector_skill_requirement_profiles')
+                    ->where('id', $profile->id)
+                    ->value('status'))->toBe(RequirementProfileStatus::Draft->value)
+                ->and(DB::table('people_connector_skill_requirement_profile_transition_proofs')->count())->toBe(0);
+
+            expect(fn () => DB::transaction(fn (): int => DB::table(
+                'people_connector_skill_requirement_profiles',
+            )
+                ->where('id', $profile->id)
+                ->update(['status' => RequirementProfileStatus::PendingHodReview->value])))
+                ->toThrow(QueryException::class);
+        });
+    } finally {
+        $dispatcher->forget($updatingEvent);
+        foreach ($originalUpdatingListeners as $listener) {
+            $dispatcher->listen($updatingEvent, $listener);
+        }
+        $profile->refresh();
+    }
+
     expect(fn () => DB::transaction(fn (): int => DB::table('people_connector_skill_requirement_profiles')
         ->where('id', $profile->id)
         ->update(['status' => RequirementProfileStatus::PendingHodReview->value])))

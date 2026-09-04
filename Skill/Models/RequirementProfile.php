@@ -15,6 +15,7 @@ use App\Domains\PeopleConnector\Skill\Enums\RequirementProfileStatus;
 use App\Domains\PeopleConnector\Skill\Exceptions\PublishedRequirementImmutableException;
 use App\Domains\PeopleConnector\Skill\Workflow\RequirementProfileTransitionAuthority;
 use Illuminate\Database\Eloquent\Builder;
+use Throwable;
 
 /**
  * A versioned requirement profile defining what skills a position requires.
@@ -137,9 +138,32 @@ class RequirementProfile extends TenantOwnedModel implements PresentsWorkflowNot
             return parent::performUpdate($query);
         }
 
-        return $this->getConnection()->transaction(
-            fn (): bool => parent::performUpdate($query),
-        );
+        $connection = $this->getConnection();
+        $startingLevel = $connection->transactionLevel();
+        $connection->beginTransaction();
+
+        try {
+            $updated = parent::performUpdate($query);
+
+            if ($updated === false) {
+                // A later Eloquent listener vetoed the update after the first
+                // listener minted its database proof. A normal false return
+                // must roll back the savepoint just like a thrown failure.
+                $connection->rollBack($startingLevel);
+
+                return false;
+            }
+
+            $connection->commit();
+
+            return true;
+        } catch (Throwable $exception) {
+            if ($connection->transactionLevel() > $startingLevel) {
+                $connection->rollBack($startingLevel);
+            }
+
+            throw $exception;
+        }
     }
 
     public function isLocked(): bool
