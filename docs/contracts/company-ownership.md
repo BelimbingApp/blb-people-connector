@@ -132,6 +132,8 @@ guessing is how the connector reached three identical defects.
 | `..._skill_skills` | **C** | `company_entity_id` | The skill catalog is the company's own competency definitions, and `code` is unique per company, not per tenant. |
 | `..._skill_proficiency_scales` | **C** | `company_entity_id` | Scale codes and versions are per company; publishing retires the previous version of the same code *within the company*. |
 | `..._skill_proficiency_scale_levels` | **D** | `scale_id` | The behavioural anchors of one scale. They have no meaning apart from their scale, and the scale names the company. |
+| `..._skill_actor_bindings` | **C** | `company_entity_id` | A reviewed platform-user to workforce-employee assertion is valid only inside the workforce company that supplied the confirmed user projection. |
+| `..._skill_assessor_assignments` | **C** | `company_entity_id` | An assessor's authority is an explicit assignment to one employee in one workforce company, never a tenant-wide consequence of holding a role. |
 
 ### Training module
 
