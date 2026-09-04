@@ -11,6 +11,7 @@ final readonly class ReconciliationIssueDetails
         public ?string $reasonCode = null,
         public ?int $expectedCount = null,
         public ?int $observedCount = null,
+        public ?string $relatedExternalId = null,
     ) {
         foreach ([$field, $reasonCode] as $identifier) {
             if ($identifier !== null
@@ -27,6 +28,10 @@ final readonly class ReconciliationIssueDetails
                 throw new InvalidReconciliationIssueException('Reconciliation detail counts cannot be negative.');
             }
         }
+
+        if ($relatedExternalId !== null && (trim($relatedExternalId) === '' || strlen($relatedExternalId) > 512)) {
+            throw new InvalidReconciliationIssueException('Related reconciliation external identifiers must be non-empty and cannot exceed 512 bytes.');
+        }
     }
 
     /** @return array<string, int|string> */
@@ -37,6 +42,7 @@ final readonly class ReconciliationIssueDetails
             'reason_code' => $this->reasonCode,
             'expected_count' => $this->expectedCount,
             'observed_count' => $this->observedCount,
+            'related_external_id' => $this->relatedExternalId,
         ], static fn (int|string|null $value): bool => $value !== null);
     }
 }
