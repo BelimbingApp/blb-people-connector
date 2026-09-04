@@ -33,7 +33,7 @@ function trainingImmutabilityEntity(int $tenantId, string $type): WorkforceEntit
  * Two companies in one tenant, each with a course mapped to a same-company skill.
  *
  * @return array{int, int, int, TrainingCourse, TrainingCourse, int}
- *     [tenantId, companyA, companyB, courseA, courseB, mappingAId]
+ *                                                                   [tenantId, companyA, companyB, courseA, courseB, mappingAId]
  */
 function trainingImmutabilitySiblingFixture(): array
 {
