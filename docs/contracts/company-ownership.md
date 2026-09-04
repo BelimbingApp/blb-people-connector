@@ -132,6 +132,10 @@ guessing is how the connector reached three identical defects.
 | `..._skill_skills` | **C** | `company_entity_id` | The skill catalog is the company's own competency definitions, and `code` is unique per company, not per tenant. |
 | `..._skill_proficiency_scales` | **C** | `company_entity_id` | Scale codes and versions are per company; publishing retires the previous version of the same code *within the company*. |
 | `..._skill_proficiency_scale_levels` | **D** | `scale_id` | The behavioural anchors of one scale. They have no meaning apart from their scale, and the scale names the company. |
+| `..._skill_assessments` | **C** | `company_entity_id` | Finalized assessment history remains with the company that assessed the projected employee. |
+| `..._skill_employee_scores` | **C** | `company_entity_id` | The current-score projection belongs to the same company as its source assessment. |
+| `..._skill_development_actions` | **C** | `company_entity_id` | A gap-closing commitment is company-owned and validates its employee, accountable owner, HR coordinator, trainer, skill, assessments, and optional course against that same company. |
+| `..._skill_development_action_events` | **C** | `company_entity_id` | Append-only comments, evidence, and lifecycle history remain directly company-addressable during provider outage. |
 
 ### Training module
 

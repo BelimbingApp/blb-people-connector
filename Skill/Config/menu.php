@@ -21,5 +21,13 @@ return [
             'permission' => 'people-connector.skill.assessment.view',
             'parent' => 'people',
         ],
+        [
+            'id' => 'people.skill-development-actions',
+            'label' => 'Development actions',
+            'icon' => 'heroicon-o-arrow-trending-up',
+            'route' => 'people-connector.skill.development-actions.index',
+            'permission' => 'people-connector.skill.development-action.view',
+            'parent' => 'people',
+        ],
     ],
 ];
