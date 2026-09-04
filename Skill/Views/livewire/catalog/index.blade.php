@@ -142,7 +142,7 @@
                 </x-slot:head>
                 <x-slot:body>
                     @forelse ($skills as $skill)
-                        <tr wire:key="skill-{{ $skill->id }}" @class(['opacity-60' => ! $skill->active])>
+                        <tr wire:key="skill-{{ $skill->id }}" @class(['opacity-60' => $skill->active === false])>
                             <td class="px-table-cell-x py-table-cell-y font-mono text-sm">{{ $skill->code }}</td>
                             <td class="px-table-cell-x py-table-cell-y text-sm text-ink">
                                 <span class="font-medium">{{ $skill->name }}</span>
