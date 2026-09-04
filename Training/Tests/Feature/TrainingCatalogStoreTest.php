@@ -16,6 +16,7 @@ use App\Domains\PeopleConnector\Training\Exceptions\InvalidTrainingCatalogExcept
 use App\Domains\PeopleConnector\Training\Exceptions\TrainingCatalogRecordNotFoundException;
 use App\Domains\PeopleConnector\Training\Models\TrainingCourse;
 use App\Domains\PeopleConnector\Training\Services\TrainingCatalogStore;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
 
@@ -161,11 +162,12 @@ test('database rejects a sibling-company skill planted on the course join table 
     ));
 
     // Raw insert must fail closed at the company-owner DB guard (not only via mappedSkills).
-    expect(fn () => DB::table('people_connector_training_course_skills')->insert([
+    // Savepoint-wrapped: a trigger abort poisons the test transaction on Postgres.
+    expect(fn () => DB::transaction(fn () => DB::table('people_connector_training_course_skills')->insert([
         'tenant_id' => $tenantId,
         'course_id' => $course->id,
         'skill_id' => $siblingSkill->id,
-    ]))->toThrow(\Illuminate\Database\QueryException::class);
+    ])))->toThrow(QueryException::class);
 
     expect($course->fresh()->skillIds())->toBe([$skillId])
         ->and($course->mappedSkills()->pluck('id')->all())->toBe([$skillId]);
