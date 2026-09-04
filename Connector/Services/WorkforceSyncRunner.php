@@ -237,7 +237,10 @@ final class WorkforceSyncRunner
             $connectionId,
             'sync:merge:'.$change->supersededReference->resourceType->value.':'.$change->supersededReference->externalId,
             self::ISSUE_KIND_MERGE_REQUESTED,
-            new ReconciliationIssueDetails(reasonCode: 'review_required'),
+            new ReconciliationIssueDetails(
+                reasonCode: 'review_required',
+                relatedExternalId: $change->survivingReference->externalId,
+            ),
             $change->supersededReference->resourceType->value,
             $change->supersededReference->externalId,
             severity: 'warning',
