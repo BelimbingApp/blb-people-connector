@@ -7,13 +7,11 @@ return new class extends Migration
 {
     public function up(): void
     {
-        if (in_array(DB::connection()->getDriverName(), ['pgsql', 'sqlite'], true)) {
-            DB::statement(
-                'CREATE UNIQUE INDEX IF NOT EXISTS pcs_req_profile_current_uq'
-                .' ON people_connector_skill_requirement_profiles (tenant_id, company_entity_id, code)'
-                ." WHERE status = 'published'",
-            );
-        }
+        DB::statement(
+            'CREATE UNIQUE INDEX IF NOT EXISTS pcs_req_profile_current_uq'
+            .' ON people_connector_skill_requirement_profiles (tenant_id, company_entity_id, code)'
+            ." WHERE status = 'published'",
+        );
 
         if (DB::connection()->getDriverName() === 'pgsql') {
             DB::unprepared(<<<'SQL'
@@ -115,9 +113,7 @@ return new class extends Migration
 
     public function down(): void
     {
-        if (in_array(DB::connection()->getDriverName(), ['pgsql', 'sqlite'], true)) {
-            DB::statement('DROP INDEX IF EXISTS pcs_req_profile_current_uq');
-        }
+        DB::statement('DROP INDEX IF EXISTS pcs_req_profile_current_uq');
 
         if (DB::connection()->getDriverName() === 'pgsql') {
             DB::unprepared(<<<'SQL'
