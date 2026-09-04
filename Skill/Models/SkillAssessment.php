@@ -14,6 +14,9 @@ use App\Domains\PeopleConnector\Skill\Enums\AssessmentStatus;
 use App\Domains\PeopleConnector\Skill\Enums\HodVerification;
 use App\Domains\PeopleConnector\Skill\Enums\RequirementCriticality;
 use App\Domains\PeopleConnector\Skill\Exceptions\FinalizedAssessmentImmutableException;
+use App\Domains\PeopleConnector\Skill\Exceptions\InvalidAssessmentException;
+use Closure;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 /**
  * One employee skill assessment history row. Finalized rows are immutable;
@@ -21,6 +24,50 @@ use App\Domains\PeopleConnector\Skill\Exceptions\FinalizedAssessmentImmutableExc
  */
 class SkillAssessment extends TenantOwnedModel implements ReferencesWorkforceEntities
 {
+    private static int $lifecycleTransitionDepth = 0;
+
+    /** @var list<string> */
+    private const LIFECYCLE_COLUMNS = [
+        'status',
+        'hod_verification',
+        'hod_verifier_user_id',
+        'hod_verified_at',
+        'hod_decision_notes',
+        'finalized_at',
+        'finalized_by_user_id',
+    ];
+
+    /** @var list<string> */
+    private const SUBMITTED_COLUMNS = [
+        'employee_entity_id',
+        'skill_id',
+        'requirement_reference',
+        'requirement_version',
+        'required_level',
+        'criticality',
+        'weight_percent',
+        'mandatory_gate',
+        'scale_id',
+        'scale_version',
+        'assessed_level',
+        'gap',
+        'weighted_gap',
+        'priority_score',
+        'result_band',
+        'method',
+        'cycle',
+        'evidence',
+        'notes',
+        'assessor_user_id',
+        'assessor_employee_entity_id',
+        'assessed_at',
+        'certificate_number',
+        'valid_until',
+        'next_assessment_due',
+        'supersedes_assessment_id',
+        ...self::LIFECYCLE_COLUMNS,
+    ];
+
     use CompanyOwned;
 
     protected $table = 'people_connector_skill_assessments';
@@ -78,10 +125,66 @@ class SkillAssessment extends TenantOwnedModel implements ReferencesWorkforceEnt
                     "Finalized assessment {$assessment->getKey()} cannot be modified; supersede with a new row.",
                 );
             }
+
+            $originalStatus = $assessment->getOriginal('status');
+            $originalStatus = $originalStatus instanceof AssessmentStatus
+                ? $originalStatus
+                : AssessmentStatus::tryFrom((string) $originalStatus);
+
+            if ($originalStatus === AssessmentStatus::Returned
+                || $originalStatus === AssessmentStatus::Finalized) {
+                throw new InvalidAssessmentException(
+                    "Assessment {$assessment->getKey()} is historical and can only be corrected by inserting a new row.",
+                );
+            }
+
+            $dirty = array_keys($assessment->getDirty());
+            if (self::$lifecycleTransitionDepth === 0
+                && array_intersect($dirty, self::LIFECYCLE_COLUMNS) !== []) {
+                throw new InvalidAssessmentException(
+                    'Assessment lifecycle changes must go through AssessmentStore workflow methods.',
+                );
+            }
+
+            if (self::$lifecycleTransitionDepth === 0
+                && $originalStatus !== AssessmentStatus::Draft
+                && array_intersect($dirty, self::SUBMITTED_COLUMNS) !== []) {
+                throw new InvalidAssessmentException(
+                    'Submitted assessment facts are immutable; submit a governed correction instead.',
+                );
+            }
         };
 
         static::updating($guard);
-        static::deleting($guard);
+        static::deleting(function (SkillAssessment $assessment): void {
+            if ($assessment->getOriginal('finalized_at') !== null) {
+                throw new FinalizedAssessmentImmutableException(
+                    "Finalized assessment {$assessment->getKey()} cannot be deleted; supersede with a new row.",
+                );
+            }
+
+            $status = $assessment->getOriginal('status');
+            $status = $status instanceof AssessmentStatus
+                ? $status
+                : AssessmentStatus::tryFrom((string) $status);
+
+            if ($status !== AssessmentStatus::Draft) {
+                throw new InvalidAssessmentException(
+                    "Assessment {$assessment->getKey()} is historical and cannot be deleted.",
+                );
+            }
+        });
+    }
+
+    public static function withinLifecycleTransition(Closure $callback): mixed
+    {
+        self::$lifecycleTransitionDepth++;
+
+        try {
+            return $callback();
+        } finally {
+            self::$lifecycleTransitionDepth--;
+        }
     }
 
     public function isFinalized(): bool
@@ -100,6 +203,12 @@ class SkillAssessment extends TenantOwnedModel implements ReferencesWorkforceEnt
         return $this->hod_verification === HodVerification::Verified
             && $this->hod_verifier_user_id !== null
             && $this->hod_verified_at !== null;
+    }
+
+    /** @return HasMany<AssessmentDecision, $this> */
+    public function decisions(): HasMany
+    {
+        return $this->hasMany(AssessmentDecision::class, 'assessment_id');
     }
 
     public function getAuditSubject(): ?array

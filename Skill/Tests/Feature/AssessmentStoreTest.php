@@ -1,6 +1,7 @@
 <?php
 
 use App\Base\Tenancy\Contracts\TenantContext;
+use App\Core\User\Models\User;
 use App\Domains\PeopleConnector\Connector\Models\ExternalIdentity;
 use App\Domains\PeopleConnector\Connector\Models\ProviderConnection;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceEmployeeProjection;
@@ -25,11 +26,13 @@ use App\Domains\PeopleConnector\Skill\Enums\SkillScope;
 use App\Domains\PeopleConnector\Skill\Events\SkillAssessmentFinalized;
 use App\Domains\PeopleConnector\Skill\Exceptions\FinalizedAssessmentImmutableException;
 use App\Domains\PeopleConnector\Skill\Exceptions\InvalidAssessmentException;
+use App\Domains\PeopleConnector\Skill\Models\AssessmentDecision;
 use App\Domains\PeopleConnector\Skill\Models\EmployeeSkillScore;
 use App\Domains\PeopleConnector\Skill\Models\ProficiencyScale;
 use App\Domains\PeopleConnector\Skill\Models\SkillAssessment;
 use App\Domains\PeopleConnector\Skill\Services\AssessmentStore;
 use App\Domains\PeopleConnector\Skill\Services\RequirementProfileStore;
+use App\Domains\PeopleConnector\Skill\Services\SkillAudience;
 use App\Domains\PeopleConnector\Skill\Services\SkillCatalogDefaults;
 use App\Domains\PeopleConnector\Skill\Services\SkillCatalogStore;
 use Illuminate\Database\QueryException;
@@ -99,7 +102,23 @@ function assessmentFixture(): array
         ),
     ]));
 
+    app()->instance(SkillAudience::class, new class extends SkillAudience
+    {
+        public function __construct() {}
+
+        public function authorizeAssessmentSubmission(User $user, int $companyEntityId, int $employeeEntityId): void {}
+
+        public function authorizeHodVerification(User $user, int $companyEntityId, int $employeeEntityId): void {}
+
+        public function authorizeAssessmentFinalization(User $user, int $companyEntityId, int $employeeEntityId): void {}
+    });
+
     return [$tenantId, (int) $company->id, (int) $employee->id, (int) $skill->id];
+}
+
+function assessmentActor(int $id): User
+{
+    return User::factory()->make(['id' => $id]);
 }
 
 function assessmentDraft(int $employeeEntityId, int $skillId, array $overrides = []): AssessmentDraft
@@ -128,14 +147,15 @@ function finalizeVerifiedAssessment(
     int $hodVerifierUserId = 10,
 ): SkillAssessment {
     $submitted = $store->submit(
+        assessmentActor(9),
         $companyEntityId,
         $draft,
         supersedesAssessmentId: $supersedesAssessmentId,
     );
-    $pending = $store->requestHodVerification($companyEntityId, (int) $submitted->id);
-    $store->verifyHod($companyEntityId, (int) $pending->id, $hodVerifierUserId, 'Verified against the submitted evidence.');
+    $pending = $store->requestHodVerification(assessmentActor(9), $companyEntityId, (int) $submitted->id);
+    $store->verifyHod(assessmentActor($hodVerifierUserId), $companyEntityId, (int) $pending->id, 'Verified against the submitted evidence.');
 
-    return $store->finalizeVerified($companyEntityId, (int) $pending->id, $hodVerifierUserId);
+    return $store->finalizeVerified(assessmentActor($hodVerifierUserId), $companyEntityId, (int) $pending->id);
 }
 
 test('finalize snapshots requirement and projects gap from the published contract', function (): void {
@@ -188,31 +208,87 @@ test('score projection waits for an independent HOD decision', function (): void
     $store = app(AssessmentStore::class);
     $draft = assessmentDraft($employeeEntityId, $skillId);
 
-    $submitted = $store->submit($companyEntityId, $draft);
+    $submitted = $store->submit(assessmentActor(9), $companyEntityId, $draft);
     expect($submitted->status)->toBe(AssessmentStatus::Submitted)
         ->and(EmployeeSkillScore::query()->forCompany($tenantId, $companyEntityId)->count())->toBe(0);
 
-    $pending = $store->requestHodVerification($companyEntityId, (int) $submitted->id);
+    $pending = $store->requestHodVerification(assessmentActor(9), $companyEntityId, (int) $submitted->id);
     expect($pending->status)->toBe(AssessmentStatus::PendingHodVerification)
         ->and($pending->isAwaitingHodVerification())->toBeTrue();
 
-    expect(fn () => $store->verifyHod($companyEntityId, (int) $pending->id, 9))
+    expect(fn () => $store->verifyHod(assessmentActor(9), $companyEntityId, (int) $pending->id))
         ->toThrow(InvalidAssessmentException::class, 'assessor');
 
     $returned = $store->returnForCorrection(
+        assessmentActor(10),
         $companyEntityId,
         (int) $pending->id,
-        10,
         'Attach the observation record before resubmission.',
     );
     expect($returned->status)->toBe(AssessmentStatus::Returned)
         ->and($returned->hod_verification)->toBe(HodVerification::Rejected)
         ->and(EmployeeSkillScore::query()->forCompany($tenantId, $companyEntityId)->count())->toBe(0);
 
-    expect(fn () => $store->finalizeVerified($companyEntityId, (int) $returned->id, 10))
+    expect(fn () => $store->finalizeVerified(assessmentActor(10), $companyEntityId, (int) $returned->id))
         ->toThrow(InvalidAssessmentException::class, 'pending HOD verification');
 
     Event::assertNotDispatched(SkillAssessmentFinalized::class);
+});
+
+test('returned assessments resubmit through a new governed lineage', function (): void {
+    [$tenantId, $companyEntityId, $employeeEntityId, $skillId] = assessmentFixture();
+    $store = app(AssessmentStore::class);
+
+    $submitted = $store->submit(assessmentActor(9), $companyEntityId, assessmentDraft($employeeEntityId, $skillId));
+    $pending = $store->requestHodVerification(assessmentActor(9), $companyEntityId, (int) $submitted->id);
+    $returned = $store->returnForCorrection(
+        assessmentActor(10),
+        $companyEntityId,
+        (int) $pending->id,
+        'Attach the observation record before resubmission.',
+    );
+
+    $corrected = $store->resubmitForCorrection(
+        assessmentActor(9),
+        $companyEntityId,
+        (int) $returned->id,
+        assessmentDraft($employeeEntityId, $skillId, ['evidence' => 'Attached observation record confirms the lift cycles.']),
+    );
+
+    expect($corrected->status)->toBe(AssessmentStatus::PendingHodVerification)
+        ->and($corrected->supersedes_assessment_id)->toBe($returned->id)
+        ->and(SkillAssessment::query()->forCompany($tenantId, $companyEntityId)->count())->toBe(2)
+        ->and(AssessmentDecision::query()->forCompany($tenantId, $companyEntityId)->where('assessment_id', $returned->id)->count())->toBe(3)
+        ->and(AssessmentDecision::query()->forCompany($tenantId, $companyEntityId)->where('assessment_id', $corrected->id)->count())->toBe(2);
+
+    expect(fn () => $store->resubmitForCorrection(
+        assessmentActor(10),
+        $companyEntityId,
+        (int) $returned->id,
+        assessmentDraft($employeeEntityId, $skillId),
+    ))->toThrow(InvalidAssessmentException::class, 'original assessor');
+});
+
+test('assessment workflow rejects spoofed actors and direct lifecycle writes', function (): void {
+    [, $companyEntityId, $employeeEntityId, $skillId] = assessmentFixture();
+    $store = app(AssessmentStore::class);
+    $draft = assessmentDraft($employeeEntityId, $skillId);
+
+    expect(fn () => $store->submit(
+        assessmentActor(10),
+        $companyEntityId,
+        $draft,
+    ))->toThrow(InvalidAssessmentException::class, 'authenticated actor');
+
+    $submitted = $store->submit(assessmentActor(9), $companyEntityId, $draft);
+    $submitted->status = AssessmentStatus::PendingHodVerification;
+    expect(fn () => $submitted->save())
+        ->toThrow(InvalidAssessmentException::class, 'AssessmentStore workflow');
+
+    expect(fn () => DB::table('people_connector_skill_assessments')
+        ->where('id', $submitted->id)
+        ->update(['status' => AssessmentStatus::Finalized->value]))
+        ->toThrow(QueryException::class);
 });
 
 test('evidence is mandatory and scale values fail closed', function (): void {
@@ -292,19 +368,19 @@ test('submitBatch is atomic: one bad cell rolls back the whole matrix submission
     $good = assessmentDraft($employeeEntityId, $skillId, ['assessedLevel' => 3]);
     $bad = assessmentDraft($employeeEntityId, $skillId, ['assessedLevel' => 3, 'evidence' => '']);
 
-    expect(fn () => $store->submitBatch($companyEntityId, [$good, $bad]))
+    expect(fn () => $store->submitBatch(assessmentActor(9), $companyEntityId, [$good, $bad]))
         ->toThrow(InvalidAssessmentException::class, 'Evidence');
 
     expect(SkillAssessment::query()->forCompany($tenantId, $companyEntityId)->count())->toBe(0)
         ->and(EmployeeSkillScore::query()->forCompany($tenantId, $companyEntityId)->count())->toBe(0);
 
-    $saved = $store->submitBatch($companyEntityId, [
+    $saved = $store->submitBatch(assessmentActor(9), $companyEntityId, [
         assessmentDraft($employeeEntityId, $skillId, ['assessedLevel' => 3]),
     ]);
 
-    $store->requestHodVerification($companyEntityId, (int) $saved[0]->id);
-    $store->verifyHod($companyEntityId, (int) $saved[0]->id, 10, 'Verified by the HOD.');
-    $store->finalizeVerified($companyEntityId, (int) $saved[0]->id, 10);
+    $store->requestHodVerification(assessmentActor(9), $companyEntityId, (int) $saved[0]->id);
+    $store->verifyHod(assessmentActor(10), $companyEntityId, (int) $saved[0]->id, 'Verified by the HOD.');
+    $store->finalizeVerified(assessmentActor(10), $companyEntityId, (int) $saved[0]->id);
 
     expect($saved)->toHaveCount(1)
         ->and(SkillAssessment::query()->forCompany($tenantId, $companyEntityId)->count())->toBe(1);

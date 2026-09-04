@@ -33,7 +33,7 @@ use App\Domains\PeopleConnector\Skill\Models\SkillAssessorAssignment;
  * that reason permits. A grant_all role alone is rejected: platform
  * administration must not silently become HR administration.
  */
-final class SkillAudience
+class SkillAudience
 {
     public const HR = 'hr';
 

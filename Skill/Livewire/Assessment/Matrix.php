@@ -134,10 +134,12 @@ class Matrix extends Component
 
         try {
             $submitted = $store->submitBatch(
+                Auth::user(),
                 $companyEntityId,
                 $drafts,
             );
             $store->requestHodVerificationBatch(
+                Auth::user(),
                 $companyEntityId,
                 array_map(static fn (SkillAssessment $assessment): int => (int) $assessment->id, $submitted),
             );
