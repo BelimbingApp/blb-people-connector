@@ -183,6 +183,24 @@ test('deactivation keeps history and category deactivation refuses while skills 
         ->toThrow(InvalidSkillCatalogException::class, 'category');
 });
 
+test('reactivateSkill refuses when forCompany cannot resolve the category', function (): void {
+    [$tenantId, $companyEntityId, $category] = skillCatalogFixture('Missing Category Tenant');
+    $store = app(SkillCatalogStore::class);
+    $skill = $store->defineSkill($companyEntityId, skillCatalogDraft($category));
+    $store->deactivateSkill($companyEntityId, (int) $skill->id);
+
+    // Sibling-company category satisfies the FK but `forCompany` cannot see it, so
+    // `$category` is null — the #76 guard must refuse rather than fail open.
+    $siblingCompanyId = (int) skillCatalogEntity($tenantId, 'company')->id;
+    $foreignCategory = $store->defineCategory($siblingCompanyId, 'foreign', 'Foreign');
+    DB::table($skill->getTable())->where('id', $skill->id)->update(['category_id' => $foreignCategory->id]);
+    $skill->refresh();
+
+    expect(fn () => $store->reactivateSkill($companyEntityId, (int) $skill->id))
+        ->toThrow(InvalidSkillCatalogException::class, 'category')
+        ->and($skill->refresh()->active)->toBeFalse();
+});
+
 test('company axis: a sibling company in the same tenant cannot address this catalog', function (): void {
     [$tenantId, $companyEntityIdA, $categoryA] = skillCatalogFixture('Company Axis Tenant');
     $store = app(SkillCatalogStore::class);
