@@ -3,7 +3,7 @@
 **Document type:** Data-ownership contract
 **Status:** Active
 **Issue:** BelimbingApp/blb-people-connector#6 (cross-links BelimbingApp/blb-people#21)
-**Last updated:** 2026-09-02
+**Last updated:** 2026-09-04
 
 ---
 
@@ -119,7 +119,7 @@ guessing is how the connector reached three identical defects.
 | `..._workforce_snapshots` | **D** | `connection_id` | Append-only raw provider payloads. Company follows the connection that produced them. |
 | `..._sync_checkpoints` | **D** | `connection_id` | A resume cursor for one stream on one connection. Meaningless except through its connection. |
 | `..._sync_checkpoint_events` | **D** | `checkpoint_id` | Append-only history of one checkpoint, which belongs to one connection. |
-| `..._reconciliation_issues` | **D** | `connection_id` | An open problem with one connection's data. |
+| `..._reconciliation_issues` | **D** | `connection_id` | An open problem with one connection's data. A queue action inherits that connection's platform-company scope; a tenant-scoped connection is actionable only through the single-company carve-out until #21 supplies a durable workforce-company mapping. |
 | `..._provider_credentials` | **D** | `connection_id` | Short-lived provider credentials inherit the company of their connection; every lookup pins the connection and rejects inactive selections. Credential revocation deliberately uses the documented escape to locate the row before resolving its tenant-owned connection. |
 | `..._privileged_support_grants` | **T** | — | A tenant administration grant may optionally name a platform company scope; its service checks both actors against that scope before issuing or using it. |
 | `..._privileged_support_actions` | **T** | — | Immutable evidence of a tenant administration grant; ownership follows the grant through the composite foreign key, while append-only database guards protect the evidence. |
@@ -857,6 +857,22 @@ confirms the mapping. That is a schema and product decision, and it belongs to
 the ownership contract in BelimbingApp/blb-people#21 rather than to a query
 guard. Until it lands, the fail-closed rule stands and this paragraph is the
 reason.
+
+### Reconciliation decisions do not bypass the gap
+
+The reconciliation queue is a connection-level operator surface, not a way to
+turn a tenant-wide issue into a company-wide entitlement. Its access check is
+therefore the same attribution decision: a company-scoped connection is
+available only to a user of that platform company; a tenant-scoped connection
+is unavailable in a tenant that has ever held more than one platform company.
+It becomes available only in the documented single-company carve-out. This
+applies before listing, resolving, remapping, or merging an issue.
+
+A feed-originated merge issue must persist both external references. The issue
+row names the superseded reference in `external_id`; its structured details
+carry `related_external_id` for the surviving reference. Dropping the latter
+would leave a human-visible queue that cannot safely call the reviewed merge
+store, and must be treated as incomplete evidence rather than guessed.
 
 Two smaller things are also deliberately left open:
 

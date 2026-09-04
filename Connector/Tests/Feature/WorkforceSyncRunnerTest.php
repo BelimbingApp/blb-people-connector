@@ -513,6 +513,11 @@ test('a merge arriving in the feed is queued for review, not applied', function 
         ->and(syncRunnerIssues($tenantId, $connectionId))->toBe([
             ['kind' => 'sync_merge_requested', 'key' => 'sync:merge:employee:emp-2', 'reason' => 'review_required', 'severity' => 'warning'],
         ])
+        ->and(ReconciliationIssue::query()
+            ->forTenant($tenantId)
+            ->where('connection_id', $connectionId)
+            ->sole()
+            ->details['related_external_id'])->toBe('emp-1')
         ->and($report->checkpointVersion)->toBe(2);
 });
 

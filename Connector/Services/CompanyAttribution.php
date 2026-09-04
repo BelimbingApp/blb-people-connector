@@ -65,6 +65,30 @@ class CompanyAttribution
         return array_key_exists($companyEntityId, $this->allowedCompanyEntities($actor));
     }
 
+    /**
+     * Whether an operator may handle connection-level work that has not yet
+     * resolved to a workforce company. A connection tied to one platform
+     * company belongs only to that company. A tenant-wide connection remains
+     * actionable only in the single-company carve-out: in a multi-company
+     * tenant there is no durable mapping from an unresolved record to a
+     * platform company, so this deliberately fails closed.
+     */
+    public function mayActForConnection(?User $actor, ProviderConnection $connection): bool
+    {
+        $tenantId = $this->tenantContext->requireTenantId();
+        $actorCompanyId = $actor?->getCompanyId();
+
+        if ($actorCompanyId === null || (int) $connection->tenant_id !== $tenantId) {
+            return false;
+        }
+
+        if ($connection->company_id !== null) {
+            return (int) $connection->company_id === (int) $actorCompanyId;
+        }
+
+        return $this->hasOnlyEverHadOneCompany($tenantId);
+    }
+
     /** @return array<int, string> */
     private function resolve(int $tenantId, int $actorCompanyId): array
     {
