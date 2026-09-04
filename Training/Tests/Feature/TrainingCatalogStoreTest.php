@@ -11,6 +11,7 @@ use App\Domains\PeopleConnector\Training\Data\TrainingCourseDraft;
 use App\Domains\PeopleConnector\Training\Enums\DeliveryMode;
 use App\Domains\PeopleConnector\Training\Events\TrainingCourseDeactivated;
 use App\Domains\PeopleConnector\Training\Events\TrainingCourseDefined;
+use App\Domains\PeopleConnector\Training\Events\TrainingCourseReactivated;
 use App\Domains\PeopleConnector\Training\Exceptions\InvalidTrainingCatalogException;
 use App\Domains\PeopleConnector\Training\Exceptions\TrainingCatalogRecordNotFoundException;
 use App\Domains\PeopleConnector\Training\Models\TrainingCourse;
@@ -155,6 +156,36 @@ test('deactivate and reactivate toggle the course and fire the deactivation even
     expect($reactivated->active)->toBeTrue();
 
     Event::assertDispatched(TrainingCourseDeactivated::class, fn (TrainingCourseDeactivated $event): bool => $event->code === 'forklift.induction');
+});
+
+test('reviseCourse does not change availability or skip lifecycle events (#91)', function (): void {
+    [, $companyEntityId, $skillId] = trainingCatalogFixture();
+    $store = app(TrainingCatalogStore::class);
+    $course = $store->defineCourse($companyEntityId, trainingCourseDraft($skillId));
+    $store->deactivateCourse($companyEntityId, (int) $course->id);
+
+    Event::fake([TrainingCourseDeactivated::class, TrainingCourseReactivated::class]);
+
+    // Ordinary draft defaults active=true — must not silently reactivate.
+    $revised = $store->reviseCourse($companyEntityId, (int) $course->id, trainingCourseDraft($skillId, [
+        'title' => 'Forklift Induction (Content only)',
+    ]));
+    expect($revised->active)->toBeFalse()
+        ->and($revised->title)->toBe('Forklift Induction (Content only)');
+
+    // Explicit active:false on revise must not deactivate via the revise path either.
+    $store->reactivateCourse($companyEntityId, (int) $course->id);
+    Event::fake([TrainingCourseDeactivated::class, TrainingCourseReactivated::class]);
+
+    $stillActive = $store->reviseCourse($companyEntityId, (int) $course->id, trainingCourseDraft($skillId, [
+        'active' => false,
+        'title' => 'Still active after revise',
+    ]));
+    expect($stillActive->active)->toBeTrue()
+        ->and($stillActive->title)->toBe('Still active after revise');
+
+    Event::assertNotDispatched(TrainingCourseDeactivated::class);
+    Event::assertNotDispatched(TrainingCourseReactivated::class);
 });
 
 test('a course cannot be reached, revised, or deactivated across a company or tenant boundary', function (): void {

@@ -88,8 +88,10 @@ class TrainingCatalogStore
 
         $this->assertDraft($tenantId, $companyEntityId, $draft);
 
+        // Availability is owned by deactivateCourse / reactivateCourse so those
+        // lifecycle events stay the only writers of `active` (blb-people-connector#91).
         $course = DB::transaction(function () use ($course, $draft): TrainingCourse {
-            $course->update($this->attributesFor($draft));
+            $course->update($this->reviseAttributesFor($draft));
             $this->syncSkills($course, $draft->skillIds);
 
             return $course;
@@ -142,6 +144,21 @@ class TrainingCatalogStore
             'internal_trainer_employee_entity_id' => $draft->internalTrainerEmployeeEntityId,
             'active' => $draft->active,
         ];
+    }
+
+    /**
+     * Revise payload excludes `active` — toggling availability must go through
+     * {@see deactivateCourse()} / {@see reactivateCourse()} so the published
+     * lifecycle events cannot be skipped (blb-people-connector#91).
+     *
+     * @return array<string, mixed>
+     */
+    private function reviseAttributesFor(TrainingCourseDraft $draft): array
+    {
+        $attributes = $this->attributesFor($draft);
+        unset($attributes['active']);
+
+        return $attributes;
     }
 
     private function syncSkills(TrainingCourse $course, array $skillIds): void
