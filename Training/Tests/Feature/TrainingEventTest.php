@@ -251,6 +251,17 @@ test('HR can maintain the company-scoped course catalog without exposing a cours
         ->toBeFalse();
 });
 
+test('catalog rejects a sibling-company trainer at the store boundary', function (): void {
+    $fixture = trainingEventFixture();
+    $sibling = trainingEventEntity($fixture['tenantId'], 'company');
+    $siblingTrainer = trainingEventEmployee($fixture['tenantId'], (int) $sibling->id, $fixture['connection'], 'Sibling trainer');
+
+    expect(fn () => app(TrainingCatalogStore::class)->defineCourse((int) $fixture['company']->id, new TrainingCourseDraft(
+        code: 'cross-company-trainer', title: 'Cross company trainer', deliveryMode: DeliveryMode::Coaching,
+        skillIds: [(int) $fixture['course']->skillIds()[0]], internalTrainerEmployeeEntityId: (int) $siblingTrainer->workforce_entity_id,
+    )))->toThrow(InvalidTrainingCatalogException::class);
+});
+
 test('event schedule and transitions obey the event clock at the store boundary', function (): void {
     $this->travelTo(new DateTimeImmutable('2026-09-30T12:00:00+00:00'));
     $fixture = trainingEventFixture();

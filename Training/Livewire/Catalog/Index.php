@@ -131,13 +131,14 @@ final class Index extends Component
         $company = $this->companyEntityId !== null && array_key_exists($this->companyEntityId, $companies)
             ? $this->companyEntityId : null;
         $tenant = $company === null ? null : app(TenantContext::class)->requireTenantId();
+        $canManage = $company !== null && $audience->canManage(Auth::user(), $company);
 
         return view('people-connector-training::livewire.training.catalog.index', [
             'companies' => $companies,
             'courses' => $company === null ? collect() : $this->courses($company),
-            'skills' => $company === null ? collect() : Skill::query()->forCompany($tenant, $company)->where('active', true)->orderBy('name')->get(),
-            'employees' => $company === null ? collect() : WorkforceEmployeeProjection::query()->forCompany($tenant, $company)->where('active', true)->orderBy('display_name')->get(),
-            'canManage' => $company !== null && $audience->canManage(Auth::user(), $company),
+            'skills' => ! $canManage ? collect() : Skill::query()->forCompany($tenant, $company)->where('active', true)->orderBy('name')->get(),
+            'employees' => ! $canManage ? collect() : WorkforceEmployeeProjection::query()->forCompany($tenant, $company)->where('active', true)->orderBy('display_name')->get(),
+            'canManage' => $canManage,
             'deliveryModes' => DeliveryMode::cases(),
         ]);
     }

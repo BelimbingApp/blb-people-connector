@@ -4,6 +4,7 @@ namespace App\Domains\PeopleConnector\Training\Services;
 
 use App\Base\Tenancy\Contracts\TenantContext;
 use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
+use App\Domains\PeopleConnector\Connector\Models\WorkforceEmployeeProjection;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceEntity;
 use App\Domains\PeopleConnector\Skill\Models\Skill;
 use App\Domains\PeopleConnector\Training\Data\TrainingCourseDraft;
@@ -195,6 +196,9 @@ class TrainingCatalogStore
 
         if ($draft->internalTrainerEmployeeEntityId !== null) {
             $this->assertEntity($tenantId, $draft->internalTrainerEmployeeEntityId, WorkforceResourceType::Employee, 'internal_trainer_employee_entity_id');
+            WorkforceEmployeeProjection::query()->forCompany($tenantId, $companyEntityId)
+                ->where('active', true)->where('workforce_entity_id', $draft->internalTrainerEmployeeEntityId)->first()
+                ?? throw new InvalidTrainingCatalogException('Choose an active internal trainer from this company.');
         }
     }
 
