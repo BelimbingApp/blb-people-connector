@@ -253,7 +253,7 @@ test('a course cannot be reached, revised, or deactivated across a sibling compa
         ->toThrow(TrainingCatalogRecordNotFoundException::class);
 });
 
-test('an internal trainer must be a real employee workforce entity in the same tenant', function (): void {
+test('an internal trainer must be an active employee projection in the selected company', function (): void {
     [$tenantId, $companyEntityId, $skillId] = trainingCatalogFixture();
 
     expect(fn () => app(TrainingCatalogStore::class)->defineCourse($companyEntityId, trainingCourseDraft($skillId, [
@@ -261,11 +261,9 @@ test('an internal trainer must be a real employee workforce entity in the same t
     ])))->toThrow(InvalidTrainingCatalogException::class, 'employee workforce entity');
 
     $trainer = trainingCatalogWorkforceEntity($tenantId, 'employee');
-    $course = app(TrainingCatalogStore::class)->defineCourse($companyEntityId, trainingCourseDraft($skillId, [
+    expect(fn () => app(TrainingCatalogStore::class)->defineCourse($companyEntityId, trainingCourseDraft($skillId, [
         'internalTrainerEmployeeEntityId' => (int) $trainer->id,
-    ]));
-
-    expect($course->internal_trainer_employee_entity_id)->toBe((int) $trainer->id);
+    ])))->toThrow(InvalidTrainingCatalogException::class, 'active internal trainer');
 });
 
 test('entity references are checked by workforce type, not merely by existing in the tenant', function (): void {

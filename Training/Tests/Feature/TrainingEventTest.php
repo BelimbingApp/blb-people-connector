@@ -21,6 +21,7 @@ use App\Domains\PeopleConnector\Training\Data\TrainingCourseDraft;
 use App\Domains\PeopleConnector\Training\Data\TrainingEventDraft;
 use App\Domains\PeopleConnector\Training\Enums\DeliveryMode;
 use App\Domains\PeopleConnector\Training\Enums\TrainingEventStatus;
+use App\Domains\PeopleConnector\Training\Exceptions\InvalidTrainingCatalogException;
 use App\Domains\PeopleConnector\Training\Exceptions\InvalidTrainingEventException;
 use App\Domains\PeopleConnector\Training\Exceptions\TrainingEventNotFoundException;
 use App\Domains\PeopleConnector\Training\Livewire\Catalog\Index as CatalogIndex;
@@ -259,7 +260,49 @@ test('catalog rejects a sibling-company trainer at the store boundary', function
     expect(fn () => app(TrainingCatalogStore::class)->defineCourse((int) $fixture['company']->id, new TrainingCourseDraft(
         code: 'cross-company-trainer', title: 'Cross company trainer', deliveryMode: DeliveryMode::Coaching,
         skillIds: [(int) $fixture['course']->skillIds()[0]], internalTrainerEmployeeEntityId: (int) $siblingTrainer->workforce_entity_id,
-    )))->toThrow(InvalidTrainingCatalogException::class);
+    )))->toThrow(InvalidTrainingCatalogException::class, 'Choose an active internal trainer from this company.');
+});
+
+test('a HOD cannot reveal catalog management state or invoke catalog mutations', function (): void {
+    $fixture = trainingEventFixture();
+    $hr = User::factory()->create(['company_id' => $fixture['platformCompany']->id]);
+    $hod = User::factory()->create(['company_id' => $fixture['platformCompany']->id]);
+    trainingEventRole($hr, 'people_hr');
+    trainingEventRole($hod, 'people_hod');
+    SkillActorBinding::query()->create([
+        'tenant_id' => $fixture['tenantId'],
+        'company_entity_id' => $fixture['company']->id,
+        'platform_user_id' => $hod->id,
+        'employee_entity_id' => $fixture['head']->workforce_entity_id,
+        'user_entity_id' => $fixture['head']->user_entity_id,
+        'confirmed_by_user_id' => $hr->id,
+        'review_reference' => 'review:training-catalog-hod',
+        'confirmed_at' => now(),
+    ]);
+
+    Livewire::actingAs($hod)->test(CatalogIndex::class)
+        ->set('courseForm', ['code' => 'forced.course'])
+        ->assertDontSee('New course')
+        ->assertDontSee('Define course')
+        ->assertDontSee('Operations Worker')
+        ->assertSee('Forklift induction');
+
+    expect(fn () => Livewire::actingAs($hod)->test(CatalogIndex::class)->call('startCourse'))
+        ->toThrow(AuthorizationDeniedException::class)
+        ->and(fn () => Livewire::actingAs($hod)->test(CatalogIndex::class)->call('saveCourse'))
+        ->toThrow(AuthorizationDeniedException::class)
+        ->and(fn () => Livewire::actingAs($hod)->test(CatalogIndex::class)->call('toggleCourseActive', (int) $fixture['course']->id))
+        ->toThrow(AuthorizationDeniedException::class);
+});
+
+test('skill and training catalog routes resolve their distinct Livewire components', function (): void {
+    $fixture = trainingEventFixture();
+    $hr = User::factory()->create(['company_id' => $fixture['platformCompany']->id]);
+    trainingEventRole($hr, 'people_hr');
+    $this->withoutVite();
+
+    $this->actingAs($hr)->get(route('people-connector.skill.catalog.index'))->assertOk();
+    $this->actingAs($hr)->get(route('people-connector.training.catalog.index'))->assertOk();
 });
 
 test('event schedule and transitions obey the event clock at the store boundary', function (): void {
