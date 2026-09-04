@@ -10,6 +10,8 @@ use App\Domains\PeopleConnector\Connector\Exceptions\InvalidReconciliationIssueE
 use App\Domains\PeopleConnector\Connector\Exceptions\ReconciliationIssueConflictException;
 use App\Domains\PeopleConnector\Connector\Models\ReconciliationIssue;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceEntity;
+use Illuminate\Contracts\Pagination\LengthAwarePaginator;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\Eloquent\Collection;
 use Illuminate\Support\Facades\DB;
 
@@ -157,6 +159,23 @@ final class ReconciliationIssueStore
         });
     }
 
+    /**
+     * Finds one open issue for a connection, optionally taking the row lock
+     * that makes a reviewed identity decision and its queue resolution one
+     * unit of work.
+     */
+    public function requireOpenForConnection(int $connectionId, int $issueId, bool $lock = false): ReconciliationIssue
+    {
+        $query = $this->openQuery($connectionId)->whereKey($issueId);
+
+        if ($lock) {
+            $query->lockForUpdate();
+        }
+
+        return $query->first()
+            ?? throw new ConnectorRecordNotFoundException('The reconciliation issue is not open for this connection.');
+    }
+
     public function reopen(
         int $issueId,
         \DateTimeInterface $observedAt,
@@ -195,16 +214,17 @@ final class ReconciliationIssueStore
     /** @return Collection<int, ReconciliationIssue> */
     public function openForConnection(int $connectionId): Collection
     {
-        $tenantId = $this->tenantContext->requireTenantId();
-        $this->connections->get($connectionId);
+        return $this->openQuery($connectionId)->get();
+    }
 
-        return ReconciliationIssue::query()
-            ->forTenant($tenantId)
-            ->where('connection_id', $connectionId)
-            ->where('status', ReconciliationIssue::STATUS_OPEN)
-            ->orderByDesc('severity')
-            ->orderBy('issue_key')
-            ->get();
+    /** @return LengthAwarePaginator<int, ReconciliationIssue> */
+    public function paginateOpenForConnection(int $connectionId, int $perPage = 25): LengthAwarePaginator
+    {
+        if ($perPage < 1 || $perPage > 100) {
+            throw new \InvalidArgumentException('Reconciliation issue page sizes must be between 1 and 100.');
+        }
+
+        return $this->openQuery($connectionId)->paginate($perPage);
     }
 
     private function assertIdentifiers(
@@ -232,5 +252,19 @@ final class ReconciliationIssueStore
         if ($externalId !== null && strlen($externalId) > 512) {
             throw new InvalidReconciliationIssueException('Reconciliation external identifiers cannot exceed 512 bytes.');
         }
+    }
+
+    /** @return Builder<ReconciliationIssue> */
+    private function openQuery(int $connectionId): Builder
+    {
+        $tenantId = $this->tenantContext->requireTenantId();
+        $this->connections->get($connectionId);
+
+        return ReconciliationIssue::query()
+            ->forTenant($tenantId)
+            ->where('connection_id', $connectionId)
+            ->where('status', ReconciliationIssue::STATUS_OPEN)
+            ->orderByDesc('severity')
+            ->orderBy('issue_key');
     }
 }
