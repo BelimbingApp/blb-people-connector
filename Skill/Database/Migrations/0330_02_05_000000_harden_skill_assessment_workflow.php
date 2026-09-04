@@ -180,6 +180,15 @@ return new class extends Migration
                     FOR EACH ROW EXECUTE FUNCTION pcs_assessment_facts_guard();
                 SQL);
         } elseif ($driver === 'sqlite') {
+            $pdo = DB::connection()->getPdo();
+            if (method_exists($pdo, 'sqliteCreateFunction')) {
+                $pdo->sqliteCreateFunction(
+                    'pcs_assessment_workflow_authorized',
+                    static fn (): int => 0,
+                    0,
+                );
+            }
+
             DB::unprepared(<<<'SQL'
                 CREATE TRIGGER pcs_assessment_workflow_delete_guard
                 BEFORE DELETE ON people_connector_skill_assessments
