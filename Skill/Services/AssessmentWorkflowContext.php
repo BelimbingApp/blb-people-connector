@@ -66,17 +66,19 @@ final class AssessmentWorkflowContext
 
     private static function assertStoreCaller(): void
     {
-        $caller = debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS, 3)[2] ?? [];
-        $callerClass = $caller['class'] ?? null;
-        $callerFile = str_replace('\\', '/', (string) ($caller['file'] ?? ''));
+        $callers = debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS, 8);
 
         // The production authority is private to AssessmentStore. Feature
         // fixtures retain access only so they can exercise database guards
         // with deliberately hostile writes; application code cannot activate
         // this context around arbitrary query-builder mutations.
-        if ($callerClass === AssessmentStore::class
-            || str_contains($callerFile, '/Skill/Tests/')) {
-            return;
+        foreach ($callers as $caller) {
+            $callerFile = str_replace('\\', '/', (string) ($caller['file'] ?? ''));
+
+            if (($caller['class'] ?? null) === AssessmentStore::class
+                || str_contains($callerFile, '/Skill/Tests/')) {
+                return;
+            }
         }
 
         throw new InvalidAssessmentException(
