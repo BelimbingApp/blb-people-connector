@@ -16,4 +16,18 @@ enum DeliveryMode: string
     case Coaching = 'coaching';
     case ProjectAssignment = 'project_assignment';
     case JobRotation = 'job_rotation';
+
+    public function label(): string
+    {
+        return match ($this) {
+            self::InternalOjt => 'Internal OJT',
+            self::InternalClassroom => 'Internal classroom',
+            self::ExternalClassroom => 'External classroom',
+            self::Elearning => 'E-learning',
+            self::VendorTraining => 'Vendor training',
+            self::Coaching => 'Coaching',
+            self::ProjectAssignment => 'Project assignment',
+            self::JobRotation => 'Job rotation',
+        };
+    }
 }
