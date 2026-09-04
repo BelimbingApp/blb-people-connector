@@ -941,17 +941,37 @@ test('governed profiles require in-scope HOD review and HR approval before publi
         ->toThrow(PublishedRequirementImmutableException::class, 'must use the governed workflow');
     expect($profile->refresh()->status)->toBe(RequirementProfileStatus::Draft)
         ->and(StatusHistory::timeline(RequirementProfile::WORKFLOW_FLOW, (int) $profile->id))->toBeEmpty();
-    expect(fn () => DB::transaction(function () use ($profile): void {
-        app(RequirementProfileTransitionAuthority::class)->authorize(
-            $profile,
-            RequirementProfileStatus::Draft,
-            RequirementProfileStatus::PendingHodReview,
-        );
-        $profile->update([
-            'status' => RequirementProfileStatus::PendingHodReview->value,
-            'published_at' => now(),
-        ]);
-    }))->toThrow(QueryException::class);
+    DB::transaction(function () use ($profile): void {
+        $rejected = false;
+
+        try {
+            app(RequirementProfileTransitionAuthority::class)->authorize(
+                $profile,
+                RequirementProfileStatus::Draft,
+                RequirementProfileStatus::PendingHodReview,
+            );
+            $profile->update([
+                'status' => RequirementProfileStatus::PendingHodReview->value,
+                'published_at' => now(),
+            ]);
+        } catch (QueryException) {
+            $rejected = true;
+            // Deliberately keep the outer transaction alive: the lifecycle
+            // savepoint must already have rolled the rejected proof back.
+        }
+
+        expect($rejected)->toBeTrue()
+            ->and(DB::table('people_connector_skill_requirement_profiles')
+                ->where('id', $profile->id)
+                ->value('status'))->toBe(RequirementProfileStatus::Draft->value)
+            ->and(DB::table('people_connector_skill_requirement_profile_transition_proofs')->count())->toBe(0);
+        expect(fn () => DB::transaction(fn (): int => DB::table(
+            'people_connector_skill_requirement_profiles',
+        )
+            ->where('id', $profile->id)
+            ->update(['status' => RequirementProfileStatus::PendingHodReview->value])))
+            ->toThrow(QueryException::class);
+    });
     expect($profile->refresh()->status)->toBe(RequirementProfileStatus::Draft)
         ->and(DB::table('people_connector_skill_requirement_profile_transition_proofs')->count())->toBe(0);
     expect(fn () => DB::transaction(fn (): int => DB::table('people_connector_skill_requirement_profiles')

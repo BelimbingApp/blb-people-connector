@@ -14,6 +14,7 @@ use App\Domains\PeopleConnector\Connector\Models\WorkforceEntity;
 use App\Domains\PeopleConnector\Skill\Enums\RequirementProfileStatus;
 use App\Domains\PeopleConnector\Skill\Exceptions\PublishedRequirementImmutableException;
 use App\Domains\PeopleConnector\Skill\Workflow\RequirementProfileTransitionAuthority;
+use Illuminate\Database\Eloquent\Builder;
 
 /**
  * A versioned requirement profile defining what skills a position requires.
@@ -120,6 +121,25 @@ class RequirementProfile extends TenantOwnedModel implements PresentsWorkflowNot
             'published_at' => 'datetime',
             'retired_at' => 'datetime',
         ];
+    }
+
+    /**
+     * Keep the database proof and its lifecycle mutation in one savepoint.
+     *
+     * SQLite only rolls back the rejected statement when an outer transaction
+     * catches a constraint failure. Without this nested boundary, the proof
+     * minted by the updating event survives and can authorize a later raw SQL
+     * transition in that same outer transaction.
+     */
+    protected function performUpdate(Builder $query)
+    {
+        if (! $this->isDirty('status')) {
+            return parent::performUpdate($query);
+        }
+
+        return $this->getConnection()->transaction(
+            fn (): bool => parent::performUpdate($query),
+        );
     }
 
     public function isLocked(): bool
