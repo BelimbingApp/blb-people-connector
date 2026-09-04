@@ -51,8 +51,7 @@ final class AssessmentStore
         AssessmentDraft $draft,
         array $employeeData = [],
         ?int $supersedesAssessmentId = null,
-    ): SkillAssessment
-    {
+    ): SkillAssessment {
         return $this->write(
             $companyEntityId,
             $draft,
@@ -198,7 +197,6 @@ final class AssessmentStore
 
     /**
      * Finalize only a row carrying a committed, independent HOD verification.
-     *
      */
     public function finalizeVerified(
         int $companyEntityId,
@@ -511,7 +509,7 @@ final class AssessmentStore
                     'next_assessment_due' => $latest->next_assessment_due,
                     'valid_until' => $latest->valid_until,
                 ],
-        );
+            );
     }
 
     private function lockAssessment(int $companyEntityId, int $assessmentId): SkillAssessment
