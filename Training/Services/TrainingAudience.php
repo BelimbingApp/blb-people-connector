@@ -65,8 +65,20 @@ final class TrainingAudience
         }
 
         if (in_array(SkillAudience::HOD, $audiences, true)) {
-            return $query->whereIn('target_department_entity_id',
-                $this->skills->visibleOrganizationUnitEntityIds($user, $companyEntityId, self::VIEW));
+            $departments = $this->skills->visibleOrganizationUnitEntityIds($user, $companyEntityId, self::VIEW);
+
+            // A NULL target is deliberately company-wide, so every attributed
+            // HOD in the company sees it alongside events for departments they head.
+            if ($departments === []) {
+                return $query->whereNull('target_department_entity_id');
+            }
+
+            $parameters = implode(', ', array_fill(0, count($departments), '?'));
+
+            return $query->whereRaw(
+                "(target_department_entity_id is null or target_department_entity_id in ($parameters))",
+                $departments,
+            );
         }
 
         $this->deny();

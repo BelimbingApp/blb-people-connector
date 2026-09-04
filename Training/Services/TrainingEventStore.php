@@ -96,7 +96,16 @@ final class TrainingEventStore
     public function start(int $companyEntityId, int $eventId, ?int $actorUserId = null, ?int $actorEmployeeEntityId = null): TrainingEvent
     {
         return $this->transition($companyEntityId, $eventId, TrainingEventStatus::Scheduled,
-            TrainingEventStatus::InProgress, 'started', null, null, $actorUserId, $actorEmployeeEntityId);
+            TrainingEventStatus::InProgress, 'started', null, null, $actorUserId, $actorEmployeeEntityId,
+            validateClock: function (TrainingEvent $event): void {
+                $now = CarbonImmutable::now();
+                if ($now->lessThan($event->starts_at)) {
+                    throw new InvalidTrainingEventException('The event cannot start before its scheduled start.');
+                }
+                if (! $now->lessThan($event->ends_at)) {
+                    throw new InvalidTrainingEventException('The event can no longer start after its scheduled end.');
+                }
+            });
     }
 
     public function complete(
@@ -110,7 +119,12 @@ final class TrainingEventStore
 
         return $this->transition($companyEntityId, $eventId, TrainingEventStatus::InProgress,
             TrainingEventStatus::Completed, 'completed', null, trim($evidence), $actorUserId,
-            $actorEmployeeEntityId, ['completed_at' => now(), 'completion_evidence' => trim($evidence)]);
+            $actorEmployeeEntityId, ['completed_at' => now(), 'completion_evidence' => trim($evidence)],
+            function (TrainingEvent $event): void {
+                if (CarbonImmutable::now()->lessThan($event->ends_at)) {
+                    throw new InvalidTrainingEventException('The event cannot be completed before its scheduled end.');
+                }
+            });
     }
 
     public function cancel(
@@ -170,6 +184,9 @@ final class TrainingEventStore
         if (CarbonImmutable::instance($draft->endsAt)->lessThanOrEqualTo(CarbonImmutable::instance($draft->startsAt))) {
             throw new InvalidTrainingEventException('The event end must be after its start.');
         }
+        if (! CarbonImmutable::instance($draft->endsAt)->isFuture()) {
+            throw new InvalidTrainingEventException('The event must end in the future.');
+        }
         if ($draft->capacity < 1 || $draft->capacity > 1_000_000) {
             throw new InvalidTrainingEventException('Capacity must be between 1 and 1,000,000 participants.');
         }
@@ -202,15 +219,21 @@ final class TrainingEventStore
             ?? throw new InvalidTrainingEventException("Choose an active $field from this company.");
     }
 
-    /** @param array<string, mixed> $attributes */
+    /**
+     * @param  array<string, mixed>  $attributes
+     * @param  (callable(TrainingEvent): void)|null  $validateClock
+     */
     private function transition(int $companyEntityId, int $eventId, TrainingEventStatus $allowed,
         TrainingEventStatus $to, string $type, ?string $comment, ?string $evidence,
-        ?int $actorUserId, ?int $actorEmployeeEntityId, array $attributes = []): TrainingEvent
+        ?int $actorUserId, ?int $actorEmployeeEntityId, array $attributes = [], ?callable $validateClock = null): TrainingEvent
     {
-        return DB::transaction(function () use ($companyEntityId, $eventId, $allowed, $to, $type, $comment, $evidence, $actorUserId, $actorEmployeeEntityId, $attributes): TrainingEvent {
+        return DB::transaction(function () use ($companyEntityId, $eventId, $allowed, $to, $type, $comment, $evidence, $actorUserId, $actorEmployeeEntityId, $attributes, $validateClock): TrainingEvent {
             $event = $this->find($companyEntityId, $eventId, true);
             if ($event->status !== $allowed) {
                 throw new InvalidTrainingEventException("Cannot move {$event->status->label()} to {$to->label()}.");
+            }
+            if ($validateClock !== null) {
+                $validateClock($event);
             }
             $from = $event->status;
             $event->update($attributes + ['status' => $to]);

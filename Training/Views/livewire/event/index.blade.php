@@ -37,7 +37,7 @@
                             @foreach ($courses as $course)<option value="{{ $course->id }}">{{ $course->code }} · {{ $course->title }}</option>@endforeach
                         </x-ui.select>
                         <x-ui.select id="training-event-department" :label="__('Target department')" wire:model="targetDepartmentEntityId">
-                            <option value="">{{ __('Company-wide / not assigned') }}</option>
+                            <option value="">{{ __('Company-wide (visible to every HOD)') }}</option>
                             @foreach ($departments as $department)<option value="{{ $department->workforce_entity_id }}">{{ $department->name }}</option>@endforeach
                         </x-ui.select>
                         <x-ui.select id="training-event-organizer" :label="__('Accountable organiser')" wire:model="organizerEmployeeEntityId" required>

@@ -34,6 +34,7 @@ use Illuminate\Support\Str;
 use Livewire\Livewire;
 
 afterEach(function (): void {
+    $this->travelBack();
     app(TenantContext::class)->clear();
 });
 
@@ -188,6 +189,7 @@ function trainingEventRole(User $user, string $code): void
 }
 
 test('training events preserve schedule snapshots and terminal audit history', function (): void {
+    $this->travelTo(new DateTimeImmutable('2026-09-30T12:00:00+00:00'));
     $fixture = trainingEventFixture();
     $store = app(TrainingEventStore::class);
     $event = $store->schedule((int) $fixture['company']->id, trainingEventDraft($fixture), actorUserId: 41,
@@ -201,7 +203,9 @@ test('training events preserve schedule snapshots and terminal audit history', f
 
     $revised = $store->revise((int) $fixture['company']->id, (int) $event->id,
         trainingEventDraft($fixture, ['capacity' => 25, 'venue' => 'Training room']), 41);
+    $this->travelTo(new DateTimeImmutable('2026-10-01T09:00:00+00:00'));
     $store->start((int) $fixture['company']->id, (int) $event->id, 41);
+    $this->travelTo(new DateTimeImmutable('2026-10-01T17:00:00+00:00'));
     $completed = $store->complete((int) $fixture['company']->id, (int) $event->id, 'Signed facilitator report', 41);
 
     expect($revised->capacity)->toBe(25)
@@ -218,6 +222,79 @@ test('training events preserve schedule snapshots and terminal audit history', f
         ->toThrow(QueryException::class)
         ->and(fn () => DB::transaction(fn () => DB::table('people_connector_training_event_audit_events')->where('id', $audit->id)->delete()))
         ->toThrow(QueryException::class);
+});
+
+test('event schedule and transitions obey the event clock at the store boundary', function (): void {
+    $this->travelTo(new DateTimeImmutable('2026-09-30T12:00:00+00:00'));
+    $fixture = trainingEventFixture();
+    $store = app(TrainingEventStore::class);
+
+    expect(fn () => $store->schedule((int) $fixture['company']->id, trainingEventDraft($fixture, [
+        'startsAt' => new DateTimeImmutable('2026-09-29T09:00:00+00:00'),
+        'endsAt' => new DateTimeImmutable('2026-09-29T17:00:00+00:00'),
+    ])))->toThrow(InvalidTrainingEventException::class, 'must end in the future');
+
+    $event = $store->schedule((int) $fixture['company']->id, trainingEventDraft($fixture));
+    $neverStarted = $store->schedule((int) $fixture['company']->id, trainingEventDraft($fixture));
+    expect(fn () => $store->revise((int) $fixture['company']->id, (int) $event->id, trainingEventDraft($fixture, [
+        'startsAt' => new DateTimeImmutable('2026-09-29T09:00:00+00:00'),
+        'endsAt' => new DateTimeImmutable('2026-09-29T17:00:00+00:00'),
+    ])))->toThrow(InvalidTrainingEventException::class, 'must end in the future');
+
+    $this->travelTo(new DateTimeImmutable('2026-10-01T08:59:59+00:00'));
+    expect(fn () => $store->start((int) $fixture['company']->id, (int) $event->id))
+        ->toThrow(InvalidTrainingEventException::class, 'before its scheduled start');
+
+    $this->travelTo(new DateTimeImmutable('2026-10-01T09:00:00+00:00'));
+    expect($store->start((int) $fixture['company']->id, (int) $event->id)->status)
+        ->toBe(TrainingEventStatus::InProgress);
+
+    $this->travelTo(new DateTimeImmutable('2026-10-01T16:59:59+00:00'));
+    expect(fn () => $store->complete((int) $fixture['company']->id, (int) $event->id, 'Too early'))
+        ->toThrow(InvalidTrainingEventException::class, 'before its scheduled end');
+
+    $this->travelTo(new DateTimeImmutable('2026-10-01T17:00:00+00:00'));
+    expect($store->complete((int) $fixture['company']->id, (int) $event->id, 'Signed report')->status)
+        ->toBe(TrainingEventStatus::Completed)
+        ->and(fn () => $store->start((int) $fixture['company']->id, (int) $neverStarted->id))
+        ->toThrow(InvalidTrainingEventException::class, 'after its scheduled end');
+});
+
+test('livewire reports future transition attempts without falsifying event history', function (): void {
+    $this->travelTo(new DateTimeImmutable('2026-09-30T12:00:00+00:00'));
+    $fixture = trainingEventFixture();
+    $store = app(TrainingEventStore::class);
+    $event = $store->schedule((int) $fixture['company']->id, trainingEventDraft($fixture));
+    $hr = User::factory()->create(['company_id' => $fixture['platformCompany']->id]);
+    trainingEventRole($hr, 'people_hr');
+
+    Livewire::actingAs($hr)->test(Index::class)
+        ->set('courseId', (int) $fixture['course']->id)
+        ->set('organizerEmployeeEntityId', (int) $fixture['operations']->workforce_entity_id)
+        ->set('startsAt', '2026-09-29T09:00')
+        ->set('endsAt', '2026-09-29T17:00')
+        ->call('save')
+        ->assertHasErrors('event')
+        ->assertSee('The event must end in the future.');
+
+    Livewire::actingAs($hr)->test(Index::class)
+        ->call('start', (int) $event->id)
+        ->assertHasErrors('event')
+        ->assertSee('The event cannot start before its scheduled start.');
+
+    $this->travelTo(new DateTimeImmutable('2026-10-01T09:00:00+00:00'));
+    $store->start((int) $fixture['company']->id, (int) $event->id);
+    Livewire::actingAs($hr)->test(Index::class)
+        ->set("evidence.{$event->id}", 'Premature report')
+        ->call('complete', (int) $event->id)
+        ->assertHasErrors('event')
+        ->assertSee('The event cannot be completed before its scheduled end.');
+
+    expect($event->refresh()->status)->toBe(TrainingEventStatus::InProgress)
+        ->and(TrainingEventAuditEvent::query()
+            ->forCompany($fixture['tenantId'], (int) $fixture['company']->id)
+            ->where('training_event_id', $event->id)->pluck('event_type')->all())
+        ->toBe(['scheduled', 'started']);
 });
 
 test('event invariants and sibling company or tenant access fail closed', function (): void {
@@ -289,6 +366,11 @@ test('the actual register gives HR company scope, HOD department scope, and reje
     $financeEvent = $store->schedule((int) $fixture['company']->id, trainingEventDraft($fixture, [
         'targetDepartmentEntityId' => $fixture['departments'][1],
         'organizerEmployeeEntityId' => (int) $fixture['finance']->workforce_entity_id,
+        'venue' => 'Finance room',
+    ]));
+    $companyWideEvent = $store->schedule((int) $fixture['company']->id, trainingEventDraft($fixture, [
+        'targetDepartmentEntityId' => null,
+        'venue' => 'Company hall',
     ]));
 
     $hr = User::factory()->create(['company_id' => $fixture['platformCompany']->id]);
@@ -313,16 +395,19 @@ test('the actual register gives HR company scope, HOD department scope, and reje
         ->assertForbidden();
 
     expect(app(TrainingAudience::class)->visibleEvents($hr, (int) $fixture['company']->id)->pluck('id')->all())
-        ->toEqualCanonicalizing([(int) $operationsEvent->id, (int) $financeEvent->id])
+        ->toEqualCanonicalizing([(int) $operationsEvent->id, (int) $financeEvent->id, (int) $companyWideEvent->id])
         ->and(app(TrainingAudience::class)->visibleEvents($hod, (int) $fixture['company']->id)->pluck('id')->all())
-        ->toBe([(int) $operationsEvent->id])
+        ->toEqualCanonicalizing([(int) $operationsEvent->id, (int) $companyWideEvent->id])
         ->and(app(TrainingAudience::class)->canManage($hod, (int) $fixture['company']->id))->toBeFalse()
         ->and(fn () => app(TrainingAudience::class)->allowedCompanies($platformAdmin))
         ->toThrow(AuthorizationDeniedException::class);
 
     Livewire::actingAs($hod)->test(Index::class)
-        ->assertViewHas('events', fn ($events): bool => $events->pluck('id')->all() === [(int) $operationsEvent->id])
+        ->assertViewHas('events', fn ($events): bool => $events->pluck('id')->all() === [(int) $operationsEvent->id, (int) $companyWideEvent->id])
         ->assertDontSee('Finance Worker')
+        ->assertDontSee('Finance room')
+        ->assertSee('Company hall')
+        ->assertSee('Company-wide')
         ->assertSee('Not recorded by the participant register yet');
 
     expect(fn () => Livewire::actingAs($hod)->test(Index::class)->call('start', (int) $operationsEvent->id))
