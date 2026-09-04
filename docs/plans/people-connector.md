@@ -57,8 +57,8 @@ This persistence foundation is only a partial delivery of [1004]/[1006]. It does
 
 ### Skill core
 
-- [ ] Implement proficiency catalogues and versioned position requirements.
-- [ ] Implement evidence-backed immutable assessments and batch matrix.
+- [x] Implement proficiency catalogues and versioned position requirements.
+- [ ] Implement evidence-backed immutable assessments and batch matrix. {composer — store/history/projection foundation in progress on people#12}
 - [ ] Implement owned development actions and reassessment/current-score projection.
 - [ ] Implement coverage, dashboards, workbook import/export, and automation.
 
