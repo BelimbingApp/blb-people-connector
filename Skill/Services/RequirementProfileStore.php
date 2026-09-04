@@ -24,6 +24,7 @@ use App\Domains\PeopleConnector\Skill\Models\RequirementProfile;
 use App\Domains\PeopleConnector\Skill\Models\RequirementProfileSelector;
 use App\Domains\PeopleConnector\Skill\Models\RequirementProfileWorkflowParticipant;
 use App\Domains\PeopleConnector\Skill\Models\Skill;
+use App\Domains\PeopleConnector\Skill\Workflow\RequirementProfileTransitionAuthority;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 
@@ -154,6 +155,11 @@ class RequirementProfileStore
                     RequirementProfileStatus::PendingHrReview,
                     RequirementProfileStatus::Approved,
                 ] as $fixtureStatus) {
+                    app(RequirementProfileTransitionAuthority::class)->authorize(
+                        $profile,
+                        $profile->status,
+                        $fixtureStatus,
+                    );
                     $profile->update(['status' => $fixtureStatus]);
                 }
             }
@@ -176,12 +182,11 @@ class RequirementProfileStore
                 ->get();
             $this->assertNoOverlap($tenantId, $companyEntityId, $profile, $newSelectors);
 
-            $previous = $this->publishedOf($tenantId, (int) $profile->company_entity_id, (string) $profile->code);
-            $previous?->update([
-                'status' => RequirementProfileStatus::Retired,
-                'retired_at' => now(),
-            ]);
-
+            app(RequirementProfileTransitionAuthority::class)->authorize(
+                $profile,
+                RequirementProfileStatus::Approved,
+                RequirementProfileStatus::Published,
+            );
             $profile->update([
                 'status' => RequirementProfileStatus::Published,
                 'published_at' => now(),
@@ -192,7 +197,7 @@ class RequirementProfileStore
                 (int) $profile->getKey(),
                 (string) $profile->code,
                 (int) $profile->version,
-                $previous?->getKey() === null ? null : (int) $previous->getKey(),
+                $profile->publicationPredecessorId(),
             ));
 
             return $profile;
@@ -216,6 +221,11 @@ class RequirementProfileStore
             );
         }
 
+        app(RequirementProfileTransitionAuthority::class)->authorize(
+            $profile,
+            RequirementProfileStatus::Published,
+            RequirementProfileStatus::Retired,
+        );
         $profile->update([
             'status' => RequirementProfileStatus::Retired,
             'retired_at' => now(),
@@ -261,14 +271,33 @@ class RequirementProfileStore
     ): RequirementProfile {
         $tenantId = app(TenantContext::class)->requireTenantId();
         $profile = $this->requireProfile($tenantId, $companyEntityId, $profileId);
-        $items = RequirementItem::query()->forCompany($tenantId, $companyEntityId)
-            ->where('profile_id', $profile->getKey())->get();
-        $this->assertPublishableItems($items->all());
-        $selectors = RequirementProfileSelector::query()->forCompany($tenantId, $companyEntityId)
-            ->where('profile_id', $profile->getKey())->get();
-        $this->assertNoOverlap($tenantId, $companyEntityId, $profile, $selectors);
 
         return $this->transition($actor, $profile, RequirementProfileStatus::PendingHodReview, $comment);
+    }
+
+    /**
+     * Validate and freeze the exact child set while WorkflowEngine holds the
+     * profile row lock. PostgreSQL child guards acquire a parent lock too, so
+     * concurrent inserts serialize on the same boundary instead of slipping
+     * between validation and the draft-to-review transition.
+     */
+    public function validateSubmission(RequirementProfile $profile): void
+    {
+        $tenantId = (int) $profile->tenant_id;
+        $companyEntityId = (int) $profile->company_entity_id;
+        $items = RequirementItem::query()
+            ->forCompany($tenantId, $companyEntityId)
+            ->where('profile_id', $profile->getKey())
+            ->lockForUpdate()
+            ->get();
+        $selectors = RequirementProfileSelector::query()
+            ->forCompany($tenantId, $companyEntityId)
+            ->where('profile_id', $profile->getKey())
+            ->lockForUpdate()
+            ->get();
+
+        $this->assertPublishableItems($items->all());
+        $this->assertNoOverlap($tenantId, $companyEntityId, $profile, $selectors);
     }
 
     public function approveHod(User $actor, int $companyEntityId, int $profileId, string $comment): RequirementProfile

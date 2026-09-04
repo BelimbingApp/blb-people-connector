@@ -9,6 +9,7 @@ use App\Domains\PeopleConnector\Skill\Contracts\ResolvesSkillRequirements;
 use App\Domains\PeopleConnector\Skill\Listeners\SendRequirementProfileTransitionNotification;
 use App\Domains\PeopleConnector\Skill\Services\RequirementResolver;
 use App\Domains\PeopleConnector\Skill\Services\SkillAudience;
+use App\Domains\PeopleConnector\Skill\Workflow\RequirementProfileTransitionAuthority;
 use Illuminate\Contracts\Auth\Authenticatable;
 use Illuminate\Support\Facades\Event;
 use Illuminate\Support\ServiceProvider as BaseServiceProvider;
@@ -18,6 +19,7 @@ class ServiceProvider extends BaseServiceProvider
     public function register(): void
     {
         $this->app->bind(ResolvesSkillRequirements::class, RequirementResolver::class);
+        $this->app->singleton(RequirementProfileTransitionAuthority::class);
     }
 
     public function boot(): void

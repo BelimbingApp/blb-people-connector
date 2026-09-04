@@ -22,21 +22,12 @@ final class RequirementProfileTransitionAction implements TransitionAction
 
         $to = RequirementProfileStatus::from($transition->to_code);
         if ($to === RequirementProfileStatus::Published) {
-            $previous = RequirementProfile::query()
-                ->forCompany((int) $model->tenant_id, (int) $model->company_entity_id)
-                ->where('code', $model->code)
-                ->where('status', RequirementProfileStatus::Retired->value)
-                ->whereKeyNot($model->getKey())
-                ->orderByDesc('retired_at')
-                ->orderByDesc('version')
-                ->first();
-
             DB::afterCommit(fn () => event(new RequirementProfilePublished(
                 (int) $model->tenant_id,
                 (int) $model->getKey(),
                 (string) $model->code,
                 (int) $model->version,
-                $previous === null ? null : (int) $previous->getKey(),
+                $model->publicationPredecessorId(),
             )));
         }
 

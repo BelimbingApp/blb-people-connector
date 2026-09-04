@@ -21,8 +21,8 @@ return new class extends Migration
                     valid_transition boolean;
                 BEGIN
                     IF TG_OP = 'DELETE' THEN
-                        IF OLD.published_at IS NOT NULL THEN
-                            RAISE EXCEPTION 'requirement profile % has been published and cannot be deleted', OLD.id;
+                        IF OLD.status <> 'draft' OR OLD.published_at IS NOT NULL THEN
+                            RAISE EXCEPTION 'requirement profile % entered governance and cannot be deleted', OLD.id;
                         END IF;
                         RETURN OLD;
                     END IF;
@@ -42,8 +42,10 @@ return new class extends Migration
                         AND NEW.effective_date IS NOT DISTINCT FROM OLD.effective_date
                         AND NEW.owner_employee_entity_id IS NOT DISTINCT FROM OLD.owner_employee_entity_id
                         AND NEW.created_at IS NOT DISTINCT FROM OLD.created_at
-                        AND (NEW.status = 'published' OR NEW.published_at IS NOT DISTINCT FROM OLD.published_at)
-                        AND (NEW.status = 'retired' OR NEW.retired_at IS NOT DISTINCT FROM OLD.retired_at) THEN
+                        AND ((NEW.status = 'published' AND NEW.published_at IS NOT NULL)
+                            OR (NEW.status <> 'published' AND NEW.published_at IS NOT DISTINCT FROM OLD.published_at))
+                        AND ((NEW.status = 'retired' AND NEW.retired_at IS NOT NULL)
+                            OR (NEW.status <> 'retired' AND NEW.retired_at IS NOT DISTINCT FROM OLD.retired_at)) THEN
                         RETURN NEW;
                     END IF;
 
@@ -71,6 +73,33 @@ return new class extends Migration
                     RAISE EXCEPTION 'requirement profile % is % and immutable or transition is invalid', OLD.id, OLD.status;
                 END;
                 $$ LANGUAGE plpgsql;
+
+                CREATE OR REPLACE FUNCTION pcs_req_child_insert_guard() RETURNS trigger AS $$
+                DECLARE
+                    parent_status text;
+                BEGIN
+                    SELECT status INTO parent_status
+                    FROM people_connector_skill_requirement_profiles
+                    WHERE id = NEW.profile_id AND tenant_id = NEW.tenant_id
+                    FOR UPDATE;
+
+                    IF parent_status IS DISTINCT FROM 'draft' THEN
+                        RAISE EXCEPTION 'requirement profile % is not draft; children are immutable', NEW.profile_id;
+                    END IF;
+
+                    RETURN NEW;
+                END;
+                $$ LANGUAGE plpgsql;
+
+                DROP TRIGGER IF EXISTS pcs_req_item_00_parent_guard ON people_connector_skill_requirement_items;
+                CREATE TRIGGER pcs_req_item_00_parent_guard
+                    BEFORE INSERT ON people_connector_skill_requirement_items
+                    FOR EACH ROW EXECUTE FUNCTION pcs_req_child_insert_guard();
+
+                DROP TRIGGER IF EXISTS pcs_req_selector_00_parent_guard ON people_connector_skill_requirement_profile_selectors;
+                CREATE TRIGGER pcs_req_selector_00_parent_guard
+                    BEFORE INSERT ON people_connector_skill_requirement_profile_selectors
+                    FOR EACH ROW EXECUTE FUNCTION pcs_req_child_insert_guard();
                 SQL);
 
             return;
@@ -95,8 +124,10 @@ return new class extends Migration
             .' AND NEW.code IS OLD.code AND NEW.name IS OLD.name AND NEW.version IS OLD.version'
             .' AND NEW.effective_date IS OLD.effective_date AND NEW.owner_employee_entity_id IS OLD.owner_employee_entity_id'
             .' AND NEW.created_at IS OLD.created_at'
-            ." AND (NEW.status = 'published' OR NEW.published_at IS OLD.published_at)"
-            ." AND (NEW.status = 'retired' OR NEW.retired_at IS OLD.retired_at))"
+            ." AND ((NEW.status = 'published' AND NEW.published_at IS NOT NULL)"
+            ." OR (NEW.status != 'published' AND NEW.published_at IS OLD.published_at))"
+            ." AND ((NEW.status = 'retired' AND NEW.retired_at IS NOT NULL)"
+            ." OR (NEW.status != 'retired' AND NEW.retired_at IS OLD.retired_at)))"
             .' OR (NEW.company_entity_id IS NOT OLD.company_entity_id'
             .' AND NEW.id IS OLD.id AND NEW.tenant_id IS OLD.tenant_id AND NEW.code IS OLD.code AND NEW.name IS OLD.name'
             .' AND NEW.version IS OLD.version AND NEW.status IS OLD.status'
@@ -109,6 +140,12 @@ return new class extends Migration
             .')'
             ." BEGIN SELECT RAISE(ABORT, 'requirement profile is immutable or transition is invalid'); END",
         );
+        DB::statement('DROP TRIGGER IF EXISTS pcs_req_profile_delete_guard');
+        DB::statement(
+            'CREATE TRIGGER pcs_req_profile_delete_guard BEFORE DELETE ON people_connector_skill_requirement_profiles'
+            ." WHEN OLD.status != 'draft' OR OLD.published_at IS NOT NULL"
+            ." BEGIN SELECT RAISE(ABORT, 'requirement profile entered governance and cannot be deleted'); END",
+        );
     }
 
     public function down(): void
@@ -117,6 +154,10 @@ return new class extends Migration
 
         if (DB::connection()->getDriverName() === 'pgsql') {
             DB::unprepared(<<<'SQL'
+                DROP TRIGGER IF EXISTS pcs_req_item_00_parent_guard ON people_connector_skill_requirement_items;
+                DROP TRIGGER IF EXISTS pcs_req_selector_00_parent_guard ON people_connector_skill_requirement_profile_selectors;
+                DROP FUNCTION IF EXISTS pcs_req_child_insert_guard();
+
                 CREATE OR REPLACE FUNCTION pcs_req_profile_guard() RETURNS trigger AS $$
                 DECLARE
                     is_company_merge boolean;
@@ -184,6 +225,12 @@ return new class extends Migration
             ." WHERE tenant_id = OLD.tenant_id AND id = OLD.company_entity_id AND state = 'merged'"
             .' AND merged_into_entity_id = NEW.company_entity_id)))'
             ." BEGIN SELECT RAISE(ABORT, 'requirement profile is published and immutable; draft a new version instead'); END",
+        );
+        DB::statement('DROP TRIGGER IF EXISTS pcs_req_profile_delete_guard');
+        DB::statement(
+            'CREATE TRIGGER pcs_req_profile_delete_guard BEFORE DELETE ON people_connector_skill_requirement_profiles'
+            .' WHEN OLD.published_at IS NOT NULL'
+            ." BEGIN SELECT RAISE(ABORT, 'requirement profile has been published and cannot be deleted'); END",
         );
     }
 };

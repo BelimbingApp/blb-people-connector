@@ -12,6 +12,7 @@ use App\Domains\PeopleConnector\Connector\Models\TenantOwnedModel;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceEntity;
 use App\Domains\PeopleConnector\Skill\Enums\RequirementProfileStatus;
 use App\Domains\PeopleConnector\Skill\Exceptions\PublishedRequirementImmutableException;
+use App\Domains\PeopleConnector\Skill\Workflow\RequirementProfileTransitionAuthority;
 
 /**
  * A versioned requirement profile defining what skills a position requires.
@@ -27,6 +28,8 @@ class RequirementProfile extends TenantOwnedModel implements PresentsWorkflowNot
     public const WORKFLOW_FLOW = 'people_connector_requirement_profile';
 
     protected $table = 'people_connector_skill_requirement_profiles';
+
+    private ?int $publicationPredecessorId = null;
 
     public function workforceReferences(): array
     {
@@ -53,9 +56,15 @@ class RequirementProfile extends TenantOwnedModel implements PresentsWorkflowNot
             }
 
             if ($profile->isLifecycleTransition($original, $next)) {
-                if ($next === RequirementProfileStatus::Published && $profile->published_at === null) {
-                    $profile->retirePublishedPredecessor();
-                    $profile->published_at = now();
+                if (! app(RequirementProfileTransitionAuthority::class)->consume($profile, $original, $next)) {
+                    throw new PublishedRequirementImmutableException(
+                        "Requirement profile {$profile->getKey()} lifecycle changes must use the governed workflow.",
+                    );
+                }
+
+                if ($next === RequirementProfileStatus::Published) {
+                    $profile->publicationPredecessorId = $profile->retirePublishedPredecessor();
+                    $profile->published_at ??= now();
                 }
                 if ($next === RequirementProfileStatus::Retired && $profile->retired_at === null) {
                     $profile->retired_at = now();
@@ -78,9 +87,9 @@ class RequirementProfile extends TenantOwnedModel implements PresentsWorkflowNot
         });
 
         static::deleting(function (RequirementProfile $profile): void {
-            if ($profile->published_at !== null) {
+            if ($profile->status !== RequirementProfileStatus::Draft || $profile->published_at !== null) {
                 throw new PublishedRequirementImmutableException(
-                    "Requirement profile {$profile->getKey()} has been published and cannot be deleted.",
+                    "Requirement profile {$profile->getKey()} entered governance and cannot be deleted.",
                 );
             }
         });
@@ -122,6 +131,11 @@ class RequirementProfile extends TenantOwnedModel implements PresentsWorkflowNot
         return ['name' => 'requirement_profile', 'id' => $this->getKey()];
     }
 
+    public function publicationPredecessorId(): ?int
+    {
+        return $this->publicationPredecessorId;
+    }
+
     /**
      * True when the pending update only performs the published → retired
      * transition (status + retired_at), leaving every meaning-bearing field
@@ -154,16 +168,28 @@ class RequirementProfile extends TenantOwnedModel implements PresentsWorkflowNot
      * This ordering lets the partial unique index enforce one current version
      * under concurrent publishers without a transient two-published state.
      */
-    private function retirePublishedPredecessor(): void
+    private function retirePublishedPredecessor(): ?int
     {
-        self::query()
+        $previous = self::query()
             ->forCompany((int) $this->tenant_id, (int) $this->company_entity_id)
             ->where('code', $this->code)
             ->where('status', RequirementProfileStatus::Published->value)
             ->whereKeyNot($this->getKey())
             ->lockForUpdate()
-            ->first()
-            ?->update(['status' => RequirementProfileStatus::Retired->value]);
+            ->first();
+
+        if ($previous === null) {
+            return null;
+        }
+
+        app(RequirementProfileTransitionAuthority::class)->authorize(
+            $previous,
+            RequirementProfileStatus::Published,
+            RequirementProfileStatus::Retired,
+        );
+        $previous->update(['status' => RequirementProfileStatus::Retired->value]);
+
+        return (int) $previous->getKey();
     }
 
     /**
