@@ -299,6 +299,13 @@ final class SkillAudience
         );
     }
 
+    /** Requirement versions are visible only to their real governance audience. */
+    public function mayViewRequirementProfile(User $user, RequirementProfile $profile): bool
+    {
+        return $this->mayGovernRequirements($user, (int) $profile->company_entity_id)
+            || $this->mayReviewRequirementProfile($user, $profile);
+    }
+
     /**
      * HOD review is valid only when every department or position selector is
      * inside a department currently headed by the actor. Company-wide

@@ -7,13 +7,13 @@
     <div class="flex flex-wrap items-center gap-3 text-sm">
         <x-ui.badge>{{ str($profile->status->value)->replace('_', ' ')->title() }}</x-ui.badge>
         <span class="text-muted">
-            {{ __('Effective :date', ['date' => $profile->effective_date?->format('Y-m-d') ?? '—']) }}
+            {{ __('Effective') }} <x-ui.datetime :value="$profile->effective_date" format="date" />
         </span>
         @if ($profile->published_at !== null)
-            <span class="text-muted">{{ __('Published :date', ['date' => $profile->published_at->format('Y-m-d H:i')]) }}</span>
+            <span class="text-muted">{{ __('Published') }} <x-ui.datetime :value="$profile->published_at" /></span>
         @endif
         @if ($profile->retired_at !== null)
-            <span class="text-muted">{{ __('Retired :date', ['date' => $profile->retired_at->format('Y-m-d H:i')]) }}</span>
+            <span class="text-muted">{{ __('Retired') }} <x-ui.datetime :value="$profile->retired_at" /></span>
         @endif
     </div>
 

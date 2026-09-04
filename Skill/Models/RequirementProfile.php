@@ -67,12 +67,14 @@ class RequirementProfile extends TenantOwnedModel implements PresentsWorkflowNot
             }
 
             if ($profile->isLifecycleTransition($original, $next)) {
-                $context = app(RequirementProfileTransitionAuthority::class)->consume($profile, $original, $next);
+                $authority = app(RequirementProfileTransitionAuthority::class);
+                $context = $authority->consume($profile, $original, $next);
                 if ($context === false) {
                     throw new PublishedRequirementImmutableException(
                         "Requirement profile {$profile->getKey()} lifecycle changes must use the governed workflow.",
                     );
                 }
+                $authority->authorizeDatabaseWrite($profile, $original, $next);
 
                 if ($next === RequirementProfileStatus::Published) {
                     $profile->publicationPredecessorId = $context instanceof TransitionContext

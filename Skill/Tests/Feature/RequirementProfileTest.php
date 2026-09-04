@@ -941,6 +941,12 @@ test('governed profiles require in-scope HOD review and HR approval before publi
         ->toThrow(PublishedRequirementImmutableException::class, 'must use the governed workflow');
     expect($profile->refresh()->status)->toBe(RequirementProfileStatus::Draft)
         ->and(StatusHistory::timeline(RequirementProfile::WORKFLOW_FLOW, (int) $profile->id))->toBeEmpty();
+    expect(fn () => DB::transaction(fn (): int => DB::table('people_connector_skill_requirement_profiles')
+        ->where('id', $profile->id)
+        ->update(['status' => RequirementProfileStatus::PendingHodReview->value])))
+        ->toThrow(QueryException::class);
+    expect($profile->refresh()->status)->toBe(RequirementProfileStatus::Draft)
+        ->and(StatusHistory::timeline(RequirementProfile::WORKFLOW_FLOW, (int) $profile->id))->toBeEmpty();
 
     $draftItem = RequirementItem::query()->forCompany($tenantId, $companyEntityId)
         ->where('profile_id', $profile->id)->firstOrFail();
@@ -965,6 +971,7 @@ test('governed profiles require in-scope HOD review and HR approval before publi
     expect($profile->status)->toBe(RequirementProfileStatus::PendingHodReview)
         ->and($store->reviewQueue($hod, $companyEntityId)->pluck('id')->all())->toBe([(int) $profile->id])
         ->and($store->reviewQueue($outsider, $companyEntityId))->toBeEmpty()
+        ->and(DB::table('people_connector_skill_requirement_profile_transition_proofs')->count())->toBe(0)
         ->and(StatusHistory::latest(RequirementProfile::WORKFLOW_FLOW, (int) $profile->id)?->assignees)
         ->toBe([['user_id' => (int) $hod->id]]);
     Notification::assertSentTo(
@@ -974,6 +981,13 @@ test('governed profiles require in-scope HOD review and HR approval before publi
             && $notification->transition->to_code === RequirementProfileStatus::PendingHodReview->value,
     );
     Notification::assertNothingSentTo($outsider);
+    Livewire::actingAs($hod)->test(RequirementProfileShow::class, ['profileId' => $profile->id])
+        ->assertSee('Governed Profile')
+        ->assertSee('v1');
+    Livewire::actingAs($outsider)->test(
+        RequirementProfileShow::class,
+        ['profileId' => $profile->id],
+    )->assertStatus(404);
 
     expect(fn () => $store->newDraftFrom($companyEntityId, (int) $profile->id))
         ->toThrow(InvalidRequirementProfileException::class, 'already has an open version');

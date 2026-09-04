@@ -1,12 +1,33 @@
 <?php
 
+use App\Base\Database\Concerns\RegistersTables;
 use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 return new class extends Migration
 {
+    use RegistersTables;
+
+    private const TRANSITION_PROOFS = 'people_connector_skill_requirement_profile_transition_proofs';
+
     public function up(): void
     {
+        Schema::create(self::TRANSITION_PROOFS, function (Blueprint $table): void {
+            $table->uuid('id');
+            $table->unsignedBigInteger('tenant_id');
+            $table->unsignedBigInteger('profile_id');
+            $table->string('from_status', 40);
+            $table->string('to_status', 40);
+            $table->primary('id', 'pcs_req_transition_proof_pk');
+            $table->index('tenant_id', 'pcs_req_transition_proof_tenant_ix');
+            $table->unique('profile_id', 'pcs_req_transition_proof_profile_uq');
+            $table->foreign('profile_id', 'pcs_req_transition_proof_profile_fk')
+                ->references('id')->on('people_connector_skill_requirement_profiles')->cascadeOnDelete();
+        });
+        $this->registerTable(self::TRANSITION_PROOFS);
+
         DB::statement(
             'CREATE UNIQUE INDEX IF NOT EXISTS pcs_req_profile_current_uq'
             .' ON people_connector_skill_requirement_profiles (tenant_id, company_entity_id, code)'
@@ -46,6 +67,11 @@ return new class extends Migration
                         OR (OLD.status = 'published' AND NEW.status = 'retired');
 
                     IF valid_transition
+                        AND EXISTS(
+                            SELECT 1 FROM people_connector_skill_requirement_profile_transition_proofs
+                            WHERE tenant_id = OLD.tenant_id AND profile_id = OLD.id
+                            AND from_status = OLD.status AND to_status = NEW.status
+                        )
                         AND NEW.tenant_id = OLD.tenant_id
                         AND NEW.company_entity_id = OLD.company_entity_id
                         AND NEW.code = OLD.code
@@ -58,6 +84,9 @@ return new class extends Migration
                             OR (NEW.status <> 'published' AND NEW.published_at IS NOT DISTINCT FROM OLD.published_at))
                         AND ((NEW.status = 'retired' AND NEW.retired_at IS NOT NULL)
                             OR (NEW.status <> 'retired' AND NEW.retired_at IS NOT DISTINCT FROM OLD.retired_at)) THEN
+                        DELETE FROM people_connector_skill_requirement_profile_transition_proofs
+                        WHERE tenant_id = OLD.tenant_id AND profile_id = OLD.id
+                        AND from_status = OLD.status AND to_status = NEW.status;
                         RETURN NEW;
                     END IF;
 
@@ -143,6 +172,9 @@ return new class extends Migration
             ." OR (OLD.status = 'pending_hr_review' AND NEW.status IN ('draft', 'approved'))"
             ." OR (OLD.status = 'approved' AND NEW.status IN ('draft', 'published'))"
             ." OR (OLD.status = 'published' AND NEW.status = 'retired'))"
+            .' AND EXISTS(SELECT 1 FROM people_connector_skill_requirement_profile_transition_proofs'
+            .' WHERE tenant_id = OLD.tenant_id AND profile_id = OLD.id'
+            .' AND from_status = OLD.status AND to_status = NEW.status)'
             .' AND NEW.tenant_id IS OLD.tenant_id AND NEW.company_entity_id IS OLD.company_entity_id'
             .' AND NEW.code IS OLD.code AND NEW.name IS OLD.name AND NEW.version IS OLD.version'
             .' AND NEW.effective_date IS OLD.effective_date AND NEW.owner_employee_entity_id IS OLD.owner_employee_entity_id'
@@ -163,6 +195,15 @@ return new class extends Migration
             .')'
             ." BEGIN SELECT RAISE(ABORT, 'requirement profile is immutable or transition is invalid'); END",
         );
+        DB::statement('DROP TRIGGER IF EXISTS pcs_req_profile_transition_proof_consume');
+        DB::statement(
+            'CREATE TRIGGER pcs_req_profile_transition_proof_consume'
+            .' AFTER UPDATE OF status ON people_connector_skill_requirement_profiles'
+            .' WHEN OLD.status != NEW.status'
+            .' BEGIN DELETE FROM people_connector_skill_requirement_profile_transition_proofs'
+            .' WHERE tenant_id = OLD.tenant_id AND profile_id = OLD.id'
+            .' AND from_status = OLD.status AND to_status = NEW.status; END',
+        );
         DB::statement('DROP TRIGGER IF EXISTS pcs_req_profile_delete_guard');
         DB::statement(
             'CREATE TRIGGER pcs_req_profile_delete_guard BEFORE DELETE ON people_connector_skill_requirement_profiles'
@@ -173,6 +214,7 @@ return new class extends Migration
 
     public function down(): void
     {
+        $this->unregisterTable(self::TRANSITION_PROOFS);
         DB::statement('DROP INDEX IF EXISTS pcs_req_profile_current_uq');
         DB::statement('DROP INDEX IF EXISTS pcs_req_profile_open_uq');
 
@@ -230,15 +272,20 @@ return new class extends Migration
                     FOR EACH ROW EXECUTE FUNCTION pcs_req_profile_guard();
                 SQL);
 
+            Schema::dropIfExists(self::TRANSITION_PROOFS);
+
             return;
         }
 
         if (DB::connection()->getDriverName() !== 'sqlite') {
+            Schema::dropIfExists(self::TRANSITION_PROOFS);
+
             return;
         }
 
         DB::statement('DROP TRIGGER IF EXISTS pcs_req_profile_update_guard');
         DB::statement('DROP TRIGGER IF EXISTS pcs_req_profile_insert_guard');
+        DB::statement('DROP TRIGGER IF EXISTS pcs_req_profile_transition_proof_consume');
         DB::statement(
             'CREATE TRIGGER pcs_req_profile_update_guard BEFORE UPDATE ON people_connector_skill_requirement_profiles'
             ." WHEN NOT (OLD.status = 'draft' OR (OLD.status = 'published' AND NEW.status = 'retired'"
@@ -262,5 +309,6 @@ return new class extends Migration
             .' WHEN OLD.published_at IS NOT NULL'
             ." BEGIN SELECT RAISE(ABORT, 'requirement profile has been published and cannot be deleted'); END",
         );
+        Schema::dropIfExists(self::TRANSITION_PROOFS);
     }
 };

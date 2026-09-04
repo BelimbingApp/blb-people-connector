@@ -27,6 +27,11 @@ final class Show extends Component
             ->forTenant(app(TenantContext::class)->requireTenantId())
             ->whereIn('company_entity_id', array_keys($companies))
             ->findOrFail($profileId);
+
+        abort_unless(
+            app(SkillAudience::class)->mayViewRequirementProfile(Auth::user(), $this->profile),
+            404,
+        );
     }
 
     public function render(): View
