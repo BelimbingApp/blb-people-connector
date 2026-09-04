@@ -1079,6 +1079,12 @@ test('reconciliation issues are durable idempotent and tenant isolated', functio
         ])
         ->and(ReconciliationIssue::query()->forTenant((int) $tenantA->id)->count())->toBe(1);
 
+    $page = $issues->paginateOpenForConnection((int) $connection->id, 1);
+
+    expect($page->total())->toBe(1)
+        ->and($page->perPage())->toBe(1)
+        ->and($page->first()?->id)->toBe($repeat->id);
+
     $resolved = $issues->resolve((int) $repeat->id, $firstSeen->modify('+2 hours'));
     expect($resolved->status)->toBe(ReconciliationIssue::STATUS_RESOLVED)
         ->and($issues->openForConnection((int) $connection->id))->toHaveCount(0);

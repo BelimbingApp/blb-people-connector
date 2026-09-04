@@ -109,5 +109,9 @@
                 @endforeach
             </x-slot:body>
         </x-ui.table>
+
+        <div class="mt-section-gap">
+            {{ $issues->links() }}
+        </div>
     @endif
 </div>
