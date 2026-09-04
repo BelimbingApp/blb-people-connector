@@ -132,7 +132,7 @@ final class Index extends Component
             ? $this->companyEntityId : null;
         $tenant = $company === null ? null : app(TenantContext::class)->requireTenantId();
 
-        return view('people-connector-training::livewire.catalog.index', [
+        return view('people-connector-training::livewire.training.catalog.index', [
             'companies' => $companies,
             'courses' => $company === null ? collect() : $this->courses($company),
             'skills' => $company === null ? collect() : Skill::query()->forCompany($tenant, $company)->where('active', true)->orderBy('name')->get(),
