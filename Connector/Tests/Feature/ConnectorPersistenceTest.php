@@ -39,6 +39,7 @@ use App\Domains\PeopleConnector\Connector\Services\SyncCheckpointStore;
 use App\Domains\PeopleConnector\Connector\Services\WorkforceHistory;
 use App\Domains\PeopleConnector\Connector\Services\WorkforceIdentityStore;
 use App\Domains\PeopleConnector\Connector\Services\WorkforceProjectionStore;
+use Illuminate\Database\QueryException;
 
 afterEach(function (): void {
     app(TenantContext::class)->clear();
