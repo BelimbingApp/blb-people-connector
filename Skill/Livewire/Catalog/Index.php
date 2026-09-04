@@ -290,7 +290,7 @@ class Index extends Component
     private function filteredSkills(int $companyEntityId)
     {
         return $this->skills($companyEntityId)
-            ->when(! $this->includeInactive, fn ($skills) => $skills->where('active', true))
+            ->when($this->includeInactive === false, fn ($skills) => $skills->where('active', true))
             ->when($this->filterCategoryId !== null, fn ($skills) => $skills->where('category_id', $this->filterCategoryId))
             ->when($this->criticalOnly, fn ($skills) => $skills->filter->isCritical())
             ->when(trim($this->search) !== '', function ($skills) {

@@ -19,6 +19,7 @@ use App\Domains\PeopleConnector\Connector\Services\WorkforceProjectionStore;
 use App\Domains\PeopleConnector\Skill\Data\SkillDraft;
 use App\Domains\PeopleConnector\Skill\Enums\AssessmentMethod;
 use App\Domains\PeopleConnector\Skill\Enums\SkillScope;
+use App\Domains\PeopleConnector\Skill\Models\RequirementProfileSelector;
 use App\Domains\PeopleConnector\Skill\Models\Skill;
 use App\Domains\PeopleConnector\Skill\Services\SkillCatalogStore;
 use Illuminate\Support\Facades\DB;
@@ -72,17 +73,27 @@ test('the two columns the merge forgot are now declared where the merge reads th
     $forEmployees = array_map(fn (array $pair): string => $pair[0].'.'.$pair[1]->column, DomainModels::referencing(WorkforceResourceType::Employee));
 
     expect($forOrganizationUnits)->toContain(Skill::class.'.department_entity_id')
+        ->and($forOrganizationUnits)->toContain(RequirementProfileSelector::class.'.selector_entity_id')
         ->and($forEmployees)->toContain(Skill::class.'.owner_employee_entity_id')
         ->and($forEmployees)->toContain(WorkforceEmployeeProjection::class.'.manager_entity_id');
 
-    // Exact, not "contains": the probe test relies on no real model declaring
-    // a reference under Position except this one, so that a merged position
-    // can only reach a probe's row through the probe. When a real model
-    // legitimately declares a Position column, EXTEND this array and move the
-    // probes to a resource type nothing real declares; do not weaken this
-    // back to toContain, which would let the probe's isolation lapse silently.
+    // Exact Position list: every real Position reference the merge rewrites.
+    // When another Position column lands, extend this array. The probe test
+    // below still uses Position because real rows in those columns are either
+    // null (employee.position) or absent (no selector rows) in that fixture.
     $forPositions = array_map(fn (array $pair): string => $pair[0].'.'.$pair[1]->column, DomainModels::referencing(WorkforceResourceType::Position));
-    expect($forPositions)->toBe([WorkforceEmployeeProjection::class.'.position_entity_id']);
+    expect($forPositions)->toBe([
+        WorkforceEmployeeProjection::class.'.position_entity_id',
+        RequirementProfileSelector::class.'.selector_entity_id',
+    ]);
+
+    // Exact User list for the same reason the Position list used to be the
+    // probe isolation contract: only employee.user_entity_id today. When a
+    // real model declares another User column, EXTEND this array and move
+    // the probes to a resource type nothing real declares; do not weaken
+    // either exact list to toContain.
+    $forUsers = array_map(fn (array $pair): string => $pair[0].'.'.$pair[1]->column, DomainModels::referencing(WorkforceResourceType::User));
+    expect($forUsers)->toBe([WorkforceEmployeeProjection::class.'.user_entity_id']);
 });
 
 /**
