@@ -929,6 +929,16 @@ test('governed profiles require in-scope HOD review and HR approval before publi
 
     $draftItem = RequirementItem::query()->forCompany($tenantId, $companyEntityId)
         ->where('profile_id', $profile->id)->firstOrFail();
+    DB::table('people_connector_skill_requirement_items')
+        ->where('id', $draftItem->id)
+        ->update(['required_level' => 6]);
+    expect(fn () => $store->submitForReview($hr, $companyEntityId, (int) $profile->id))
+        ->toThrow(InvalidRequirementProfileException::class, 'Required level must be between 0 and 5');
+    expect($profile->refresh()->status)->toBe(RequirementProfileStatus::Draft)
+        ->and(StatusHistory::timeline(RequirementProfile::WORKFLOW_FLOW, (int) $profile->id))->toBeEmpty();
+    DB::table('people_connector_skill_requirement_items')
+        ->where('id', $draftItem->id)
+        ->update(['required_level' => 3]);
     $draftItem->update(['weight_percent' => 90]);
     expect(fn () => $store->submitForReview($hr, $companyEntityId, (int) $profile->id))
         ->toThrow(InvalidRequirementProfileException::class, 'weights must total 100%');
