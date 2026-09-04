@@ -2,10 +2,8 @@
 
 namespace App\Domains\PeopleConnector\Skill\Livewire\Catalog;
 
-use App\Base\Authz\Contracts\AuthorizationService;
-use App\Base\Authz\DTO\Actor;
+use App\Base\Authz\Exceptions\AuthorizationDeniedException;
 use App\Base\Tenancy\Contracts\TenantContext;
-use App\Domains\PeopleConnector\Connector\Services\CompanyAttribution;
 use App\Domains\PeopleConnector\Skill\Data\SkillDraft;
 use App\Domains\PeopleConnector\Skill\Enums\AssessmentMethod;
 use App\Domains\PeopleConnector\Skill\Enums\CriticalClassification;
@@ -15,6 +13,7 @@ use App\Domains\PeopleConnector\Skill\Models\ProficiencyScale;
 use App\Domains\PeopleConnector\Skill\Models\Skill;
 use App\Domains\PeopleConnector\Skill\Models\SkillCategory;
 use App\Domains\PeopleConnector\Skill\Services\ProficiencyScaleStore;
+use App\Domains\PeopleConnector\Skill\Services\SkillAudience;
 use App\Domains\PeopleConnector\Skill\Services\SkillCatalogDefaults;
 use App\Domains\PeopleConnector\Skill\Services\SkillCatalogStore;
 use Illuminate\Contracts\View\View;
@@ -244,8 +243,10 @@ class Index extends Component
      */
     private function allowedCompanies(): array
     {
-        return $this->allowedCompanies ??= app(CompanyAttribution::class)
-            ->allowedCompanyEntities(Auth::user());
+        return $this->allowedCompanies ??= app(SkillAudience::class)->allowedCompanies(
+            Auth::user(),
+            'people-connector.skill.catalog.view',
+        );
     }
 
     /**
@@ -254,9 +255,14 @@ class Index extends Component
      */
     private function authorizedCompanyForManage(): int
     {
-        $this->authorizeManage();
         abort_if($this->companyEntityId === null, 404);
         abort_unless(array_key_exists($this->companyEntityId, $this->allowedCompanies()), 404);
+
+        try {
+            app(SkillAudience::class)->authorizeCatalogManage(Auth::user(), $this->companyEntityId);
+        } catch (AuthorizationDeniedException) {
+            abort(403);
+        }
 
         return $this->companyEntityId;
     }
@@ -315,25 +321,19 @@ class Index extends Component
 
     private function canManage(): bool
     {
-        return app(AuthorizationService::class)->can(
-            Actor::forUser(Auth::user()),
-            'people-connector.skill.catalog.manage',
-        )->allowed;
+        return $this->companyEntityId !== null
+            && app(SkillAudience::class)->mayManageCatalog(Auth::user(), $this->companyEntityId);
     }
 
     private function authorizeView(): void
     {
-        app(AuthorizationService::class)->authorize(
-            Actor::forUser(Auth::user()),
-            'people-connector.skill.catalog.view',
-        );
-    }
-
-    private function authorizeManage(): void
-    {
-        app(AuthorizationService::class)->authorize(
-            Actor::forUser(Auth::user()),
-            'people-connector.skill.catalog.manage',
-        );
+        try {
+            app(SkillAudience::class)->authorizeAudience(
+                Auth::user(),
+                'people-connector.skill.catalog.view',
+            );
+        } catch (AuthorizationDeniedException) {
+            abort(403);
+        }
     }
 }
