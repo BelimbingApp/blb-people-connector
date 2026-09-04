@@ -57,11 +57,29 @@ return new class extends Migration
             DB::unprepared(<<<'SQL'
                 CREATE OR REPLACE FUNCTION pcs_assessment_workflow_guard() RETURNS trigger AS $$
                 BEGIN
+                    IF TG_OP = 'INSERT' THEN
+                        IF NEW.status = 'draft'
+                            AND NEW.hod_verification = 'pending'
+                            AND NEW.finalized_at IS NULL
+                            AND NEW.finalized_by_user_id IS NULL THEN
+                            RETURN NEW;
+                        END IF;
+                        IF current_setting('blb.skill_assessment_workflow', true) = '1' THEN
+                            RETURN NEW;
+                        END IF;
+                        RAISE EXCEPTION 'non-draft assessment inserts require workflow authority';
+                    END IF;
+
                     IF TG_OP = 'DELETE' THEN
                         IF OLD.status <> 'draft' THEN
                             RAISE EXCEPTION 'non-draft assessment % is historical and cannot be deleted', OLD.id;
                         END IF;
                         RETURN OLD;
+                    END IF;
+
+                    IF NEW.status <> 'draft'
+                        AND current_setting('blb.skill_assessment_workflow', true) IS DISTINCT FROM '1' THEN
+                        RAISE EXCEPTION 'assessment lifecycle updates require workflow authority';
                     END IF;
 
                     IF NEW.status <> 'draft' AND NEW.assessor_user_id IS NULL THEN
@@ -79,6 +97,7 @@ return new class extends Migration
                         AND OLD.hod_verification = 'pending'
                         AND NEW.hod_verification IN ('verified', 'rejected')
                         AND NEW.hod_verifier_user_id IS NOT NULL
+                        AND NEW.hod_verifier_user_id <> NEW.assessor_user_id
                         AND NEW.hod_verified_at IS NOT NULL THEN
                         RETURN NEW;
                     END IF;
@@ -88,6 +107,7 @@ return new class extends Migration
                         AND OLD.hod_verification = 'pending'
                         AND NEW.hod_verification = 'rejected'
                         AND NEW.hod_verifier_user_id IS NOT NULL
+                        AND NEW.hod_verifier_user_id <> NEW.assessor_user_id
                         AND NEW.hod_verified_at IS NOT NULL
                         AND NEW.hod_decision_notes IS NOT NULL
                         AND btrim(NEW.hod_decision_notes) <> '' THEN
@@ -115,7 +135,7 @@ return new class extends Migration
                 $$ LANGUAGE plpgsql;
 
                 CREATE TRIGGER pcs_assessment_workflow_guard
-                    BEFORE UPDATE OR DELETE ON people_connector_skill_assessments
+                    BEFORE INSERT OR UPDATE OR DELETE ON people_connector_skill_assessments
                     FOR EACH ROW EXECUTE FUNCTION pcs_assessment_workflow_guard();
 
                 CREATE OR REPLACE FUNCTION pcs_assessment_facts_guard() RETURNS trigger AS $$
@@ -169,20 +189,33 @@ return new class extends Migration
                     SELECT RAISE(ABORT, 'non-draft assessment is historical and cannot be deleted');
                 END;
 
+                CREATE TRIGGER pcs_assessment_workflow_insert_guard
+                BEFORE INSERT ON people_connector_skill_assessments
+                FOR EACH ROW
+                WHEN NEW.status <> 'draft'
+                BEGIN
+                    SELECT CASE WHEN pcs_assessment_workflow_authorized() <> 1
+                        THEN RAISE(ABORT, 'non-draft assessment inserts require workflow authority') END;
+                END;
+
                 CREATE TRIGGER pcs_assessment_workflow_update_guard
                 BEFORE UPDATE ON people_connector_skill_assessments
                 FOR EACH ROW
                 BEGIN
+                    SELECT CASE WHEN NEW.status <> 'draft' AND pcs_assessment_workflow_authorized() <> 1
+                        THEN RAISE(ABORT, 'assessment lifecycle updates require workflow authority') END;
                     SELECT CASE WHEN NEW.status <> 'draft' AND NEW.assessor_user_id IS NULL
                         THEN RAISE(ABORT, 'submitted assessment requires an assessor') END;
                     SELECT CASE WHEN NOT (
                         (OLD.status = 'submitted' AND NEW.status = 'pending_hod_verification' AND NEW.hod_verification = 'pending')
                         OR (OLD.status = 'pending_hod_verification' AND NEW.status = 'pending_hod_verification'
                             AND OLD.hod_verification = 'pending' AND NEW.hod_verification IN ('verified', 'rejected')
-                            AND NEW.hod_verifier_user_id IS NOT NULL AND NEW.hod_verified_at IS NOT NULL)
+                            AND NEW.hod_verifier_user_id IS NOT NULL AND NEW.hod_verifier_user_id <> NEW.assessor_user_id
+                            AND NEW.hod_verified_at IS NOT NULL)
                         OR (OLD.status = 'pending_hod_verification' AND NEW.status = 'returned'
                             AND OLD.hod_verification = 'pending' AND NEW.hod_verification = 'rejected'
-                            AND NEW.hod_verifier_user_id IS NOT NULL AND NEW.hod_verified_at IS NOT NULL
+                            AND NEW.hod_verifier_user_id IS NOT NULL AND NEW.hod_verifier_user_id <> NEW.assessor_user_id
+                            AND NEW.hod_verified_at IS NOT NULL
                             AND NEW.hod_decision_notes IS NOT NULL AND trim(NEW.hod_decision_notes) <> '')
                         OR (OLD.status = 'pending_hod_verification' AND OLD.hod_verification = 'verified'
                             AND NEW.status = 'finalized' AND NEW.finalized_at IS NOT NULL
@@ -243,6 +276,7 @@ return new class extends Migration
             DB::unprepared('DROP FUNCTION IF EXISTS pcs_assessment_facts_guard()');
         } elseif ($driver === 'sqlite') {
             DB::unprepared('DROP TRIGGER IF EXISTS pcs_assessment_workflow_delete_guard');
+            DB::unprepared('DROP TRIGGER IF EXISTS pcs_assessment_workflow_insert_guard');
             DB::unprepared('DROP TRIGGER IF EXISTS pcs_assessment_workflow_update_guard');
             DB::unprepared('DROP TRIGGER IF EXISTS pcs_assessment_facts_guard');
         }
@@ -255,11 +289,17 @@ return new class extends Migration
             DB::unprepared(<<<'SQL'
                 CREATE OR REPLACE FUNCTION pcs_assessment_decision_append_only() RETURNS trigger AS $$
                 BEGIN
+                    IF TG_OP = 'INSERT' THEN
+                        IF current_setting('blb.skill_assessment_workflow', true) = '1' THEN
+                            RETURN NEW;
+                        END IF;
+                        RAISE EXCEPTION 'assessment decision inserts require workflow authority';
+                    END IF;
                     RAISE EXCEPTION 'assessment decisions are append-only';
                 END;
                 $$ LANGUAGE plpgsql;
                 CREATE TRIGGER pcs_assessment_decision_guard
-                    BEFORE UPDATE OR DELETE ON people_connector_skill_assessment_decisions
+                    BEFORE INSERT OR UPDATE OR DELETE ON people_connector_skill_assessment_decisions
                     FOR EACH ROW EXECUTE FUNCTION pcs_assessment_decision_append_only();
                 SQL);
         } elseif ($driver === 'sqlite') {
@@ -268,6 +308,12 @@ return new class extends Migration
                 BEFORE UPDATE ON people_connector_skill_assessment_decisions
                 BEGIN
                     SELECT RAISE(ABORT, 'assessment decisions are append-only');
+                END;
+                CREATE TRIGGER pcs_assessment_decision_insert_guard
+                BEFORE INSERT ON people_connector_skill_assessment_decisions
+                BEGIN
+                    SELECT CASE WHEN pcs_assessment_workflow_authorized() <> 1
+                        THEN RAISE(ABORT, 'assessment decision inserts require workflow authority') END;
                 END;
                 CREATE TRIGGER pcs_assessment_decision_delete_guard
                 BEFORE DELETE ON people_connector_skill_assessment_decisions
@@ -286,6 +332,7 @@ return new class extends Migration
             DB::unprepared('DROP FUNCTION IF EXISTS pcs_assessment_decision_append_only()');
         } elseif ($driver === 'sqlite') {
             DB::unprepared('DROP TRIGGER IF EXISTS pcs_assessment_decision_update_guard');
+            DB::unprepared('DROP TRIGGER IF EXISTS pcs_assessment_decision_insert_guard');
             DB::unprepared('DROP TRIGGER IF EXISTS pcs_assessment_decision_delete_guard');
         }
     }

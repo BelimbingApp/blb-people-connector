@@ -15,8 +15,10 @@ use App\Domains\PeopleConnector\Skill\Enums\HodVerification;
 use App\Domains\PeopleConnector\Skill\Enums\RequirementCriticality;
 use App\Domains\PeopleConnector\Skill\Exceptions\FinalizedAssessmentImmutableException;
 use App\Domains\PeopleConnector\Skill\Exceptions\InvalidAssessmentException;
+use App\Domains\PeopleConnector\Skill\Services\AssessmentWorkflowContext;
 use Closure;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Support\Facades\DB;
 
 /**
  * One employee skill assessment history row. Finalized rows are immutable;
@@ -24,8 +26,6 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
  */
 class SkillAssessment extends TenantOwnedModel implements ReferencesWorkforceEntities
 {
-    private static int $lifecycleTransitionDepth = 0;
-
     /** @var list<string> */
     private const LIFECYCLE_COLUMNS = [
         'status',
@@ -139,14 +139,14 @@ class SkillAssessment extends TenantOwnedModel implements ReferencesWorkforceEnt
             }
 
             $dirty = array_keys($assessment->getDirty());
-            if (self::$lifecycleTransitionDepth === 0
+            if (! AssessmentWorkflowContext::active()
                 && array_intersect($dirty, self::LIFECYCLE_COLUMNS) !== []) {
                 throw new InvalidAssessmentException(
                     'Assessment lifecycle changes must go through AssessmentStore workflow methods.',
                 );
             }
 
-            if (self::$lifecycleTransitionDepth === 0
+            if (! AssessmentWorkflowContext::active()
                 && $originalStatus !== AssessmentStatus::Draft
                 && array_intersect($dirty, self::SUBMITTED_COLUMNS) !== []) {
                 throw new InvalidAssessmentException(
@@ -178,13 +178,24 @@ class SkillAssessment extends TenantOwnedModel implements ReferencesWorkforceEnt
 
     public static function withinLifecycleTransition(Closure $callback): mixed
     {
-        self::$lifecycleTransitionDepth++;
+        return AssessmentWorkflowContext::run(function () use ($callback): mixed {
+            $connection = DB::connection();
 
-        try {
+            if ($connection->getDriverName() === 'pgsql') {
+                $connection->statement("select set_config('blb.skill_assessment_workflow', '1', true)");
+            } elseif ($connection->getDriverName() === 'sqlite') {
+                $pdo = $connection->getPdo();
+                if (method_exists($pdo, 'sqliteCreateFunction')) {
+                    $pdo->sqliteCreateFunction(
+                        'pcs_assessment_workflow_authorized',
+                        static fn (): int => AssessmentWorkflowContext::active() ? 1 : 0,
+                        0,
+                    );
+                }
+            }
+
             return $callback();
-        } finally {
-            self::$lifecycleTransitionDepth--;
-        }
+        });
     }
 
     public function isFinalized(): bool

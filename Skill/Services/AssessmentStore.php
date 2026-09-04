@@ -23,6 +23,7 @@ use App\Domains\PeopleConnector\Skill\Models\Skill;
 use App\Domains\PeopleConnector\Skill\Models\SkillAssessment;
 use Carbon\Carbon;
 use Carbon\CarbonInterface;
+use Closure;
 use DateTimeInterface;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
@@ -437,7 +438,7 @@ final class AssessmentStore
             }
         }
 
-        return SkillAssessment::query()->create([
+        $create = fn (): SkillAssessment => SkillAssessment::query()->create([
             'tenant_id' => $tenantId,
             'company_entity_id' => $companyEntityId,
             'employee_entity_id' => $draft->employeeEntityId,
@@ -471,6 +472,10 @@ final class AssessmentStore
             'finalized_at' => null,
             'finalized_by_user_id' => null,
         ]);
+
+        return $status === AssessmentStatus::Draft
+            ? $create()
+            : $this->withWorkflowContext($create);
     }
 
     /**
@@ -657,7 +662,12 @@ final class AssessmentStore
 
     private function saveTransition(SkillAssessment $assessment): void
     {
-        SkillAssessment::withinLifecycleTransition(static fn (): bool => $assessment->save());
+        $this->withWorkflowContext(static fn (): bool => $assessment->save());
+    }
+
+    private function withWorkflowContext(Closure $callback): mixed
+    {
+        return SkillAssessment::withinLifecycleTransition($callback);
     }
 
     private function actorId(User $actor): int
@@ -677,16 +687,18 @@ final class AssessmentStore
         int $actorUserId,
         ?string $notes = null,
     ): void {
-        $assessment->decisions()->create([
-            'tenant_id' => (int) $assessment->tenant_id,
-            'company_entity_id' => (int) $assessment->company_entity_id,
-            'employee_entity_id' => (int) $assessment->employee_entity_id,
-            'skill_id' => (int) $assessment->skill_id,
-            'decision' => $decision,
-            'actor_user_id' => $actorUserId,
-            'notes' => $notes,
-            'created_at' => now(),
-        ]);
+        $this->withWorkflowContext(function () use ($assessment, $decision, $actorUserId, $notes): void {
+            $assessment->decisions()->create([
+                'tenant_id' => (int) $assessment->tenant_id,
+                'company_entity_id' => (int) $assessment->company_entity_id,
+                'employee_entity_id' => (int) $assessment->employee_entity_id,
+                'skill_id' => (int) $assessment->skill_id,
+                'decision' => $decision,
+                'actor_user_id' => $actorUserId,
+                'notes' => $notes,
+                'created_at' => now(),
+            ]);
+        });
     }
 
     private function assertEntity(int $tenantId, int $entityId, WorkforceResourceType $type): void

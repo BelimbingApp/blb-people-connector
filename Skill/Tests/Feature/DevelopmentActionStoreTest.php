@@ -155,7 +155,7 @@ function developmentAssessment(array $fixture, int $employeeId, int $level = 1, 
 
     $assessedAt ??= now()->subDay();
 
-    $assessment = SkillAssessment::query()->create([
+    $assessment = SkillAssessment::withinLifecycleTransition(static fn (): SkillAssessment => SkillAssessment::query()->create([
         'tenant_id' => $fixture['tenant'], 'company_entity_id' => $fixture['company'],
         'employee_entity_id' => $employeeId, 'skill_id' => $fixture['skill'],
         'requirement_reference' => 'fixture.safety', 'requirement_version' => 2, 'required_level' => $required,
@@ -166,7 +166,7 @@ function developmentAssessment(array $fixture, int $employeeId, int $level = 1, 
         'method' => AssessmentMethod::DirectObservation, 'cycle' => $cycle,
         'status' => AssessmentStatus::Finalized, 'evidence' => 'Observed work sample.', 'assessed_at' => $assessedAt,
         'hod_verification' => HodVerification::Verified, 'finalized_at' => $assessedAt, 'finalized_by_user_id' => 10,
-    ]);
+    ]));
     EmployeeSkillScore::query()->forCompany($fixture['tenant'], $fixture['company'])->updateOrCreate([
         'tenant_id' => $fixture['tenant'], 'employee_entity_id' => $employeeId, 'skill_id' => $fixture['skill'],
     ], [
