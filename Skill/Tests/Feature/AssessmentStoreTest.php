@@ -290,29 +290,29 @@ test('assessment workflow rejects spoofed actors and direct lifecycle writes', f
     expect(fn () => $submitted->save())
         ->toThrow(InvalidAssessmentException::class, 'AssessmentStore workflow');
 
-    expect(fn () => DB::table('people_connector_skill_assessments')
+    expect(fn () => DB::transaction(static fn (): int => DB::table('people_connector_skill_assessments')
         ->where('id', $submitted->id)
-        ->update(['status' => AssessmentStatus::PendingHodVerification->value]))
+        ->update(['status' => AssessmentStatus::PendingHodVerification->value])))
         ->toThrow(QueryException::class);
 
-    expect(fn () => DB::table('people_connector_skill_assessments')
+    expect(fn () => DB::transaction(static fn (): int => DB::table('people_connector_skill_assessments')
         ->where('id', $submitted->id)
-        ->update(['status' => AssessmentStatus::Finalized->value]))
+        ->update(['status' => AssessmentStatus::Finalized->value])))
         ->toThrow(QueryException::class);
 
     $rawInsert = $submitted->getAttributes();
     unset($rawInsert['id']);
-    expect(fn () => DB::table('people_connector_skill_assessments')->insert($rawInsert))
+    expect(fn () => DB::transaction(static fn (): bool => DB::table('people_connector_skill_assessments')->insert($rawInsert)))
         ->toThrow(QueryException::class);
 
     $pending = $store->requestHodVerification(assessmentActor(9), $companyEntityId, (int) $submitted->id);
-    expect(fn () => SkillAssessment::withinLifecycleTransition(static fn (): int => DB::table('people_connector_skill_assessments')
+    expect(fn () => DB::transaction(static fn (): mixed => SkillAssessment::withinLifecycleTransition(static fn (): int => DB::table('people_connector_skill_assessments')
         ->where('id', $pending->id)
         ->update([
             'hod_verification' => HodVerification::Verified->value,
             'hod_verifier_user_id' => 9,
             'hod_verified_at' => now(),
-        ])))
+        ]))))
         ->toThrow(QueryException::class);
 });
 

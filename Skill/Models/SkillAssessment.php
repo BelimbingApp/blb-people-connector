@@ -180,39 +180,41 @@ class SkillAssessment extends TenantOwnedModel implements ReferencesWorkforceEnt
     public static function withinLifecycleTransition(Closure $callback): mixed
     {
         return AssessmentWorkflowContext::run(function () use ($callback): mixed {
-            $connection = DB::connection();
-            $previousAuthority = null;
+            return DB::transaction(function () use ($callback): mixed {
+                $connection = DB::connection();
+                $previousAuthority = null;
 
-            if ($connection->getDriverName() === 'pgsql') {
-                $previousAuthority = $connection->selectOne(
-                    "select current_setting('blb.skill_assessment_workflow', true) as value",
-                )->value ?? '';
-                $connection->statement("select set_config('blb.skill_assessment_workflow', '1', false)");
-            } elseif ($connection->getDriverName() === 'sqlite') {
-                $pdo = $connection->getPdo();
-                if (method_exists($pdo, 'sqliteCreateFunction')) {
-                    $pdo->sqliteCreateFunction(
-                        'pcs_assessment_workflow_authorized',
-                        static fn (): int => AssessmentWorkflowContext::active() ? 1 : 0,
-                        0,
-                    );
-                }
-            }
-
-            try {
-                return $callback();
-            } finally {
                 if ($connection->getDriverName() === 'pgsql') {
-                    try {
-                        $connection->statement(
-                            "select set_config('blb.skill_assessment_workflow', ?, false)",
-                            [$previousAuthority ?? ''],
+                    $previousAuthority = $connection->selectOne(
+                        "select current_setting('blb.skill_assessment_workflow', true) as value",
+                    )->value ?? '';
+                    $connection->statement("select set_config('blb.skill_assessment_workflow', '1', true)");
+                } elseif ($connection->getDriverName() === 'sqlite') {
+                    $pdo = $connection->getPdo();
+                    if (method_exists($pdo, 'sqliteCreateFunction')) {
+                        $pdo->sqliteCreateFunction(
+                            'pcs_assessment_workflow_authorized',
+                            static fn (): int => AssessmentWorkflowContext::active() ? 1 : 0,
+                            0,
                         );
-                    } catch (Throwable) {
-                        // A failed statement may abort the transaction; the connection will be rolled back by its owner.
                     }
                 }
-            }
+
+                try {
+                    return $callback();
+                } finally {
+                    if ($connection->getDriverName() === 'pgsql') {
+                        try {
+                            $connection->statement(
+                                "select set_config('blb.skill_assessment_workflow', ?, true)",
+                                [$previousAuthority ?? ''],
+                            );
+                        } catch (Throwable) {
+                            // A failed statement aborts this savepoint; its rollback restores the prior setting.
+                        }
+                    }
+                }
+            });
         });
     }
 
