@@ -19,6 +19,7 @@ use App\Domains\PeopleConnector\Skill\Services\AssessmentWorkflowContext;
 use Closure;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Support\Facades\DB;
+use Throwable;
 
 /**
  * One employee skill assessment history row. Finalized rows are immutable;
@@ -180,9 +181,13 @@ class SkillAssessment extends TenantOwnedModel implements ReferencesWorkforceEnt
     {
         return AssessmentWorkflowContext::run(function () use ($callback): mixed {
             $connection = DB::connection();
+            $previousAuthority = null;
 
             if ($connection->getDriverName() === 'pgsql') {
-                $connection->statement("select set_config('blb.skill_assessment_workflow', '1', true)");
+                $previousAuthority = $connection->selectOne(
+                    "select current_setting('blb.skill_assessment_workflow', true) as value",
+                )->value ?? '';
+                $connection->statement("select set_config('blb.skill_assessment_workflow', '1', false)");
             } elseif ($connection->getDriverName() === 'sqlite') {
                 $pdo = $connection->getPdo();
                 if (method_exists($pdo, 'sqliteCreateFunction')) {
@@ -194,7 +199,20 @@ class SkillAssessment extends TenantOwnedModel implements ReferencesWorkforceEnt
                 }
             }
 
-            return $callback();
+            try {
+                return $callback();
+            } finally {
+                if ($connection->getDriverName() === 'pgsql') {
+                    try {
+                        $connection->statement(
+                            "select set_config('blb.skill_assessment_workflow', ?, false)",
+                            [$previousAuthority ?? ''],
+                        );
+                    } catch (Throwable) {
+                        // A failed statement may abort the transaction; the connection will be rolled back by its owner.
+                    }
+                }
+            }
         });
     }
 
