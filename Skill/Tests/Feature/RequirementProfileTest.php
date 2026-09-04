@@ -49,6 +49,7 @@ use App\Domains\PeopleConnector\Skill\Services\RequirementProfileStore;
 use App\Domains\PeopleConnector\Skill\Services\RequirementResolver;
 use App\Domains\PeopleConnector\Skill\Services\SkillAudienceAssignmentStore;
 use App\Domains\PeopleConnector\Skill\Services\SkillCatalogStore;
+use App\Domains\PeopleConnector\Skill\Workflow\RequirementProfileTransitionAuthority;
 use Carbon\Carbon;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Database\QueryException;
@@ -193,6 +194,18 @@ test('a requirement profile carries workbook parity fields and fires lifecycle e
     [$tenantId, $companyEntityId, $skillA, $skillB] = requirementFixture();
 
     $store = app(RequirementProfileStore::class);
+
+    expect(fn () => DB::table('people_connector_skill_requirement_profiles')->insert([
+        'tenant_id' => $tenantId,
+        'company_entity_id' => $companyEntityId,
+        'code' => 'hostile.published',
+        'name' => 'Hostile published insert',
+        'version' => 1,
+        'status' => RequirementProfileStatus::Published->value,
+        'published_at' => now(),
+        'created_at' => now(),
+        'updated_at' => now(),
+    ]))->toThrow(QueryException::class);
     $profile = $store->draft($companyEntityId, simpleProfileDraft($skillA, $skillB));
 
     $itemCount = RequirementItem::query()->forCompany($tenantId, $companyEntityId)->where('profile_id', $profile->id)->count();
@@ -960,6 +973,9 @@ test('governed profiles require in-scope HOD review and HR approval before publi
     );
     Notification::assertNothingSentTo($outsider);
 
+    expect(fn () => $store->newDraftFrom($companyEntityId, (int) $profile->id))
+        ->toThrow(InvalidRequirementProfileException::class, 'already has an open version');
+
     expect(fn () => DB::transaction(fn (): int => DB::table('people_connector_skill_requirement_items')
         ->where('id', $draftItem->id)
         ->update(['required_level' => 4])))
@@ -1048,11 +1064,21 @@ test('governed profiles require in-scope HOD review and HR approval before publi
     $revision = $store->submitForReview($hr, $companyEntityId, (int) $revision->id);
     $revision = $store->approveHod($hod, $companyEntityId, (int) $revision->id, 'Technical review complete.');
     $revision = $store->approveHr($hr, $companyEntityId, (int) $revision->id, 'Governance review complete.');
-    Event::fake([RequirementProfilePublished::class]);
+    Event::fake([RequirementProfilePublished::class, RequirementProfileRetired::class]);
     $revision = $store->publishApproved($hr, $companyEntityId, (int) $revision->id);
 
     expect($profile->refresh()->status)->toBe(RequirementProfileStatus::Retired)
         ->and($revision->status)->toBe(RequirementProfileStatus::Published)
+        ->and(StatusHistory::timeline(RequirementProfile::WORKFLOW_FLOW, (int) $profile->id)->pluck('status')->all())
+        ->toBe(['pending_hod_review', 'pending_hr_review', 'approved', 'published', 'retired'])
+        ->and(StatusHistory::latest(RequirementProfile::WORKFLOW_FLOW, (int) $profile->id)?->metadata)
+        ->toMatchArray([
+            'profile_code' => 'governed.profile',
+            'profile_version' => 1,
+            'replacement_profile_id' => (int) $revision->id,
+            'replacement_profile_version' => 2,
+            'capability' => 'people-connector.skill-requirement-retirement.approve',
+        ])
         ->and(RequirementProfile::query()->forCompany($tenantId, $companyEntityId)
             ->where('code', 'governed.profile')
             ->where('status', RequirementProfileStatus::Published->value)
@@ -1062,6 +1088,19 @@ test('governed profiles require in-scope HOD review and HR approval before publi
         fn (RequirementProfilePublished $event): bool => $event->profileId === (int) $revision->id
             && $event->retiredPreviousProfileId === (int) $profile->id,
     );
+    Event::assertDispatched(
+        RequirementProfileRetired::class,
+        fn (RequirementProfileRetired $event): bool => $event->profileId === (int) $profile->id,
+    );
+
+    $notificationUrl = $revision->workflowNotificationUrl();
+    expect($notificationUrl)->toBe(route('people-connector.skill.requirement-profiles.show', [
+        'profileId' => $revision->id,
+    ]));
+    $this->actingAs($hr)->get($notificationUrl)
+        ->assertOk()
+        ->assertSee('Governed Profile Revised')
+        ->assertSee('v2');
 
     $concurrentContender = RequirementProfile::query()->create([
         'tenant_id' => $tenantId,
@@ -1069,8 +1108,20 @@ test('governed profiles require in-scope HOD review and HR approval before publi
         'code' => 'governed.profile',
         'name' => 'Concurrent contender',
         'version' => 99,
-        'status' => RequirementProfileStatus::Approved,
+        'status' => RequirementProfileStatus::Draft,
     ]);
+    foreach ([
+        RequirementProfileStatus::PendingHodReview,
+        RequirementProfileStatus::PendingHrReview,
+        RequirementProfileStatus::Approved,
+    ] as $contenderStatus) {
+        app(RequirementProfileTransitionAuthority::class)->authorize(
+            $concurrentContender,
+            $concurrentContender->status,
+            $contenderStatus,
+        );
+        $concurrentContender->update(['status' => $contenderStatus]);
+    }
     expect(fn () => DB::table('people_connector_skill_requirement_profiles')
         ->where('id', $concurrentContender->id)
         ->update(['status' => RequirementProfileStatus::Published->value, 'published_at' => now()]))

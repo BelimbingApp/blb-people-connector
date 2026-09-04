@@ -66,9 +66,9 @@ class RequirementProfileStore
                 ->where('code', $draft->code)
                 ->max('version');
 
-            if ($this->draftOf($tenantId, $companyEntityId, $draft->code) !== null) {
+            if ($this->openVersionOf($tenantId, $companyEntityId, $draft->code) !== null) {
                 throw new InvalidRequirementProfileException(
-                    "Profile [{$draft->code}] already has an open draft; publish or discard it before drafting again.",
+                    "Profile [{$draft->code}] already has an open version; finish or return its review before drafting again.",
                 );
             }
 
@@ -468,12 +468,17 @@ class RequirementProfileStore
             ?? throw new RequirementProfileNotFoundException("Requirement profile [$profileId] was not found.");
     }
 
-    private function draftOf(int $tenantId, int $companyEntityId, string $code): ?RequirementProfile
+    private function openVersionOf(int $tenantId, int $companyEntityId, string $code): ?RequirementProfile
     {
         return RequirementProfile::query()
             ->forCompany($tenantId, $companyEntityId)
             ->where('code', $code)
-            ->where('status', RequirementProfileStatus::Draft->value)
+            ->whereIn('status', [
+                RequirementProfileStatus::Draft->value,
+                RequirementProfileStatus::PendingHodReview->value,
+                RequirementProfileStatus::PendingHrReview->value,
+                RequirementProfileStatus::Approved->value,
+            ])
             ->first();
     }
 

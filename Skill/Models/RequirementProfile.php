@@ -4,6 +4,7 @@ namespace App\Domains\PeopleConnector\Skill\Models;
 
 use App\Base\Workflow\Concerns\HasWorkflowStatus;
 use App\Base\Workflow\Contracts\PresentsWorkflowNotifications;
+use App\Base\Workflow\DTO\TransitionContext;
 use App\Domains\PeopleConnector\Connector\Contracts\ReferencesWorkforceEntities;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceReference;
 use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
@@ -40,6 +41,16 @@ class RequirementProfile extends TenantOwnedModel implements PresentsWorkflowNot
 
     protected static function booted(): void
     {
+        static::creating(function (RequirementProfile $profile): void {
+            if ($profile->status !== RequirementProfileStatus::Draft
+                || $profile->published_at !== null
+                || $profile->retired_at !== null) {
+                throw new PublishedRequirementImmutableException(
+                    'Requirement profiles must enter the governed lifecycle as drafts.',
+                );
+            }
+        });
+
         static::updating(function (RequirementProfile $profile): void {
             $original = $profile->getOriginal('status');
             $original = $original instanceof RequirementProfileStatus
@@ -56,14 +67,17 @@ class RequirementProfile extends TenantOwnedModel implements PresentsWorkflowNot
             }
 
             if ($profile->isLifecycleTransition($original, $next)) {
-                if (! app(RequirementProfileTransitionAuthority::class)->consume($profile, $original, $next)) {
+                $context = app(RequirementProfileTransitionAuthority::class)->consume($profile, $original, $next);
+                if ($context === false) {
                     throw new PublishedRequirementImmutableException(
                         "Requirement profile {$profile->getKey()} lifecycle changes must use the governed workflow.",
                     );
                 }
 
                 if ($next === RequirementProfileStatus::Published) {
-                    $profile->publicationPredecessorId = $profile->retirePublishedPredecessor();
+                    $profile->publicationPredecessorId = $context instanceof TransitionContext
+                        ? $profile->retirePublishedPredecessorThroughWorkflow($context)
+                        : $profile->retirePublishedPredecessorFixture();
                     $profile->published_at ??= now();
                 }
                 if ($next === RequirementProfileStatus::Retired && $profile->retired_at === null) {
@@ -123,7 +137,9 @@ class RequirementProfile extends TenantOwnedModel implements PresentsWorkflowNot
 
     public function workflowNotificationUrl(): ?string
     {
-        return null;
+        return route('people-connector.skill.requirement-profiles.show', [
+            'profileId' => $this->getKey(),
+        ]);
     }
 
     public function getAuditSubject(): ?array
@@ -168,16 +184,62 @@ class RequirementProfile extends TenantOwnedModel implements PresentsWorkflowNot
      * This ordering lets the partial unique index enforce one current version
      * under concurrent publishers without a transient two-published state.
      */
-    private function retirePublishedPredecessor(): ?int
+    private function publishedPredecessor(): ?RequirementProfile
     {
-        $previous = self::query()
+        return self::query()
             ->forCompany((int) $this->tenant_id, (int) $this->company_entity_id)
             ->where('code', $this->code)
             ->where('status', RequirementProfileStatus::Published->value)
             ->whereKeyNot($this->getKey())
             ->lockForUpdate()
             ->first();
+    }
 
+    /**
+     * Run automatic predecessor retirement as its own governed transition so
+     * history, audit, outbox, notifications, and the domain event all describe
+     * the same lifecycle change. The nested savepoint remains inside the
+     * publisher's outer transaction, so both versions commit or roll back.
+     */
+    private function retirePublishedPredecessorThroughWorkflow(TransitionContext $publishingContext): ?int
+    {
+        $previous = $this->publishedPredecessor();
+
+        if ($previous === null) {
+            return null;
+        }
+
+        $participant = RequirementProfileWorkflowParticipant::query()
+            ->forCompany((int) $previous->tenant_id, (int) $previous->company_entity_id)
+            ->findOrFail($previous->getKey());
+        $result = $participant->transitionTo(RequirementProfileStatus::Retired->value, new TransitionContext(
+            actor: $publishingContext->actor,
+            comment: "Automatically retired when {$this->code} v{$this->version} was published.",
+            commentTag: 'superseded',
+            metadata: [
+                'tenant_id' => (int) $this->tenant_id,
+                'company_entity_id' => (int) $this->company_entity_id,
+                'profile_code' => (string) $previous->code,
+                'profile_version' => (int) $previous->version,
+                'replacement_profile_id' => (int) $this->getKey(),
+                'replacement_profile_version' => (int) $this->version,
+                'capability' => 'people-connector.skill-requirement-retirement.approve',
+            ],
+        ));
+
+        if (! $result->success) {
+            throw new PublishedRequirementImmutableException(
+                $result->reason ?? "Requirement profile {$previous->getKey()} could not be retired through workflow.",
+            );
+        }
+
+        return (int) $previous->getKey();
+    }
+
+    /** Unit-test persistence fixtures do not install actors or workflow rows. */
+    private function retirePublishedPredecessorFixture(): ?int
+    {
+        $previous = $this->publishedPredecessor();
         if ($previous === null) {
             return null;
         }

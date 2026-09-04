@@ -12,6 +12,11 @@ return new class extends Migration
             .' ON people_connector_skill_requirement_profiles (tenant_id, company_entity_id, code)'
             ." WHERE status = 'published'",
         );
+        DB::statement(
+            'CREATE UNIQUE INDEX IF NOT EXISTS pcs_req_profile_open_uq'
+            .' ON people_connector_skill_requirement_profiles (tenant_id, company_entity_id, code)'
+            ." WHERE status IN ('draft', 'pending_hod_review', 'pending_hr_review', 'approved')",
+        );
 
         if (DB::connection()->getDriverName() === 'pgsql') {
             DB::unprepared(<<<'SQL'
@@ -20,6 +25,13 @@ return new class extends Migration
                     is_company_merge boolean;
                     valid_transition boolean;
                 BEGIN
+                    IF TG_OP = 'INSERT' THEN
+                        IF NEW.status <> 'draft' OR NEW.published_at IS NOT NULL OR NEW.retired_at IS NOT NULL THEN
+                            RAISE EXCEPTION 'requirement profiles must enter governance as drafts';
+                        END IF;
+                        RETURN NEW;
+                    END IF;
+
                     IF TG_OP = 'DELETE' THEN
                         IF OLD.status <> 'draft' OR OLD.published_at IS NOT NULL THEN
                             RAISE EXCEPTION 'requirement profile % entered governance and cannot be deleted', OLD.id;
@@ -74,6 +86,11 @@ return new class extends Migration
                 END;
                 $$ LANGUAGE plpgsql;
 
+                DROP TRIGGER IF EXISTS pcs_req_profile_guard_trigger ON people_connector_skill_requirement_profiles;
+                CREATE TRIGGER pcs_req_profile_guard_trigger
+                    BEFORE INSERT OR UPDATE OR DELETE ON people_connector_skill_requirement_profiles
+                    FOR EACH ROW EXECUTE FUNCTION pcs_req_profile_guard();
+
                 CREATE OR REPLACE FUNCTION pcs_req_child_insert_guard() RETURNS trigger AS $$
                 DECLARE
                     parent_status text;
@@ -110,6 +127,12 @@ return new class extends Migration
         }
 
         DB::statement('DROP TRIGGER IF EXISTS pcs_req_profile_update_guard');
+        DB::statement('DROP TRIGGER IF EXISTS pcs_req_profile_insert_guard');
+        DB::statement(
+            'CREATE TRIGGER pcs_req_profile_insert_guard BEFORE INSERT ON people_connector_skill_requirement_profiles'
+            ." WHEN NEW.status != 'draft' OR NEW.published_at IS NOT NULL OR NEW.retired_at IS NOT NULL"
+            ." BEGIN SELECT RAISE(ABORT, 'requirement profiles must enter governance as drafts'); END",
+        );
         DB::statement(
             'CREATE TRIGGER pcs_req_profile_update_guard BEFORE UPDATE ON people_connector_skill_requirement_profiles'
             .' WHEN NOT ('
@@ -151,6 +174,7 @@ return new class extends Migration
     public function down(): void
     {
         DB::statement('DROP INDEX IF EXISTS pcs_req_profile_current_uq');
+        DB::statement('DROP INDEX IF EXISTS pcs_req_profile_open_uq');
 
         if (DB::connection()->getDriverName() === 'pgsql') {
             DB::unprepared(<<<'SQL'
@@ -199,6 +223,11 @@ return new class extends Migration
                     RAISE EXCEPTION 'requirement profile % is % and immutable; draft a new version instead', OLD.id, OLD.status;
                 END;
                 $$ LANGUAGE plpgsql;
+
+                DROP TRIGGER IF EXISTS pcs_req_profile_guard_trigger ON people_connector_skill_requirement_profiles;
+                CREATE TRIGGER pcs_req_profile_guard_trigger
+                    BEFORE UPDATE OR DELETE ON people_connector_skill_requirement_profiles
+                    FOR EACH ROW EXECUTE FUNCTION pcs_req_profile_guard();
                 SQL);
 
             return;
@@ -209,6 +238,7 @@ return new class extends Migration
         }
 
         DB::statement('DROP TRIGGER IF EXISTS pcs_req_profile_update_guard');
+        DB::statement('DROP TRIGGER IF EXISTS pcs_req_profile_insert_guard');
         DB::statement(
             'CREATE TRIGGER pcs_req_profile_update_guard BEFORE UPDATE ON people_connector_skill_requirement_profiles'
             ." WHEN NOT (OLD.status = 'draft' OR (OLD.status = 'published' AND NEW.status = 'retired'"

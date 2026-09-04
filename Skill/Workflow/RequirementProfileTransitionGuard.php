@@ -65,7 +65,11 @@ final class RequirementProfileTransitionGuard implements ContextualTransitionGua
             return GuardResult::deny('A review comment or reason is required.');
         }
 
-        $this->authority->authorize($model, $from, $to);
+        if ($context === null) {
+            return GuardResult::deny('Requirement-profile lifecycle changes require workflow transition context.');
+        }
+
+        $this->authority->authorize($model, $from, $to, $context);
 
         return GuardResult::allow();
     }

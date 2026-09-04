@@ -2,6 +2,7 @@
 
 namespace App\Domains\PeopleConnector\Skill\Workflow;
 
+use App\Base\Workflow\DTO\TransitionContext;
 use App\Domains\PeopleConnector\Skill\Enums\RequirementProfileStatus;
 use App\Domains\PeopleConnector\Skill\Models\RequirementProfile;
 use WeakMap;
@@ -16,7 +17,7 @@ use WeakMap;
  */
 final class RequirementProfileTransitionAuthority
 {
-    /** @var WeakMap<RequirementProfile, array{from: string, to: string}> */
+    /** @var WeakMap<RequirementProfile, array{from: string, to: string, context: ?TransitionContext}> */
     private WeakMap $proofs;
 
     public function __construct()
@@ -28,18 +29,33 @@ final class RequirementProfileTransitionAuthority
         RequirementProfile $profile,
         RequirementProfileStatus $from,
         RequirementProfileStatus $to,
+        ?TransitionContext $context = null,
     ): void {
-        $this->proofs[$profile] = ['from' => $from->value, 'to' => $to->value];
+        $this->proofs[$profile] = [
+            'from' => $from->value,
+            'to' => $to->value,
+            'context' => $context,
+        ];
     }
 
+    /**
+     * @return false|TransitionContext|null False means no matching proof;
+     *                                      null is the unit-test fixture proof.
+     */
     public function consume(
         RequirementProfile $profile,
         RequirementProfileStatus $from,
         RequirementProfileStatus $to,
-    ): bool {
+    ): false|TransitionContext|null {
         $proof = $this->proofs[$profile] ?? null;
         unset($this->proofs[$profile]);
 
-        return $proof === ['from' => $from->value, 'to' => $to->value];
+        if ($proof === null
+            || $proof['from'] !== $from->value
+            || $proof['to'] !== $to->value) {
+            return false;
+        }
+
+        return $proof['context'];
     }
 }
