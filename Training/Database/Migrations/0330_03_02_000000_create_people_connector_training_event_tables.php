@@ -56,7 +56,8 @@ return new class extends Migration
             $table->index(['tenant_id', 'company_entity_id', 'status', 'starts_at'], 'pct_event_register_idx');
             $table->foreign('tenant_id', 'pct_event_tenant_fk')->references('id')->on('tenants')->restrictOnDelete();
             $table->foreign(['course_id', 'tenant_id', 'company_entity_id'], 'pct_event_course_fk')
-                ->references(['id', 'tenant_id', 'company_entity_id'])->on('people_connector_training_courses')->restrictOnDelete();
+                ->references(['id', 'tenant_id', 'company_entity_id'])->on('people_connector_training_courses')
+                ->cascadeOnUpdate()->restrictOnDelete();
             $this->entityReference($table, 'company_entity_id', 'pct_event_company_fk');
             $this->entityReference($table, 'target_department_entity_id', 'pct_event_department_fk');
             $this->entityReference($table, 'organizer_employee_entity_id', 'pct_event_organizer_fk');
@@ -82,7 +83,8 @@ return new class extends Migration
             $table->index(['tenant_id', 'company_entity_id', 'training_event_id', 'occurred_at'], 'pct_event_audit_register_idx');
             $table->foreign('tenant_id', 'pct_event_audit_tenant_fk')->references('id')->on('tenants')->restrictOnDelete();
             $table->foreign(['training_event_id', 'tenant_id', 'company_entity_id'], 'pct_event_audit_parent_fk')
-                ->references(['id', 'tenant_id', 'company_entity_id'])->on('people_connector_training_events')->restrictOnDelete();
+                ->references(['id', 'tenant_id', 'company_entity_id'])->on('people_connector_training_events')
+                ->cascadeOnUpdate()->restrictOnDelete();
             $this->entityReference($table, 'actor_employee_entity_id', 'pct_event_audit_actor_fk');
         });
 
@@ -119,6 +121,29 @@ return new class extends Migration
             DB::unprepared(<<<'SQL'
                 CREATE FUNCTION pct_training_event_audit_immutable() RETURNS trigger AS $$
                 BEGIN
+                    IF TG_OP = 'UPDATE'
+                        AND NEW.company_entity_id IS DISTINCT FROM OLD.company_entity_id
+                        AND NEW.id = OLD.id
+                        AND NEW.tenant_id = OLD.tenant_id
+                        AND NEW.training_event_id = OLD.training_event_id
+                        AND NEW.event_type = OLD.event_type
+                        AND NEW.from_status IS NOT DISTINCT FROM OLD.from_status
+                        AND NEW.to_status IS NOT DISTINCT FROM OLD.to_status
+                        AND NEW.comment IS NOT DISTINCT FROM OLD.comment
+                        AND NEW.evidence IS NOT DISTINCT FROM OLD.evidence
+                        AND NEW.actor_user_id IS NOT DISTINCT FROM OLD.actor_user_id
+                        AND NEW.actor_employee_entity_id IS NOT DISTINCT FROM OLD.actor_employee_entity_id
+                        AND NEW.metadata IS NOT DISTINCT FROM OLD.metadata
+                        AND NEW.occurred_at = OLD.occurred_at
+                        AND EXISTS (
+                            SELECT 1 FROM people_connector_connector_workforce_entities
+                            WHERE tenant_id = OLD.tenant_id
+                            AND id = OLD.company_entity_id
+                            AND state = 'merged'
+                            AND merged_into_entity_id = NEW.company_entity_id
+                        ) THEN
+                        RETURN NEW;
+                    END IF;
                     RAISE EXCEPTION 'training event audit records are append-only';
                 END;
                 $$ LANGUAGE plpgsql;
@@ -130,6 +155,28 @@ return new class extends Migration
             DB::unprepared(<<<'SQL'
                 CREATE TRIGGER pct_training_event_audit_update_guard
                 BEFORE UPDATE ON people_connector_training_event_audit_events
+                WHEN NOT (
+                    NEW.company_entity_id IS NOT OLD.company_entity_id
+                    AND NEW.id IS OLD.id
+                    AND NEW.tenant_id IS OLD.tenant_id
+                    AND NEW.training_event_id IS OLD.training_event_id
+                    AND NEW.event_type IS OLD.event_type
+                    AND NEW.from_status IS OLD.from_status
+                    AND NEW.to_status IS OLD.to_status
+                    AND NEW.comment IS OLD.comment
+                    AND NEW.evidence IS OLD.evidence
+                    AND NEW.actor_user_id IS OLD.actor_user_id
+                    AND NEW.actor_employee_entity_id IS OLD.actor_employee_entity_id
+                    AND NEW.metadata IS OLD.metadata
+                    AND NEW.occurred_at IS OLD.occurred_at
+                    AND EXISTS (
+                        SELECT 1 FROM people_connector_connector_workforce_entities
+                        WHERE tenant_id = OLD.tenant_id
+                        AND id = OLD.company_entity_id
+                        AND state = 'merged'
+                        AND merged_into_entity_id = NEW.company_entity_id
+                    )
+                )
                 BEGIN SELECT RAISE(ABORT, 'training event audit records are append-only'); END;
                 CREATE TRIGGER pct_training_event_audit_delete_guard
                 BEFORE DELETE ON people_connector_training_event_audit_events

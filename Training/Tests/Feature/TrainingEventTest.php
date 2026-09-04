@@ -261,6 +261,27 @@ test('event invariants and sibling company or tenant access fail closed', functi
         ->toThrow(TrainingEventNotFoundException::class);
 });
 
+test('a company merge carries the event and immutable audit history through its course owner', function (): void {
+    $fixture = trainingEventFixture();
+    $event = app(TrainingEventStore::class)->schedule((int) $fixture['company']->id, trainingEventDraft($fixture));
+    $survivor = trainingEventEntity($fixture['tenantId'], 'company');
+
+    $fixture['company']->update([
+        'state' => WorkforceEntity::STATE_MERGED,
+        'merged_into_entity_id' => $survivor->id,
+        'merged_at' => now(),
+    ]);
+    $fixture['course']->movingCompany('Exercise the same ownership move performed by the canonical company merge.')
+        ->fill(['company_entity_id' => $survivor->id])
+        ->save();
+
+    expect((int) $event->refresh()->company_entity_id)->toBe((int) $survivor->id)
+        ->and(TrainingEventAuditEvent::query()->forCompany(
+            $fixture['tenantId'],
+            (int) $survivor->id,
+        )->where('training_event_id', $event->id)->count())->toBe(1);
+});
+
 test('the actual register gives HR company scope, HOD department scope, and rejects grant all', function (): void {
     $fixture = trainingEventFixture();
     $store = app(TrainingEventStore::class);
