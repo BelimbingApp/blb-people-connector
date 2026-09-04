@@ -81,6 +81,43 @@ final class SkillAudience
             : 'people-connector.skill.assessment.view';
         $audiences = $this->authorizeAudience($user, $capability);
 
+        return $this->scopedEmployeeEntityIds(
+            $user,
+            $companyEntityId,
+            $audiences,
+            includeAssessorAssignments: true,
+            includeSelf: ! $manage,
+        );
+    }
+
+    /** @return list<int> workforce employee entity ids */
+    public function visibleDevelopmentActionEmployeeEntityIds(User $user, int $companyEntityId, bool $manage): array
+    {
+        $capability = $manage
+            ? 'people-connector.skill.development-action.manage'
+            : 'people-connector.skill.development-action.view';
+
+        return $this->scopedEmployeeEntityIds(
+            $user,
+            $companyEntityId,
+            $this->authorizeAudience($user, $capability),
+            includeAssessorAssignments: false,
+            includeSelf: false,
+        );
+    }
+
+    /**
+     * @param  list<string>  $audiences
+     * @return list<int>
+     */
+    private function scopedEmployeeEntityIds(
+        User $user,
+        int $companyEntityId,
+        array $audiences,
+        bool $includeAssessorAssignments,
+        bool $includeSelf,
+    ): array {
+
         if (! $this->companies->mayActFor($user, $companyEntityId)) {
             return [];
         }
@@ -113,7 +150,7 @@ final class SkillAudience
             $allowed = [...$allowed, ...$managed, ...$headed];
         }
 
-        if (in_array(self::ASSESSOR, $audiences, true)) {
+        if ($includeAssessorAssignments && in_array(self::ASSESSOR, $audiences, true)) {
             $now = now();
             $assigned = SkillAssessorAssignment::query()
                 ->forCompany($tenantId, $companyEntityId)
@@ -127,7 +164,7 @@ final class SkillAudience
                 ->pluck('workforce_entity_id')->map(intval(...))->all())];
         }
 
-        if (! $manage && in_array(self::EMPLOYEE, $audiences, true) && $binding !== null) {
+        if ($includeSelf && in_array(self::EMPLOYEE, $audiences, true) && $binding !== null) {
             $allowed[] = (int) $binding->employee_entity_id;
         }
 

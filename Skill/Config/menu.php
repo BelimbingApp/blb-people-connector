@@ -23,5 +23,13 @@ return [
             'condition' => 'people-connector.skill.assessment-audience',
             'parent' => 'people',
         ],
+        [
+            'id' => 'people.skill-development-actions',
+            'label' => 'Development actions',
+            'icon' => 'heroicon-o-arrow-trending-up',
+            'route' => 'people-connector.skill.development-actions.index',
+            'permission' => 'people-connector.skill.development-action.view',
+            'parent' => 'people',
+        ],
     ],
 ];
