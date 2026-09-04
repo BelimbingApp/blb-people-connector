@@ -355,12 +355,6 @@ test('cancellation closes with a reason and completed or cancelled work is never
         ->and($cancelled->daysOverdue())->toBe(0)
         ->and(DevelopmentActionAuditEvent::query()->forCompany($fixture['tenant'], $fixture['company'])->where('event_type', 'cancelled')->value('comment'))->toBe('Employee transferred.');
 
-    $event = DevelopmentActionAuditEvent::query()->forCompany($fixture['tenant'], $fixture['company'])->where('event_type', 'cancelled')->sole();
-    expect(fn () => $event->update(['comment' => 'rewritten']))
-        ->toThrow(InvalidDevelopmentActionException::class, 'append-only')
-        ->and(fn () => DB::table('people_connector_skill_development_action_events')->where('id', $event->id)->update(['comment' => 'raw rewrite']))
-        ->toThrow(QueryException::class);
-
     $user = User::factory()->create(['company_id' => $fixture['platform_company']]);
     developmentActionRole($user, 'people_hr');
 
@@ -369,6 +363,12 @@ test('cancellation closes with a reason and completed or cancelled work is never
         ->assertSee('Cancelled')
         ->assertSee('Employee transferred.')
         ->assertSee('Full history (2)');
+
+    $event = DevelopmentActionAuditEvent::query()->forCompany($fixture['tenant'], $fixture['company'])->where('event_type', 'cancelled')->sole();
+    expect(fn () => $event->update(['comment' => 'rewritten']))
+        ->toThrow(InvalidDevelopmentActionException::class, 'append-only')
+        ->and(fn () => DB::table('people_connector_skill_development_action_events')->where('id', $event->id)->update(['comment' => 'raw rewrite']))
+        ->toThrow(QueryException::class);
 });
 
 test('an authorized HOD or HR user can bulk-create selected gap proposals from the page', function (): void {
