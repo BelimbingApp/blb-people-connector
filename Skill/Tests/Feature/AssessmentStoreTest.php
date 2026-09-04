@@ -160,6 +160,9 @@ test('finalize snapshots requirement and projects gap from the published contrac
         ->and($assessment->mandatory_gate)->toBeTrue()
         ->and($assessment->scale_id)->not->toBeNull()
         ->and($assessment->scale_version)->toBe(1)
+        ->and($assessment->hod_verification)->toBe(HodVerification::Verified)
+        ->and($assessment->hod_verifier_user_id)->toBe(10)
+        ->and($assessment->hod_decision_notes)->toBe('Verified against the submitted evidence.')
         ->and($assessment->finalized_at)->not->toBeNull();
 
     $scale = ProficiencyScale::query()->forCompany($tenantId, $companyEntityId)->whereKey($assessment->scale_id)->sole();
