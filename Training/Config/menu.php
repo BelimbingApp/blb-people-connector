@@ -7,6 +7,7 @@ return [
         'icon' => 'heroicon-o-calendar-days',
         'route' => 'people-connector.training.events.index',
         'permission' => 'people-connector.training.event.view',
+        'condition' => 'people-connector.training.event-audience',
         'parent' => 'people',
     ]],
 ];

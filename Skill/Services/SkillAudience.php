@@ -193,6 +193,17 @@ final class SkillAudience
         return $audiences;
     }
 
+    public function mayAccess(User $user, string $functionalCapability): bool
+    {
+        try {
+            $this->authorizeAudience($user, $functionalCapability);
+
+            return true;
+        } catch (AuthorizationDeniedException) {
+            return false;
+        }
+    }
+
     public function assertHr(User $user, int $companyEntityId): void
     {
         if (! $this->may($user, 'people-connector.skill.catalog.manage', $companyEntityId, [self::HR])) {

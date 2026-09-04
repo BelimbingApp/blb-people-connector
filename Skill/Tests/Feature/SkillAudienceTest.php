@@ -4,6 +4,8 @@ use App\Base\Authz\Enums\PrincipalType;
 use App\Base\Authz\Exceptions\AuthorizationDeniedException;
 use App\Base\Authz\Models\PrincipalRole;
 use App\Base\Authz\Models\Role;
+use App\Base\Menu\Contracts\MenuAccessChecker;
+use App\Base\Menu\MenuItem;
 use App\Base\Tenancy\Contracts\TenantContext;
 use App\Core\Company\Models\Company;
 use App\Core\User\Models\User;
@@ -152,6 +154,49 @@ test('platform administration does not implicitly become connector HR', function
     $this->actingAs($platformAdmin)
         ->get(route('people-connector.skill.assessment.matrix'))
         ->assertForbidden();
+});
+
+test('connector menus are visible only to their deep People audiences', function (): void {
+    [$tenant, $company] = createTenantWithCompany(
+        ['name' => 'Menu Audience Tenant'],
+        ['name' => 'Menu Audience Company'],
+    );
+    app(TenantContext::class)->set((int) $tenant->id);
+
+    $users = collect([
+        'hr' => 'people_hr',
+        'hod' => 'people_hod',
+        'assessor' => 'people_assessor',
+        'employee' => 'people_employee',
+        'platform' => 'core_admin',
+    ])->map(function (string $role) use ($company): User {
+        $user = User::factory()->create(['company_id' => $company->id]);
+        skillAudienceRole($user, $role);
+
+        return $user;
+    });
+
+    $skillItems = collect((require __DIR__.'/../../Config/menu.php')['items'])
+        ->mapWithKeys(fn (array $item): array => [$item['id'] => MenuItem::fromArray($item)]);
+    $trainingItems = collect((require __DIR__.'/../../../Training/Config/menu.php')['items'])
+        ->mapWithKeys(fn (array $item): array => [$item['id'] => MenuItem::fromArray($item)]);
+    $checker = app(MenuAccessChecker::class);
+
+    expect($checker->canView($skillItems->get('people.skills'), $users->get('platform')))->toBeFalse()
+        ->and($checker->canView($skillItems->get('people.skill-assessments'), $users->get('platform')))->toBeFalse()
+        ->and($checker->canView($trainingItems->get('people.training-events'), $users->get('platform')))->toBeFalse()
+        ->and($checker->canView($skillItems->get('people.skills'), $users->get('hr')))->toBeTrue()
+        ->and($checker->canView($skillItems->get('people.skill-assessments'), $users->get('hr')))->toBeTrue()
+        ->and($checker->canView($trainingItems->get('people.training-events'), $users->get('hr')))->toBeTrue()
+        ->and($checker->canView($skillItems->get('people.skills'), $users->get('hod')))->toBeTrue()
+        ->and($checker->canView($skillItems->get('people.skill-assessments'), $users->get('hod')))->toBeTrue()
+        ->and($checker->canView($trainingItems->get('people.training-events'), $users->get('hod')))->toBeTrue()
+        ->and($checker->canView($skillItems->get('people.skills'), $users->get('assessor')))->toBeTrue()
+        ->and($checker->canView($skillItems->get('people.skill-assessments'), $users->get('assessor')))->toBeTrue()
+        ->and($checker->canView($trainingItems->get('people.training-events'), $users->get('assessor')))->toBeFalse()
+        ->and($checker->canView($skillItems->get('people.skills'), $users->get('employee')))->toBeTrue()
+        ->and($checker->canView($skillItems->get('people.skill-assessments'), $users->get('employee')))->toBeTrue()
+        ->and($checker->canView($trainingItems->get('people.training-events'), $users->get('employee')))->toBeFalse();
 });
 
 test('HOD assessor and employee audiences resolve department assignment and self without sibling leakage', function (): void {
