@@ -32,8 +32,8 @@ function trainingImmutabilityEntity(int $tenantId, string $type): WorkforceEntit
 /**
  * Two companies in one tenant, each with a course mapped to a same-company skill.
  *
- * @return array{int, int, int, TrainingCourse, TrainingCourse, int}
- *                                                                   [tenantId, companyA, companyB, courseA, courseB, mappingAId]
+ * @return array{int, int, int, TrainingCourse, TrainingCourse, int, int, int}
+ *                                                                             [tenantId, companyA, companyB, courseA, courseB, mappingAId, skillAId, skillBId]
  */
 function trainingImmutabilitySiblingFixture(): array
 {
@@ -86,6 +86,8 @@ function trainingImmutabilitySiblingFixture(): array
         $courseA,
         $courseB,
         $mappingAId,
+        (int) $skillA->id,
+        (int) $skillB->id,
     ];
 }
 
@@ -203,4 +205,75 @@ test('training catalog company-owner guards permit only the documented merge sur
         ->and((int) DB::table('people_connector_training_courses')->where('id', $courseA->id)->value('company_entity_id'))
         ->toBe($companyB);
     $refused(fn () => $rawCourse($companyA));
+});
+
+test('a training course cannot be deleted at the database layer', function (): void {
+    [, , , $courseA, , $mappingAId] = trainingImmutabilitySiblingFixture();
+
+    expect(fn () => DB::transaction(fn () => TrainingCourse::query()
+        ->withoutCompanyScope('Deliberately bypasses the model layer to prove the database trigger stands on its own.')
+        ->whereKey($courseA->id)
+        ->delete()))
+        ->toThrow(QueryException::class, 'cannot be deleted');
+
+    expect(fn () => DB::transaction(fn () => DB::table('people_connector_training_courses')
+        ->where('id', $courseA->id)
+        ->delete()))
+        ->toThrow(QueryException::class, 'cannot be deleted');
+
+    expect(TrainingCourse::query()
+        ->withoutCompanyScope('Read-back after refused delete.')
+        ->whereKey($courseA->id)
+        ->exists())->toBeTrue()
+        ->and(DB::table('people_connector_training_course_skills')->where('id', $mappingAId)->exists())->toBeTrue();
+});
+
+test('a course skill mapping cannot reassign to a sibling company skill at the database layer', function (): void {
+    [$tenantId, , , $courseA, , $mappingAId, $skillAId, $skillBId] = trainingImmutabilitySiblingFixture();
+
+    expect(fn () => DB::transaction(fn () => DB::table('people_connector_training_course_skills')
+        ->where('id', $mappingAId)
+        ->update(['skill_id' => $skillBId])))
+        ->toThrow(QueryException::class, 'cannot move to another company');
+
+    expect(fn () => DB::transaction(fn () => DB::table('people_connector_training_course_skills')->insert([
+        'tenant_id' => $tenantId,
+        'course_id' => $courseA->id,
+        'skill_id' => $skillBId,
+    ])))
+        ->toThrow(QueryException::class, 'cannot move to another company');
+
+    expect((int) DB::table('people_connector_training_course_skills')->where('id', $mappingAId)->value('skill_id'))
+        ->toBe($skillAId)
+        ->and(DB::table('people_connector_training_course_skills')
+            ->where('course_id', $courseA->id)
+            ->where('skill_id', $skillBId)
+            ->exists())->toBeFalse();
+});
+
+test('immutability migration preflight refuses legacy cross-company course-skill rows', function (): void {
+    [, , , , , $mappingAId, $skillAId, $skillBId] = trainingImmutabilitySiblingFixture();
+
+    $driver = DB::connection()->getDriverName();
+    if ($driver === 'pgsql') {
+        DB::unprepared('DROP TRIGGER IF EXISTS pct_course_skill_company_owner_guard_trigger ON people_connector_training_course_skills');
+    } elseif ($driver === 'sqlite') {
+        DB::statement('DROP TRIGGER IF EXISTS pct_course_skill_company_owner_guard');
+        DB::statement('DROP TRIGGER IF EXISTS pct_course_skill_company_owner_insert_guard');
+    }
+
+    expect(DB::table('people_connector_training_course_skills')
+        ->where('id', $mappingAId)
+        ->update(['skill_id' => $skillBId]))->toBe(1);
+
+    $migration = require dirname(__DIR__, 2).'/Database/Migrations/0330_03_02_000000_add_people_connector_training_catalog_immutability_guards.php';
+    $method = new ReflectionMethod($migration, 'assertNoCrossCompanyCourseSkillMappings');
+
+    expect(fn () => $method->invoke($migration))
+        ->toThrow(RuntimeException::class, 'already cross company owners');
+
+    // Restore a valid mapping so later tests / teardown stay clean.
+    DB::table('people_connector_training_course_skills')
+        ->where('id', $mappingAId)
+        ->update(['skill_id' => $skillAId]);
 });
