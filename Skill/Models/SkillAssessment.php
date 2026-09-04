@@ -16,10 +16,7 @@ use App\Domains\PeopleConnector\Skill\Enums\RequirementCriticality;
 use App\Domains\PeopleConnector\Skill\Exceptions\FinalizedAssessmentImmutableException;
 use App\Domains\PeopleConnector\Skill\Exceptions\InvalidAssessmentException;
 use App\Domains\PeopleConnector\Skill\Services\AssessmentWorkflowContext;
-use Closure;
 use Illuminate\Database\Eloquent\Relations\HasMany;
-use Illuminate\Support\Facades\DB;
-use Throwable;
 
 /**
  * One employee skill assessment history row. Finalized rows are immutable;
@@ -177,47 +174,6 @@ class SkillAssessment extends TenantOwnedModel implements ReferencesWorkforceEnt
         });
     }
 
-    public static function withinLifecycleTransition(Closure $callback): mixed
-    {
-        return AssessmentWorkflowContext::run(function () use ($callback): mixed {
-            return DB::transaction(function () use ($callback): mixed {
-                $connection = DB::connection();
-                $previousAuthority = null;
-
-                if ($connection->getDriverName() === 'pgsql') {
-                    $previousAuthority = $connection->selectOne(
-                        "select current_setting('blb.skill_assessment_workflow', true) as value",
-                    )->value ?? '';
-                    $connection->statement("select set_config('blb.skill_assessment_workflow', '1', true)");
-                } elseif ($connection->getDriverName() === 'sqlite') {
-                    $pdo = $connection->getPdo();
-                    if (method_exists($pdo, 'sqliteCreateFunction')) {
-                        $pdo->sqliteCreateFunction(
-                            'pcs_assessment_workflow_authorized',
-                            static fn (): int => AssessmentWorkflowContext::active() ? 1 : 0,
-                            0,
-                        );
-                    }
-                }
-
-                try {
-                    return $callback();
-                } finally {
-                    if ($connection->getDriverName() === 'pgsql') {
-                        try {
-                            $connection->statement(
-                                "select set_config('blb.skill_assessment_workflow', ?, true)",
-                                [$previousAuthority ?? ''],
-                            );
-                        } catch (Throwable) {
-                            // A failed statement aborts this savepoint; its rollback restores the prior setting.
-                        }
-                    }
-                }
-            });
-        });
-    }
-
     public function isFinalized(): bool
     {
         return $this->finalized_at !== null || $this->status === AssessmentStatus::Finalized;
@@ -239,7 +195,9 @@ class SkillAssessment extends TenantOwnedModel implements ReferencesWorkforceEnt
     /** @return HasMany<AssessmentDecision, $this> */
     public function decisions(): HasMany
     {
-        return $this->hasMany(AssessmentDecision::class, 'assessment_id');
+        return $this->hasMany(AssessmentDecision::class, 'assessment_id')
+            ->where('people_connector_skill_assessment_decisions.tenant_id', $this->tenant_id)
+            ->where('people_connector_skill_assessment_decisions.company_entity_id', $this->company_entity_id);
     }
 
     public function getAuditSubject(): ?array

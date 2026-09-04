@@ -36,6 +36,10 @@ return new class extends Migration
                 ->references('id')->on('tenants')->restrictOnDelete();
         });
 
+        Schema::table('people_connector_skill_assessments', function (Blueprint $table): void {
+            $table->unique(['tenant_id', 'supersedes_assessment_id'], 'pcs_assessment_correction_once_unique');
+        });
+
         $this->createAssessmentWorkflowGuards();
         $this->createDecisionGuards();
         $this->registerTable('people_connector_skill_assessment_decisions');
@@ -46,6 +50,9 @@ return new class extends Migration
         $this->dropDecisionGuards();
         $this->dropAssessmentWorkflowGuards();
         $this->unregisterTable('people_connector_skill_assessment_decisions');
+        Schema::table('people_connector_skill_assessments', function (Blueprint $table): void {
+            $table->dropUnique('pcs_assessment_correction_once_unique');
+        });
         Schema::dropIfExists('people_connector_skill_assessment_decisions');
     }
 
@@ -64,7 +71,14 @@ return new class extends Migration
                             AND NEW.finalized_by_user_id IS NULL THEN
                             RETURN NEW;
                         END IF;
-                        IF current_setting('blb.skill_assessment_workflow', true) = '1' THEN
+                        IF NEW.status = 'submitted'
+                            AND NEW.hod_verification = 'pending'
+                            AND NEW.assessor_user_id IS NOT NULL
+                            AND NEW.hod_verifier_user_id IS NULL
+                            AND NEW.hod_verified_at IS NULL
+                            AND NEW.finalized_at IS NULL
+                            AND NEW.finalized_by_user_id IS NULL
+                            AND current_setting('blb.skill_assessment_workflow', true) = '1' THEN
                             RETURN NEW;
                         END IF;
                         RAISE EXCEPTION 'non-draft assessment inserts require workflow authority';
@@ -203,7 +217,16 @@ return new class extends Migration
                 FOR EACH ROW
                 WHEN NEW.status <> 'draft'
                 BEGIN
-                    SELECT CASE WHEN pcs_assessment_workflow_authorized() <> 1
+                    SELECT CASE WHEN NOT (
+                        NEW.status = 'submitted'
+                        AND NEW.hod_verification = 'pending'
+                        AND NEW.assessor_user_id IS NOT NULL
+                        AND NEW.hod_verifier_user_id IS NULL
+                        AND NEW.hod_verified_at IS NULL
+                        AND NEW.finalized_at IS NULL
+                        AND NEW.finalized_by_user_id IS NULL
+                        AND pcs_assessment_workflow_authorized() = 1
+                    )
                         THEN RAISE(ABORT, 'non-draft assessment inserts require workflow authority') END;
                 END;
 

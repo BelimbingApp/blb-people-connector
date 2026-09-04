@@ -31,6 +31,7 @@ use App\Domains\PeopleConnector\Skill\Models\EmployeeSkillScore;
 use App\Domains\PeopleConnector\Skill\Models\ProficiencyScale;
 use App\Domains\PeopleConnector\Skill\Models\SkillAssessment;
 use App\Domains\PeopleConnector\Skill\Services\AssessmentStore;
+use App\Domains\PeopleConnector\Skill\Services\AssessmentWorkflowContext;
 use App\Domains\PeopleConnector\Skill\Services\RequirementProfileStore;
 use App\Domains\PeopleConnector\Skill\Services\SkillAudience;
 use App\Domains\PeopleConnector\Skill\Services\SkillCatalogDefaults;
@@ -267,6 +268,13 @@ test('returned assessments resubmit through a new governed lineage', function ()
         ->and(AssessmentDecision::query()->forCompany($tenantId, $companyEntityId)->where('assessment_id', $corrected->id)->count())->toBe(2);
 
     expect(fn () => $store->resubmitForCorrection(
+        assessmentActor(9),
+        $companyEntityId,
+        (int) $returned->id,
+        assessmentDraft($employeeEntityId, $skillId),
+    ))->toThrow(InvalidAssessmentException::class, 'already has a correction');
+
+    expect(fn () => $store->resubmitForCorrection(
         assessmentActor(10),
         $companyEntityId,
         (int) $returned->id,
@@ -305,8 +313,33 @@ test('assessment workflow rejects spoofed actors and direct lifecycle writes', f
     expect(fn () => DB::transaction(static fn (): bool => DB::table('people_connector_skill_assessments')->insert($rawInsert)))
         ->toThrow(QueryException::class);
 
+    AssessmentWorkflowContext::runStoreMutation(static function () use ($submitted): bool {
+        return DB::table('people_connector_skill_assessment_decisions')->insert([
+            'tenant_id' => $submitted->tenant_id,
+            'company_entity_id' => $submitted->company_entity_id + 1,
+            'employee_entity_id' => $submitted->employee_entity_id,
+            'skill_id' => $submitted->skill_id,
+            'assessment_id' => $submitted->id,
+            'decision' => 'forged-company',
+            'actor_user_id' => 10,
+            'created_at' => now(),
+        ]);
+    });
+    expect($submitted->decisions()->count())->toBe(1);
+
+    $forgedInsert = array_replace($rawInsert, [
+        'status' => AssessmentStatus::Finalized->value,
+        'hod_verification' => HodVerification::Verified->value,
+        'hod_verifier_user_id' => 10,
+        'hod_verified_at' => now(),
+        'finalized_at' => now(),
+        'finalized_by_user_id' => 10,
+    ]);
+    expect(fn () => AssessmentWorkflowContext::runStoreMutation(static fn (): bool => DB::table('people_connector_skill_assessments')->insert($forgedInsert)))
+        ->toThrow(QueryException::class);
+
     $pending = $store->requestHodVerification(assessmentActor(9), $companyEntityId, (int) $submitted->id);
-    expect(fn () => DB::transaction(static fn (): mixed => SkillAssessment::withinLifecycleTransition(static fn (): int => DB::table('people_connector_skill_assessments')
+    expect(fn () => DB::transaction(static fn (): mixed => AssessmentWorkflowContext::runStoreMutation(static fn (): int => DB::table('people_connector_skill_assessments')
         ->where('id', $pending->id)
         ->update([
             'hod_verification' => HodVerification::Verified->value,

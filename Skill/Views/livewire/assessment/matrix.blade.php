@@ -117,7 +117,7 @@
             </div>
 
             @if ($canAssess)
-                <x-ui.button wire:click="saveMatrix">{{ __('Save verified rows to history') }}</x-ui.button>
+                <x-ui.button wire:click="saveMatrix">{{ __('Submit scored rows for HOD verification') }}</x-ui.button>
             @endif
         @endif
     @endif

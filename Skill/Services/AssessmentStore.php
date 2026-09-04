@@ -204,6 +204,13 @@ final class AssessmentStore
                 throw new InvalidAssessmentException('A correction must keep the same employee and skill.');
             }
 
+            if (SkillAssessment::query()
+                ->forCompany($this->tenantContext->requireTenantId(), $companyEntityId)
+                ->where('supersedes_assessment_id', $returnedAssessmentId)
+                ->exists()) {
+                throw new InvalidAssessmentException('This returned assessment already has a correction submission.');
+            }
+
             $this->audience->authorizeAssessmentSubmission($actor, $companyEntityId, $draft->employeeEntityId);
 
             $submitted = $this->write(
@@ -667,7 +674,7 @@ final class AssessmentStore
 
     private function withWorkflowContext(Closure $callback): mixed
     {
-        return SkillAssessment::withinLifecycleTransition($callback);
+        return AssessmentWorkflowContext::runStoreMutation($callback);
     }
 
     private function actorId(User $actor): int

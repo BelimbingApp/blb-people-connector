@@ -32,6 +32,7 @@ use App\Domains\PeopleConnector\Skill\Models\DevelopmentAction;
 use App\Domains\PeopleConnector\Skill\Models\DevelopmentActionAuditEvent;
 use App\Domains\PeopleConnector\Skill\Models\EmployeeSkillScore;
 use App\Domains\PeopleConnector\Skill\Models\SkillAssessment;
+use App\Domains\PeopleConnector\Skill\Services\AssessmentWorkflowContext;
 use App\Domains\PeopleConnector\Skill\Services\DevelopmentActionPriority;
 use App\Domains\PeopleConnector\Skill\Services\DevelopmentActionStore;
 use App\Domains\PeopleConnector\Skill\Services\SkillAudienceAssignmentStore;
@@ -155,7 +156,7 @@ function developmentAssessment(array $fixture, int $employeeId, int $level = 1, 
 
     $assessedAt ??= now()->subDay();
 
-    $assessment = SkillAssessment::withinLifecycleTransition(static fn (): SkillAssessment => SkillAssessment::query()->create([
+    $assessment = AssessmentWorkflowContext::runStoreMutation(static fn (): SkillAssessment => SkillAssessment::query()->create([
         'tenant_id' => $fixture['tenant'], 'company_entity_id' => $fixture['company'],
         'employee_entity_id' => $employeeId, 'skill_id' => $fixture['skill'],
         'requirement_reference' => 'fixture.safety', 'requirement_version' => 2, 'required_level' => $required,
