@@ -20,7 +20,8 @@
             "optional-modules": {},
             "publishes-events": [
                 "App\\Domains\\PeopleConnector\\Training\\Events\\TrainingCourseDefined",
-                "App\\Domains\\PeopleConnector\\Training\\Events\\TrainingCourseDeactivated"
+                "App\\Domains\\PeopleConnector\\Training\\Events\\TrainingCourseDeactivated",
+                "App\\Domains\\PeopleConnector\\Training\\Events\\TrainingCourseReactivated"
             ],
             "consumes-events": []
         }

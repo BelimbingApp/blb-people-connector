@@ -9,6 +9,7 @@ use App\Domains\PeopleConnector\Skill\Models\Skill;
 use App\Domains\PeopleConnector\Training\Data\TrainingCourseDraft;
 use App\Domains\PeopleConnector\Training\Events\TrainingCourseDeactivated;
 use App\Domains\PeopleConnector\Training\Events\TrainingCourseDefined;
+use App\Domains\PeopleConnector\Training\Events\TrainingCourseReactivated;
 use App\Domains\PeopleConnector\Training\Exceptions\InvalidTrainingCatalogException;
 use App\Domains\PeopleConnector\Training\Exceptions\TrainingCatalogRecordNotFoundException;
 use App\Domains\PeopleConnector\Training\Models\TrainingCourse;
@@ -47,7 +48,10 @@ class TrainingCatalogStore
             throw new InvalidTrainingCatalogException("Training course code [{$draft->code}] already exists for this company.");
         }
 
-        return DB::transaction(function () use ($tenantId, $companyEntityId, $draft): TrainingCourse {
+        // The event fires only after this returns, deliberately: a listener
+        // must never observe a course whose write rolled back. DB::transaction()
+        // rethrows on failure, so a thrown exception here skips event() entirely.
+        $course = DB::transaction(function () use ($tenantId, $companyEntityId, $draft): TrainingCourse {
             $course = TrainingCourse::query()->create(
                 $this->attributesFor($draft) + [
                     'tenant_id' => $tenantId,
@@ -58,10 +62,12 @@ class TrainingCatalogStore
 
             $this->syncSkills($course, $draft->skillIds);
 
-            event(new TrainingCourseDefined($tenantId, (int) $course->getKey(), $course->code, created: true));
-
             return $course;
         });
+
+        event(new TrainingCourseDefined($tenantId, (int) $course->getKey(), $course->code, created: true));
+
+        return $course;
     }
 
     /**
@@ -82,14 +88,16 @@ class TrainingCatalogStore
 
         $this->assertDraft($tenantId, $companyEntityId, $draft);
 
-        return DB::transaction(function () use ($tenantId, $course, $draft): TrainingCourse {
+        $course = DB::transaction(function () use ($course, $draft): TrainingCourse {
             $course->update($this->attributesFor($draft));
             $this->syncSkills($course, $draft->skillIds);
 
-            event(new TrainingCourseDefined($tenantId, (int) $course->getKey(), $course->code, created: false));
-
             return $course;
         });
+
+        event(new TrainingCourseDefined($tenantId, (int) $course->getKey(), $course->code, created: false));
+
+        return $course;
     }
 
     public function deactivateCourse(int $companyEntityId, int $courseId): TrainingCourse
@@ -110,7 +118,7 @@ class TrainingCatalogStore
 
         if (! $course->active) {
             $course->update(['active' => true]);
-            event(new TrainingCourseDefined((int) $course->tenant_id, (int) $course->getKey(), $course->code, created: false));
+            event(new TrainingCourseReactivated((int) $course->tenant_id, (int) $course->getKey(), $course->code));
         }
 
         return $course;

@@ -133,6 +133,20 @@ guessing is how the connector reached three identical defects.
 | `..._skill_proficiency_scales` | **C** | `company_entity_id` | Scale codes and versions are per company; publishing retires the previous version of the same code *within the company*. |
 | `..._skill_proficiency_scale_levels` | **D** | `scale_id` | The behavioural anchors of one scale. They have no meaning apart from their scale, and the scale names the company. |
 
+### Training module
+
+| Table | Class | Company key | Why |
+|---|---|---|---|
+| `..._training_courses` | **C** | `company_entity_id` | The training course catalog is the company's own courses, and `code` is unique per company, like the skill catalog it mirrors. |
+| `..._training_course_skills` | **D** | `course_id` | One course's skill mapping. It has no meaning apart from its course, and the course names the company — the same shape as a proficiency scale's levels. |
+
+`..._training_courses.internal_trainer_employee_entity_id` is validated as an
+employee workforce entity **in the tenant**, not scoped to the course's own
+company — the same width Skill's `owner_employee_entity_id` check already
+carries. This is a known, inherited limitation rather than a new one; a
+trainer could in principle be an employee of a sibling company in the same
+tenant. Narrowing it is future work, not blocking for this slice.
+
 ### The one caveat on Class T
 
 `workforce_entities` rows are tenant-wide, but the *operations* on them are

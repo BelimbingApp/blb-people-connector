@@ -93,6 +93,20 @@ test('course codes are stable: duplicates are refused and revision cannot rename
         ->toThrow(InvalidTrainingCatalogException::class, 'stable');
 });
 
+test('code stability is enforced at the model layer too, independent of the store', function (): void {
+    [$tenantId, $companyEntityId, $skillId] = trainingCatalogFixture();
+    $course = app(TrainingCatalogStore::class)->defineCourse($companyEntityId, trainingCourseDraft($skillId));
+
+    // Goes around TrainingCatalogStore entirely — reviseCourse() already
+    // refuses a changed code before any model write, so this is the only
+    // path that reaches TrainingCourse::booted()'s own guard.
+    app(TenantContext::class)->set($tenantId);
+    $loaded = TrainingCourse::query()->forCompany($tenantId, $companyEntityId)->findOrFail($course->id);
+
+    expect(fn () => $loaded->update(['code' => 'forklift.renamed']))
+        ->toThrow(InvalidTrainingCatalogException::class, 'stable');
+});
+
 test('a course must map to at least one skill, and every mapped skill must belong to the same company', function (): void {
     [$tenantId, $companyEntityId, $skillId] = trainingCatalogFixture();
     [, , $otherSkillId] = trainingCatalogFixture('Other Training Tenant');
@@ -170,6 +184,23 @@ test('an internal trainer must be a real employee workforce entity in the same t
     ]));
 
     expect($course->internal_trainer_employee_entity_id)->toBe((int) $trainer->id);
+});
+
+test('entity references are checked by workforce type, not merely by existing in the tenant', function (): void {
+    [$tenantId, $companyEntityId, $skillId] = trainingCatalogFixture();
+    $employeeEntity = trainingCatalogWorkforceEntity($tenantId, 'employee');
+
+    // A real employee entity used as the company argument must be refused —
+    // an id existing somewhere in the tenant is not the same as it being the
+    // right kind of workforce entity for the field it is passed to.
+    expect(fn () => app(TrainingCatalogStore::class)->defineCourse((int) $employeeEntity->id, trainingCourseDraft($skillId)))
+        ->toThrow(InvalidTrainingCatalogException::class, 'company workforce entity');
+
+    // Symmetrically, a real company entity used as the trainer must be
+    // refused — the trainer field names an employee, not any workforce entity.
+    expect(fn () => app(TrainingCatalogStore::class)->defineCourse($companyEntityId, trainingCourseDraft($skillId, [
+        'internalTrainerEmployeeEntityId' => $companyEntityId,
+    ])))->toThrow(InvalidTrainingCatalogException::class, 'employee workforce entity');
 });
 
 test('a training course table row participates in company isolation like the skill tables it references', function (): void {
