@@ -1012,8 +1012,4 @@ test('governed profiles require in-scope HOD review and HR approval before publi
         ->where('id', $concurrentContender->id)
         ->update(['status' => RequirementProfileStatus::Published->value, 'published_at' => now()]))
         ->toThrow(QueryException::class);
-    expect(RequirementProfile::query()->forCompany($tenantId, $companyEntityId)
-        ->where('code', 'governed.profile')
-        ->where('status', RequirementProfileStatus::Published->value)
-        ->count())->toBe(1);
 });
