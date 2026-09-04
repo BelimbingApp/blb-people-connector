@@ -313,7 +313,7 @@ test('assessment workflow rejects spoofed actors and direct lifecycle writes', f
     expect(fn () => DB::transaction(static fn (): bool => DB::table('people_connector_skill_assessments')->insert($rawInsert)))
         ->toThrow(QueryException::class);
 
-    AssessmentWorkflowContext::runStoreMutation(static function () use ($submitted): bool {
+    expect(fn () => AssessmentWorkflowContext::runStoreMutation(static function () use ($submitted): bool {
         return DB::table('people_connector_skill_assessment_decisions')->insert([
             'tenant_id' => $submitted->tenant_id,
             'company_entity_id' => $submitted->company_entity_id + 1,
@@ -324,7 +324,7 @@ test('assessment workflow rejects spoofed actors and direct lifecycle writes', f
             'actor_user_id' => 10,
             'created_at' => now(),
         ]);
-    });
+    }))->toThrow(QueryException::class);
     expect($submitted->decisions()->count())->toBe(1);
 
     $forgedInsert = array_replace($rawInsert, [

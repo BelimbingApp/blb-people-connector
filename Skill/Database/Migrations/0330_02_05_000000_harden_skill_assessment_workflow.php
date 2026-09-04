@@ -14,6 +14,11 @@ return new class extends Migration
 
     public function up(): void
     {
+        Schema::table('people_connector_skill_assessments', function (Blueprint $table): void {
+            $table->unique(['id', 'tenant_id', 'company_entity_id'], 'pcs_assess_owner_uq');
+            $table->unique(['tenant_id', 'supersedes_assessment_id'], 'pcs_assessment_correction_once_unique');
+        });
+
         Schema::create('people_connector_skill_assessment_decisions', function (Blueprint $table): void {
             $table->id();
             $table->unsignedBigInteger('tenant_id');
@@ -28,16 +33,12 @@ return new class extends Migration
 
             $table->index(['tenant_id', 'assessment_id'], 'pcs_decision_assessment_idx');
             $table->index(['tenant_id', 'employee_entity_id', 'skill_id'], 'pcs_decision_subject_idx');
-            $table->foreign(['assessment_id', 'tenant_id'], 'pcs_decision_assessment_fk')
-                ->references(['id', 'tenant_id'])
+            $table->foreign(['assessment_id', 'tenant_id', 'company_entity_id'], 'pcs_decision_assessment_fk')
+                ->references(['id', 'tenant_id', 'company_entity_id'])
                 ->on('people_connector_skill_assessments')
                 ->cascadeOnDelete();
             $table->foreign('tenant_id', 'pcs_decision_tenant_fk')
                 ->references('id')->on('tenants')->restrictOnDelete();
-        });
-
-        Schema::table('people_connector_skill_assessments', function (Blueprint $table): void {
-            $table->unique(['tenant_id', 'supersedes_assessment_id'], 'pcs_assessment_correction_once_unique');
         });
 
         $this->createAssessmentWorkflowGuards();
@@ -51,6 +52,7 @@ return new class extends Migration
         $this->dropAssessmentWorkflowGuards();
         $this->unregisterTable('people_connector_skill_assessment_decisions');
         Schema::table('people_connector_skill_assessments', function (Blueprint $table): void {
+            $table->dropUnique('pcs_assess_owner_uq');
             $table->dropUnique('pcs_assessment_correction_once_unique');
         });
         Schema::dropIfExists('people_connector_skill_assessment_decisions');
