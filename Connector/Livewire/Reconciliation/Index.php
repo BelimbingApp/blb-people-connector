@@ -22,10 +22,12 @@ use Illuminate\Contracts\View\View;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Validation\ValidationException;
 use Livewire\Component;
+use Livewire\WithPagination;
 
 final class Index extends Component
 {
     use InteractsWithNotifications;
+    use WithPagination;
 
     public int $connectionId;
 
@@ -124,7 +126,7 @@ final class Index extends Component
         return view('people-connector::livewire.reconciliation.index', [
             'connection' => $connection,
             'freshness' => $freshnessPolicy->for($this->connectionId),
-            'issues' => $issues->openForConnection($this->connectionId),
+            'issues' => $issues->paginateOpenForConnection($this->connectionId),
         ]);
     }
 
