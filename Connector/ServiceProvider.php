@@ -4,6 +4,7 @@ namespace App\Domains\PeopleConnector\Connector;
 
 use App\Domains\People\Provider\Contracts\ResolvesWorkforceSubjects;
 use App\Domains\People\Provider\Data\ExternalReference as PeopleExternalReference;
+use App\Domains\PeopleConnector\Connector\Console\Commands\CutoverRehearsalCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\RetentionReportCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\SyncWorkforceCommand;
 use App\Domains\PeopleConnector\Connector\Contracts\AcceptsDelegatedCommands;
@@ -61,6 +62,7 @@ class ServiceProvider extends BaseServiceProvider
 
         if ($this->app->runningInConsole()) {
             $this->commands([
+                CutoverRehearsalCommand::class,
                 RetentionReportCommand::class,
                 SyncWorkforceCommand::class,
             ]);
