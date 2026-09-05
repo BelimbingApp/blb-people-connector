@@ -35,6 +35,20 @@ final class ProviderCommandReconciler
 
         $known = $provider->findCommand($outcome->idempotencyKey);
 
+        // An answer about some other command is not an answer about this one.
+        // Without this the identity guarantee is only as good as the adapter:
+        // a wrong or hostile implementation could settle an unknown command
+        // with a different command's success, which is exactly the duplicate
+        // execution the key exists to prevent.
+        if ($known !== null && $known->idempotencyKey !== $outcome->idempotencyKey) {
+            throw new ProviderUnknownOutcomeException(
+                providerId: $this->providerId($provider),
+                operation: 'reconcile_command',
+                message: 'The provider answered about a different command; the outcome stays unknown and must not be retried.',
+                context: ['idempotency_key' => $outcome->idempotencyKey],
+            );
+        }
+
         // Absence is an answer here, not a shrug: the interface's contract is
         // that an adapter which cannot look does not implement it.
         return $known ?? CommandOutcome::notDelivered(
