@@ -10,6 +10,7 @@ final class SyncCheckpoint extends TenantOwnedModel
     {
         return [
             'version' => 'integer',
+            'failed_attempts' => 'integer',
             'as_of_at' => 'immutable_datetime',
             'completed_at' => 'immutable_datetime',
         ];
