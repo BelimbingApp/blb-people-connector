@@ -7,6 +7,7 @@ use App\Base\Authz\DTO\Actor;
 use App\Base\Foundation\Contracts\SemanticActionRecorder;
 use App\Base\Foundation\Livewire\Concerns\InteractsWithNotifications;
 use App\Core\User\Models\User;
+use App\Domains\PeopleConnector\Connector\Enums\CommandResolution;
 use App\Domains\PeopleConnector\Connector\Exceptions\ConnectorRecordNotFoundException;
 use App\Domains\PeopleConnector\Connector\Exceptions\InvalidReconciliationIssueException;
 use App\Domains\PeopleConnector\Connector\Models\ProviderConnection;
@@ -18,6 +19,7 @@ use App\Domains\PeopleConnector\Connector\Services\TenantConnectionLocator;
 use App\Domains\PeopleConnector\Connector\Services\WorkforceFreshnessPolicy;
 use Illuminate\Contracts\View\View;
 use Illuminate\Support\Facades\Auth;
+use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 use Livewire\Component;
 use Livewire\WithPagination;
@@ -37,6 +39,9 @@ final class Index extends Component
 
     /** @var array<int, string> */
     public array $replacementExternalIds = [];
+
+    /** @var array<int, string> */
+    public array $commandResolutions = [];
 
     public function mount(int $connectionId): void
     {
@@ -127,6 +132,41 @@ final class Index extends Component
         $this->notify(__('Reviewed identity remap applied and issue resolved.'));
     }
 
+    public function confirmUnknownOutcome(int $issueId, ReconciliationReviewService $reviews): void
+    {
+        $this->authorizeConnection();
+        $resolution = $this->validatedCommandResolution($issueId);
+        $reviewReference = $this->validatedReviewReference($issueId);
+        $occurredAt = now();
+
+        // Confirming what the provider did is a bookkeeping decision, not a
+        // resend. The service closes the issue and records the operator's
+        // conclusion; re-issuing the command stays a separate, deliberate act.
+        try {
+            $issue = $reviews->confirmCommandOutcome(
+                $this->connectionId,
+                $issueId,
+                $resolution,
+                $reviewReference,
+                $occurredAt,
+            );
+        } catch (ConnectorRecordNotFoundException) {
+            abort(404);
+        } catch (InvalidReconciliationIssueException $exception) {
+            throw ValidationException::withMessages([
+                "commandResolutions.{$issueId}" => $exception->getMessage(),
+            ]);
+        }
+
+        $this->record('people_connector.reconciliation.command_outcome_confirmed', __('Confirmed the command outcome for reconciliation issue :key.', ['key' => $issue->issue_key]), $issue, [
+            'review_reference' => $reviewReference,
+            'resolution' => $resolution->value,
+        ], __('Confirm command outcome'));
+
+        unset($this->reviewReferences[$issueId], $this->commandResolutions[$issueId]);
+        $this->notify(__('Command outcome confirmed and issue resolved.'));
+    }
+
     public function render(ReconciliationIssueStore $issues, WorkforceFreshnessPolicy $freshnessPolicy): View
     {
         $connection = $this->connection();
@@ -185,6 +225,15 @@ final class Index extends Component
         ]);
 
         return trim((string) $this->reviewReferences[$issueId]);
+    }
+
+    private function validatedCommandResolution(int $issueId): CommandResolution
+    {
+        $this->validate([
+            "commandResolutions.{$issueId}" => ['required', Rule::enum(CommandResolution::class)],
+        ]);
+
+        return CommandResolution::from((string) $this->commandResolutions[$issueId]);
     }
 
     private function validateRemapIssue(ReconciliationIssue $issue, int $issueId): void
