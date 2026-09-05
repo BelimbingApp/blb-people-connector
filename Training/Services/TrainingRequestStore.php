@@ -128,7 +128,7 @@ final class TrainingRequestStore
             $q->lockForUpdate();
         }
 
-return $q->first() ?? throw new InvalidTrainingRequestException('Training request was not found in this company.');
+        return $q->first() ?? throw new InvalidTrainingRequestException('Training request was not found in this company.');
     }
 
     private function record(TrainingRequest $request, string $decision, User $actor, ?string $notes = null): void
@@ -143,7 +143,7 @@ return $q->first() ?? throw new InvalidTrainingRequestException('Training reques
             throw new InvalidTrainingRequestException('Training requests require a persisted authenticated actor.');
         }
 
-return (int) $id;
+        return (int) $id;
     }
 
     private function text(string $text, string $message): void
