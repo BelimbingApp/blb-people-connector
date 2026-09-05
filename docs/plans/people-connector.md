@@ -1,9 +1,9 @@
 # people-connector
 
 **Status:** Superseded for business-module ownership by People plan 0001; connector integration work remains in progress
-**Last Updated:** 2026-09-05
+**Last Updated:** 2026-09-06
 **Sources:** BelimbingApp/blb-people#20–#38; BelimbingApp/belimbing#457; `SBTG_Skill_Management_System.xlsx`; Belimbing module, tenancy, database, authz, integration, and UI contracts
-**Agents:** codex/gpt-5, codex/gpt-5.6-sol
+**Agents:** codex/gpt-5, codex/gpt-5.6-sol, desktop-astra/gpt-6-astra
 
 ## Problem Essence
 
@@ -54,23 +54,11 @@ Adapters publish stable identity, contract and adapter versions, independently c
 - [ ] Add authentication/SSO and privileged-access controls without exposing secrets.
 - [ ] Implement and certify `blb-people` and HR2000 adapters.
 
-This persistence foundation is only a partial delivery of [1004]/[1006]. It does not yet provide a typed user projection, provider sync execution, freshness policy, export/backup/restore, privacy deletion, or any Skill/Training aggregate; those remain explicit work below.
-
-### Skill core
-
-- [x] Implement proficiency catalogues and versioned position requirements.
-- [ ] Implement evidence-backed immutable assessments and batch matrix. {composer — store/history/projection foundation in progress on people#12}
-- [ ] Implement owned development actions and reassessment/current-score projection.
-- [ ] Implement coverage, dashboards, workbook import/export, and automation.
-
-### Training lifecycle
-
-- [ ] Implement catalogues, sessions, and the event-level training register.
-- [ ] Implement requests, HOD/HR/approver decisions, and budgets.
-- [ ] Implement participant attendance, results, certificates, evidence, and due dates.
-- [ ] Implement participant evaluations and HR follow-up.
-- [ ] Implement 30/60/90-day effectiveness review linked to verified reassessment.
-- [ ] Implement employee skill register, passport, print/export, and stale-provider disclosure.
+The connector delivery remains partial; the unchecked integration work above
+belongs here. Business-module delivery is tracked only in the owning
+[People plan 0008](https://github.com/BelimbingApp/blb-people/blob/main/docs/plans/0008-people-existing-work-and-backlog-reconciliation.md)
+and its linked plans. The old catalog, assessment, training and employee-register
+checklists are superseded; they are not a connector implementation backlog.
 
 ### Adoption and release
 

@@ -26,11 +26,9 @@ it('ships only integration modules after the People business-module relocation',
 });
 
 it('prevents integration modules gaining Skill or Training imports', function (): void {
-
     $root = dirname(__DIR__, 3);
     $parser = (new ParserFactory)->createForNewestSupportedVersion();
     $finder = new NodeFinder;
-    $imported = [];
     $unexpected = [];
 
     foreach (['Connector', 'FirstPartyPeople'] as $module) {

@@ -1,9 +1,9 @@
 # Tenant and company ownership in the People Connector
 
 **Document type:** Data-ownership contract
-**Status:** 2026-09-05 — relocation complete; ownership governed by [People plan 0001](https://github.com/BelimbingApp/blb-people/blob/main/docs/plans/0001-people-architecture-and-provider-boundaries.md).
+**Status:** 2026-09-06 — relocation complete at [R4 merge c3c5b01](https://github.com/BelimbingApp/blb-people-connector/commit/c3c5b0126ded2da39d5b7f035508171a0c61bf3f); ownership governed by [People plan 0001](https://github.com/BelimbingApp/blb-people/blob/main/docs/plans/0001-people-architecture-and-provider-boundaries.md).
 **Issue:** BelimbingApp/blb-people-connector#6 (cross-links BelimbingApp/blb-people#21)
-**Last updated:** 2026-09-05
+**Last updated:** 2026-09-06
 
 ---
 
