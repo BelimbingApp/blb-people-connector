@@ -222,12 +222,16 @@ test('each remap writes an audit row naming both references', function (): void 
 
     $audit = DB::table('people_connector_connector_workforce_snapshots')
         ->where('workforce_entity_id', $f['entityIds']['OLD-EMP-1'])
-        ->where('event_type', 'identity_remapped')
+        ->where('event_type', 'identity_handed_over')
         ->get();
 
     expect($audit)->toHaveCount(1)
         ->and(json_decode((string) $audit->first()->payload, true))
-        ->toMatchArray(['external_id' => 'OLD-EMP-1', 'replacement_external_id' => 'NEW-EMP-1']);
+        ->toMatchArray([
+            'external_id' => 'OLD-EMP-1',
+            'replacement_external_id' => 'NEW-EMP-1',
+            'replacement_provider_id' => REPLACEMENT_NEW_PROVIDER,
+        ]);
 });
 
 test('a replacement writes to no table the connector does not own', function (): void {
