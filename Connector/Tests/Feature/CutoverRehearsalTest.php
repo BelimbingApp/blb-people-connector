@@ -15,6 +15,7 @@ use App\Domains\PeopleConnector\Connector\Data\ReconciliationIssueDetails;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceChangePage;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceCompany;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceEmployee;
+use App\Domains\PeopleConnector\Connector\Data\WorkforceProvenance;
 use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
 use App\Domains\PeopleConnector\Connector\Exceptions\ProviderAuthorizationException;
 use App\Domains\PeopleConnector\Connector\Services\CutoverRehearsalService;
@@ -23,6 +24,7 @@ use App\Domains\PeopleConnector\Connector\Services\ProviderReplacementService;
 use App\Domains\PeopleConnector\Connector\Services\ReconciliationIssueStore;
 use App\Domains\PeopleConnector\Connector\Services\SyncCheckpointStore;
 use App\Domains\PeopleConnector\Connector\Services\WorkforceFreshnessPolicy;
+use App\Domains\PeopleConnector\Connector\Services\WorkforceIdentityStore;
 use App\Domains\PeopleConnector\Connector\Services\WorkforceProjectionStore;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
@@ -265,4 +267,22 @@ test('the command exits non-zero while a blocker stands and zero once it is clea
     $this->artisan('people-connector:cutover-rehearsal', [
         'from' => $f['oldId'], 'to' => $f['newId'], '--tenant' => $f['tenantId'], '--as' => $operator->id,
     ])->assertExitCode(0);
+});
+
+test('an identity already deactivated on the source does not block the cutover', function (): void {
+    $f = cutoverFixture('Cutover Departed Tenant');
+    cutoverAuthz(true);
+    app(WorkforceIdentityStore::class)->deactivate(
+        $f['oldId'],
+        cutoverRef(CUTOVER_OLD_PROVIDER, WorkforceResourceType::Employee, 'CUT-EMP-2'),
+        $f['at']->modify('+1 day'),
+        new WorkforceProvenance('cutover.rehearsal.test', 'departure-2026-09-02'),
+    );
+
+    $report = app(CutoverRehearsalService::class)->rehearse($f['actor'], $f['oldId'], $f['newId']);
+
+    // Someone who has already left does not need to survive the switch.
+    // Counting them would send an operator hunting for a mapping that should
+    // not exist.
+    expect($report->unmappedIdentities)->toBe(2);
 });
