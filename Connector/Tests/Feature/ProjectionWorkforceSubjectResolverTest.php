@@ -21,6 +21,8 @@ test('the seam answers from projections only where the connector owns workforce 
     // A co-located install synchronizes nothing, so answering from
     // projections there would refuse every subject that actually exists.
     'no provider chosen' => [null, NativeWorkforceSubjectResolver::class],
+    'blank provider string' => ['', NativeWorkforceSubjectResolver::class],
+    'whitespace-only provider' => ['   ', NativeWorkforceSubjectResolver::class],
     'People is the provider' => ['blb-people', NativeWorkforceSubjectResolver::class],
     'a remote provider' => ['hr2000.sbg', ProjectionWorkforceSubjectResolver::class],
 ]);
@@ -117,6 +119,23 @@ test('an entity retired at the identity level is deactivated even while its proj
     ));
 
     expect($resolution->refusal)->toBe(WorkforceSubjectRefusal::Deactivated);
+});
+
+test('fails closed when both ambient and subject tenant are absent', function (): void {
+    $fixture = CompanyIsolationContract::twoCompaniesInOneTenant();
+    app(TenantContext::class)->clear();
+
+    // Without the ambient-null clause, null !== null passes the mismatch
+    // check and forTenant(?int) TypeErrors. Same shape as the native resolver.
+    $resolution = app(ProjectionWorkforceSubjectResolver::class)->resolve(new WorkforceSubject(
+        tenantId: null,
+        companyId: $fixture->alphaCompanyEntityId,
+        type: SubjectResourceType::Company,
+        stableId: (string) $fixture->alphaCompanyEntityId,
+    ));
+
+    expect($resolution->record)->toBeNull()
+        ->and($resolution->refusal)->toBe(WorkforceSubjectRefusal::Unknown);
 });
 
 test('the projection resolver fails closed without an ambient tenant context', function (): void {
