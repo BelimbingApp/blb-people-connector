@@ -26,9 +26,11 @@ final readonly class WorkforceSyncReport
         public \DateTimeImmutable $asOf,
         /** False when the whole feed was refused: nothing changed and the pass must not be read as a success. */
         public bool $checkpointAdvanced = true,
+        /** Changes a replay read but did not apply because current state already reflects something later. */
+        public int $superseded = 0,
     ) {
-        if (! in_array($pass, ['bootstrap', 'incremental'], true)) {
-            throw new \InvalidArgumentException('Workforce sync passes are bootstrap or incremental.');
+        if (! in_array($pass, ['bootstrap', 'incremental', 'replay'], true)) {
+            throw new \InvalidArgumentException('Workforce sync passes are bootstrap, incremental or replay.');
         }
     }
 

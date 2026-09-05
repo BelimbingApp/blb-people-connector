@@ -23,6 +23,7 @@ use App\Domains\PeopleConnector\Connector\Data\WorkforceChangeRequest;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceCompany;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceDeactivation;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceEmployee;
+use App\Domains\PeopleConnector\Connector\Data\WorkforceMerge;
 use App\Domains\PeopleConnector\Connector\Data\WorkforcePage;
 use App\Domains\PeopleConnector\Connector\Data\WorkforcePageRequest;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceUpsert;
@@ -265,7 +266,8 @@ test('a replay leaves the current checkpoint exactly where it was', function ():
 
     expect((int) $after->version)->toBe($version)
         ->and($after->resume_cursor)->toBe($cursor)
-        ->and($report->pass)->toBe('replay');
+        ->and($report->pass)->toBe('replay')
+        ->and($report->checkpointAdvanced)->toBeFalse();
 });
 
 test('replaying the same changes creates no duplicate projections and keeps the stable entity id', function (): void {
@@ -299,7 +301,8 @@ test('a change the replay has already superseded raises no reconciliation issue'
     $report = app(WorkforceSyncRunner::class)->replay($actor, $provider, $connectionId, fromVersion: 1);
 
     expect(ReconciliationIssue::query()->forTenant($tenantId)->count())->toBe($before)
-        ->and($report->conflicts)->toBe(0);
+        ->and($report->conflicts)->toBe(0)
+        ->and($report->superseded)->toBe(1);
 });
 
 test('a record missing from a replayed page is never deactivated', function (): void {
@@ -317,4 +320,88 @@ test('replaying a checkpoint version the connection never reached is refused', f
 
     expect(fn () => app(WorkforceSyncRunner::class)->replay($actor, $provider, $connectionId, fromVersion: 99))
         ->toThrow(WorkforceSyncException::class);
+});
+
+test('replaying a connection that has never checkpointed is refused', function (): void {
+    [, $connectionId, $actor] = replayTenant('Replay No Checkpoint Tenant');
+    $provider = replayProvider([], []);
+
+    expect(fn () => app(WorkforceSyncRunner::class)->replay($actor, $provider, $connectionId, fromVersion: 1))
+        ->toThrow(WorkforceSyncException::class);
+});
+
+test('a merge in a replayed page re-queues the same review rather than a second one', function (): void {
+    [$tenantId, $connectionId, $actor] = replayTenant('Replay Merge Tenant');
+    $bootstrapAt = replayAt('2026-09-01T08:00:00+00:00');
+    $mergedAt = replayAt('2026-09-02T08:00:00+00:00');
+    $merge = new WorkforceMerge(
+        replayRef(WorkforceResourceType::Employee, 'emp-1'),
+        replayRef(WorkforceResourceType::Employee, 'emp-2'),
+        $mergedAt,
+    );
+    $provider = replayProvider(
+        [
+            'first' => new WorkforcePage(
+                [replayEmployee('emp-1', $bootstrapAt), replayEmployee('emp-2', $bootstrapAt)],
+                $bootstrapAt,
+                resumeCursor: 'after-bootstrap',
+                complete: true,
+                companies: [new WorkforceCompany(replayRef(WorkforceResourceType::Company, 'co-1'), 'Replay Co', true, $bootstrapAt)],
+            ),
+        ],
+        [
+            'after-bootstrap' => new WorkforceChangePage([$merge], $mergedAt, resumeCursor: 'after-merge', complete: true),
+            'after-merge' => new WorkforceChangePage([], $mergedAt, resumeCursor: 'after-merge', complete: true),
+        ],
+    );
+    $runner = app(WorkforceSyncRunner::class);
+    $runner->bootstrap($actor, $provider, $connectionId);
+    $runner->incremental($actor, $provider, $connectionId);
+    $before = ReconciliationIssue::query()->forTenant($tenantId)->count();
+
+    $report = $runner->replay($actor, $provider, $connectionId, fromVersion: 1);
+
+    // A merge is a request for a human decision, keyed by the pair. Replaying
+    // it must land on the same queue entry, not open a second one.
+    expect(ReconciliationIssue::query()->forTenant($tenantId)->count())->toBe($before)
+        ->and($report->mergesQueued)->toBe(1)
+        ->and($report->superseded)->toBe(0);
+});
+
+test('a merge older than the last observed fact is still queued rather than skipped as superseded', function (): void {
+    [$tenantId, $connectionId, $actor] = replayTenant('Replay Old Merge Tenant');
+    $mergedAt = replayAt('2026-09-01T08:00:00+00:00');
+    $observedAt = replayAt('2026-09-05T08:00:00+00:00');
+    $merge = new WorkforceMerge(
+        replayRef(WorkforceResourceType::Employee, 'emp-1'),
+        replayRef(WorkforceResourceType::Employee, 'emp-2'),
+        $mergedAt,
+    );
+    $provider = replayProvider(
+        [
+            'first' => new WorkforcePage(
+                [replayEmployee('emp-1', $observedAt), replayEmployee('emp-2', $observedAt)],
+                $observedAt,
+                resumeCursor: 'after-bootstrap',
+                complete: true,
+                companies: [new WorkforceCompany(replayRef(WorkforceResourceType::Company, 'co-1'), 'Replay Co', true, $observedAt)],
+            ),
+        ],
+        [
+            'after-bootstrap' => new WorkforceChangePage([$merge], $observedAt, resumeCursor: 'after-merge', complete: true),
+            'after-merge' => new WorkforceChangePage([], $observedAt, resumeCursor: 'after-merge', complete: true),
+        ],
+    );
+    $runner = app(WorkforceSyncRunner::class);
+    $runner->bootstrap($actor, $provider, $connectionId);
+    ReconciliationIssue::query()->forTenant($tenantId)->delete();
+
+    // The merge predates every fact currently on file. For an upsert or a
+    // deactivation that means superseded; for a merge it does not, because the
+    // decision it asks a human for has not been made yet.
+    $report = $runner->replay($actor, $provider, $connectionId, fromVersion: 1);
+
+    expect($report->mergesQueued)->toBe(1)
+        ->and($report->superseded)->toBe(0)
+        ->and(ReconciliationIssue::query()->forTenant($tenantId)->count())->toBe(1);
 });
