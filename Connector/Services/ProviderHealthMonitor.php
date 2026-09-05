@@ -16,7 +16,14 @@ final class ProviderHealthMonitor
         $previous = $this->store->snapshot($providerId);
 
         try {
-            $health = $provider->health();
+            $reported = $provider->health();
+            // Only typed health evidence crosses the adapter boundary. Free-form
+            // messages may contain credentials or raw provider response bodies.
+            $health = new ProviderHealth(
+                state: $reported->state,
+                checkedAt: $reported->checkedAt,
+                lastSuccessfulSyncAt: $reported->lastSuccessfulSyncAt,
+            );
         } catch (\Throwable) {
             $health = new ProviderHealth(
                 state: ProviderHealthState::Unavailable,
