@@ -101,7 +101,10 @@ function healthTenant(string $name, string $contractVersion = '1.4.0'): array
     $tenantId = (int) $tenant->id;
     app(TenantContext::class)->set($tenantId);
     config()->set('people-connector.active_provider', HEALTH_PROVIDER);
-    app(ProviderRegistry::class)->register(healthAdapter($contractVersion));
+
+    if (app(ProviderRegistry::class)->find(HEALTH_PROVIDER) === null) {
+        app(ProviderRegistry::class)->register(healthAdapter($contractVersion));
+    }
 
     $store = app(ProviderConnectionStore::class);
     $connection = $store->configure(ProviderScope::company((int) $company->id), HEALTH_PROVIDER);
@@ -137,17 +140,39 @@ test('a contract major the connector supports is reported compatible', function 
         ->and($health->supportedContractMajor)->toBe(1);
 });
 
-test('a contract major the connector does not support is reported incompatible rather than refused', function (): void {
-    $f = healthTenant('Health Incompatible Tenant', '2.0.0');
+test('an adapter left behind by a platform contract bump is reported incompatible rather than refused', function (): void {
+    $f = healthTenant('Health Incompatible Tenant');
     healthAuthz(true);
 
-    // Incompatibility is the answer the operator came for. Throwing here would
-    // hide exactly the fact this read exists to surface.
+    // ProviderRegistry refuses an incompatible adapter at registration, so an
+    // incompatible one is never active. The drift that does happen is this: the
+    // adapter registered cleanly, and the platform later moved to a contract
+    // major it does not speak. Incompatibility is then the answer the operator
+    // came for, and throwing would hide the fact this read exists to surface.
+    config()->set('people-connector.supported_contract_major', 2);
     $health = app(ConnectorHealthService::class)->read($f['actor']);
 
     expect($health->contractCompatible)->toBeFalse()
-        ->and($health->contractVersion)->toBe('2.0.0')
-        ->and($health->supportedContractMajor)->toBe(1);
+        ->and($health->contractVersion)->toBe('1.4.0')
+        ->and($health->supportedContractMajor)->toBe(2)
+        ->and($health->adapterId)->toBe(HEALTH_PROVIDER);
+});
+
+test('a configured provider that never registered is reported as such, not as nothing configured', function (): void {
+    [$tenant, $company] = createTenantWithCompany(['name' => 'Health Unregistered Tenant']);
+    app(TenantContext::class)->set((int) $tenant->id);
+    config()->set('people-connector.active_provider', 'test.never-registered');
+    healthAuthz(true);
+    $actor = new Actor(PrincipalType::USER, 8004, (int) $company->id, tenantId: (int) $tenant->id);
+
+    // "Somebody named an adapter and it is not there" and "nobody has chosen an
+    // adapter" are different faults with different fixes. A report that showed
+    // both as a blank adapter would send the operator looking in the wrong place.
+    $health = app(ConnectorHealthService::class)->read($actor);
+
+    expect($health->adapterId)->toBeNull()
+        ->and($health->configuredAdapterId)->toBe('test.never-registered')
+        ->and($health->contractCompatible)->toBeFalse();
 });
 
 test('the health read reports freshness for each connection in the tenant', function (): void {
@@ -203,6 +228,7 @@ test('no adapter registered is reported as no active adapter rather than an erro
     $health = app(ConnectorHealthService::class)->read($actor);
 
     expect($health->adapterId)->toBeNull()
+        ->and($health->configuredAdapterId)->toBeNull()
         ->and($health->contractCompatible)->toBeFalse()
         ->and($health->capabilities)->toBe([]);
 });
