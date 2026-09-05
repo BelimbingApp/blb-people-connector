@@ -81,6 +81,11 @@ final class ProviderConnectionStore
                     'The provider connection scope changed while activation was in progress.',
                 );
 
+            // Retirement that a single activate() undoes is not retirement.
+            // Coming back means configuring a new connection, which carries its
+            // own provider-replacement decision.
+            ConnectionRetirementService::assertWritable($connection);
+
             if ($connection->status === ProviderConnection::STATUS_ACTIVE) {
                 app(SchedulerPrincipalGrants::class)->grant($connection);
 

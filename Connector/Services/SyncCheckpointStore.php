@@ -82,7 +82,7 @@ final class SyncCheckpointStore
         }
 
         return DB::transaction(function () use ($connectionId, $stream, $page, $expectedVersion, $completedAt, $tenantId): SyncCheckpoint {
-            $this->connections->get($connectionId, lock: true);
+            ConnectionRetirementService::assertWritable($this->connections->get($connectionId, lock: true));
             $checkpoint = SyncCheckpoint::query()
                 ->forTenant($tenantId)
                 ->where('connection_id', $connectionId)
