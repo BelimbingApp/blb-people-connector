@@ -3,6 +3,7 @@
 use App\Base\Tenancy\Contracts\TenantContext;
 use App\Domains\PeopleConnector\Connector\Contracts\AcceptsDelegatedCommands;
 use App\Domains\PeopleConnector\Connector\Data\DelegatedAuthority;
+use App\Domains\PeopleConnector\Connector\Enums\DelegatedAuthorityRefusal;
 use App\Domains\PeopleConnector\Connector\Exceptions\DelegatedAuthorityException;
 use App\Domains\PeopleConnector\Connector\Http\Controllers\DelegatedCommandController;
 use App\Domains\PeopleConnector\Connector\Services\DelegatedAuthoritySigner;
@@ -241,6 +242,11 @@ test('the http refusal names a reason code and never the refusal message', funct
 
     // Refusal messages name tenants and operations. Reason codes, not prose:
     // docs/contracts/diagnostic-privacy.md.
-    expect($response->getData(true))->toBe(['refused' => 'delegated_authority_refused'])
+    //
+    // The code became specific in #177, because denial parity cannot be proved
+    // against a single code that every refusal shares. What the body still must
+    // not carry is the value that was refused, which is what the second
+    // assertion holds on to.
+    expect($response->getData(true))->toBe(['refused' => DelegatedAuthorityRefusal::WrongTenant->value])
         ->and($response->getContent())->not->toContain('42');
 });

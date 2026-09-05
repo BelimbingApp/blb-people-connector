@@ -3,6 +3,7 @@
 namespace App\Domains\PeopleConnector\Connector\Services;
 
 use App\Domains\PeopleConnector\Connector\Data\DelegatedAuthority;
+use App\Domains\PeopleConnector\Connector\Enums\DelegatedAuthorityRefusal;
 use App\Domains\PeopleConnector\Connector\Exceptions\DelegatedAuthorityException;
 
 /**
@@ -28,6 +29,7 @@ final class DelegatedAuthoritySigner
         if ($lifetime > self::maxLifetimeSeconds()) {
             throw new DelegatedAuthorityException(
                 'A delegated authority may live at most '.self::maxLifetimeSeconds()." seconds; this one asks for {$lifetime}.",
+                DelegatedAuthorityRefusal::Unconfigured,
             );
         }
 
@@ -43,7 +45,7 @@ final class DelegatedAuthoritySigner
         $parts = explode('.', $token, 2);
 
         if (count($parts) !== 2 || $parts[0] === '' || $parts[1] === '') {
-            throw new DelegatedAuthorityException('A delegated authority token is a payload and a signature.');
+            throw new DelegatedAuthorityException('A delegated authority token is a payload and a signature.', DelegatedAuthorityRefusal::Malformed);
         }
 
         [$payload, $signature] = $parts;
@@ -51,19 +53,19 @@ final class DelegatedAuthoritySigner
         // hash_equals, not ===: a timing-variable comparison here leaks the
         // signature a byte at a time.
         if (! hash_equals(self::signature($payload, $secret), $signature)) {
-            throw new DelegatedAuthorityException('This delegated authority was not signed by this connector.');
+            throw new DelegatedAuthorityException('This delegated authority was not signed by this connector.', DelegatedAuthorityRefusal::Unsigned);
         }
 
         $decoded = base64_decode(strtr($payload, '-_', '+/'), true);
 
         if ($decoded === false) {
-            throw new DelegatedAuthorityException('This delegated authority payload is not readable.');
+            throw new DelegatedAuthorityException('This delegated authority payload is not readable.', DelegatedAuthorityRefusal::Malformed);
         }
 
         $claims = json_decode($decoded, true);
 
         if (! is_array($claims)) {
-            throw new DelegatedAuthorityException('This delegated authority payload is not a claim set.');
+            throw new DelegatedAuthorityException('This delegated authority payload is not a claim set.', DelegatedAuthorityRefusal::Malformed);
         }
 
         $authority = DelegatedAuthority::fromClaims($claims);
@@ -73,11 +75,12 @@ final class DelegatedAuthoritySigner
         if (! hash_equals($authority->audience, $expectedAudience)) {
             throw new DelegatedAuthorityException(
                 "This authority is addressed to [{$authority->audience}], not [{$expectedAudience}].",
+                DelegatedAuthorityRefusal::WrongAudience,
             );
         }
 
         if ($now > $authority->expiresAt) {
-            throw new DelegatedAuthorityException('This authority has expired.');
+            throw new DelegatedAuthorityException('This authority has expired.', DelegatedAuthorityRefusal::Expired);
         }
 
         return $authority;
@@ -107,6 +110,7 @@ final class DelegatedAuthoritySigner
         if (! is_string($secret) || strlen($secret) < self::MINIMUM_SECRET_BYTES) {
             throw new DelegatedAuthorityException(
                 'people-connector.delegation.secret must be at least '.self::MINIMUM_SECRET_BYTES.' bytes; delegated authority is unavailable without it.',
+                DelegatedAuthorityRefusal::Unconfigured,
             );
         }
 
@@ -118,7 +122,7 @@ final class DelegatedAuthoritySigner
         $seconds = config('people-connector.delegation.max_lifetime_seconds', 300);
 
         if (! is_int($seconds) || $seconds < 1) {
-            throw new DelegatedAuthorityException('people-connector.delegation.max_lifetime_seconds must be a positive integer.');
+            throw new DelegatedAuthorityException('people-connector.delegation.max_lifetime_seconds must be a positive integer.', DelegatedAuthorityRefusal::Unconfigured);
         }
 
         return $seconds;
