@@ -73,6 +73,19 @@ final class RetentionPolicy
             );
         }
 
+        // Missing and indefinite are different policy states, and only one of
+        // them is a decision. A table nobody has considered must not read as
+        // "kept forever" — that is how a purge policy drifts out of date
+        // without anyone noticing it has.
+        $undecided = array_values(array_diff($owned, array_keys($tables)));
+
+        if ($undecided !== []) {
+            throw new RetentionPolicyException(
+                'Retention must be decided for every connector-owned table; ['.implode(', ', $undecided).
+                '] '.(count($undecided) === 1 ? 'has' : 'have').' no entry. Declare a period, or null for indefinite.',
+            );
+        }
+
         return new RetentionReport($tenantId, $reviewedAt, $tables);
     }
 

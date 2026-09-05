@@ -13,9 +13,11 @@ use App\Domains\PeopleConnector\Connector\Data\ReconciliationIssueDetails;
 use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
 use App\Domains\PeopleConnector\Connector\Exceptions\ProviderAuthorizationException;
 use App\Domains\PeopleConnector\Connector\Exceptions\RetentionPolicyException;
+use App\Domains\PeopleConnector\Connector\Models\DomainModels;
 use App\Domains\PeopleConnector\Connector\Services\ProviderConnectionStore;
 use App\Domains\PeopleConnector\Connector\Services\ReconciliationIssueStore;
 use App\Domains\PeopleConnector\Connector\Services\RetentionPolicy;
+use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 
@@ -109,10 +111,32 @@ function retentionConfigure(array $tables): void
     config()->set('people-connector.retention', $tables);
 }
 
+/**
+ * A complete policy: every connector-owned table declared indefinite, with the
+ * caller's entries applied over the top.
+ *
+ * Retention now refuses an incomplete policy, so a test that wants to say
+ * something about one table still has to have decided about the rest. Building
+ * the base from the owned set rather than listing it keeps these tests honest
+ * when a new model arrives.
+ */
+function retentionConfigureComplete(array $overrides): void
+{
+    $base = [];
+
+    foreach (DomainModels::all() as $model) {
+        if (is_subclass_of($model, Model::class)) {
+            $base[(new $model)->getTable()] = ['days' => null];
+        }
+    }
+
+    retentionConfigure([...$base, ...$overrides]);
+}
+
 test('the report counts only the rows past retention for a configured table', function (): void {
     $f = retentionTenant('Retention Counting Tenant');
     retentionAuthz(true);
-    retentionConfigure([RETENTION_ISSUES_TABLE => ['days' => 365, 'column' => 'first_seen_at']]);
+    retentionConfigureComplete([RETENTION_ISSUES_TABLE => ['days' => 365, 'column' => 'first_seen_at']]);
 
     $report = app(RetentionPolicy::class)->review($f['actor'], new DateTimeImmutable('2026-09-06T12:00:00+00:00'));
 
@@ -124,7 +148,7 @@ test('the report counts only the rows past retention for a configured table', fu
 test('a table configured as indefinite is reported as retained forever rather than counted', function (): void {
     $f = retentionTenant('Retention Indefinite Tenant');
     retentionAuthz(true);
-    retentionConfigure([RETENTION_ISSUES_TABLE => ['days' => null, 'column' => 'first_seen_at']]);
+    retentionConfigureComplete([RETENTION_ISSUES_TABLE => ['days' => null, 'column' => 'first_seen_at']]);
 
     $report = app(RetentionPolicy::class)->review($f['actor'], new DateTimeImmutable('2026-09-06T12:00:00+00:00'));
 
@@ -136,7 +160,7 @@ test('a table configured as indefinite is reported as retained forever rather th
 test('a retention window wide enough to cover every row counts nothing', function (): void {
     $f = retentionTenant('Retention Wide Window Tenant');
     retentionAuthz(true);
-    retentionConfigure([RETENTION_ISSUES_TABLE => ['days' => 36_500, 'column' => 'first_seen_at']]);
+    retentionConfigureComplete([RETENTION_ISSUES_TABLE => ['days' => 36_500, 'column' => 'first_seen_at']]);
 
     $report = app(RetentionPolicy::class)->review($f['actor'], new DateTimeImmutable('2026-09-06T12:00:00+00:00'));
 
@@ -148,7 +172,7 @@ test('the report counts only the current tenant rows', function (): void {
     retentionTenant('Retention Theirs Tenant');
     app(TenantContext::class)->set($mine['tenantId']);
     retentionAuthz(true);
-    retentionConfigure([RETENTION_ISSUES_TABLE => ['days' => 365, 'column' => 'first_seen_at']]);
+    retentionConfigureComplete([RETENTION_ISSUES_TABLE => ['days' => 365, 'column' => 'first_seen_at']]);
 
     $report = app(RetentionPolicy::class)->review($mine['actor'], new DateTimeImmutable('2026-09-06T12:00:00+00:00'));
 
@@ -160,7 +184,7 @@ test('the report counts only the current tenant rows', function (): void {
 test('a caller without the retention capability is refused', function (): void {
     $f = retentionTenant('Retention Denied Tenant');
     retentionAuthz(false);
-    retentionConfigure([RETENTION_ISSUES_TABLE => ['days' => 365, 'column' => 'first_seen_at']]);
+    retentionConfigureComplete([RETENTION_ISSUES_TABLE => ['days' => 365, 'column' => 'first_seen_at']]);
 
     expect(fn () => app(RetentionPolicy::class)->review($f['actor'], new DateTimeImmutable('2026-09-06T12:00:00+00:00')))
         ->toThrow(ProviderAuthorizationException::class);
@@ -169,7 +193,7 @@ test('a caller without the retention capability is refused', function (): void {
 test('an actor from outside the current tenant is refused', function (): void {
     $f = retentionTenant('Retention Foreign Actor Tenant');
     retentionAuthz(true);
-    retentionConfigure([RETENTION_ISSUES_TABLE => ['days' => 365, 'column' => 'first_seen_at']]);
+    retentionConfigureComplete([RETENTION_ISSUES_TABLE => ['days' => 365, 'column' => 'first_seen_at']]);
     $outsider = new Actor(PrincipalType::USER, 9002, null, tenantId: $f['tenantId'] + 1);
 
     expect(fn () => app(RetentionPolicy::class)->review($outsider, new DateTimeImmutable('2026-09-06T12:00:00+00:00')))
@@ -203,7 +227,7 @@ test('a connector-owned table omitted from the retention policy is refused', fun
 test('a retention entry naming a column the table does not have is refused', function (): void {
     $f = retentionTenant('Retention Bad Column Tenant');
     retentionAuthz(true);
-    retentionConfigure([RETENTION_ISSUES_TABLE => ['days' => 365, 'column' => 'not_a_column']]);
+    retentionConfigureComplete([RETENTION_ISSUES_TABLE => ['days' => 365, 'column' => 'not_a_column']]);
 
     expect(fn () => app(RetentionPolicy::class)->review($f['actor'], new DateTimeImmutable('2026-09-06T12:00:00+00:00')))
         ->toThrow(RetentionPolicyException::class);
@@ -212,7 +236,7 @@ test('a retention entry naming a column the table does not have is refused', fun
 test('the report deletes nothing', function (): void {
     $f = retentionTenant('Retention Dry Run Tenant');
     retentionAuthz(true);
-    retentionConfigure([RETENTION_ISSUES_TABLE => ['days' => 365, 'column' => 'first_seen_at']]);
+    retentionConfigureComplete([RETENTION_ISSUES_TABLE => ['days' => 365, 'column' => 'first_seen_at']]);
     $before = DB::table(RETENTION_ISSUES_TABLE)->count();
     $writes = [];
     DB::listen(function ($query) use (&$writes): void {
@@ -232,7 +256,7 @@ test('the report deletes nothing', function (): void {
 test('the command reports the count and states that nothing was deleted', function (): void {
     $f = retentionTenant('Retention Command Tenant');
     retentionAuthz(true);
-    retentionConfigure([RETENTION_ISSUES_TABLE => ['days' => 365, 'column' => 'first_seen_at']]);
+    retentionConfigureComplete([RETENTION_ISSUES_TABLE => ['days' => 365, 'column' => 'first_seen_at']]);
     $operator = User::factory()->create(['company_id' => $f['actor']->companyId]);
     $before = DB::table(RETENTION_ISSUES_TABLE)->count();
 
@@ -246,7 +270,7 @@ test('the command reports the count and states that nothing was deleted', functi
 test('the command refuses to run without a named operator', function (): void {
     $f = retentionTenant('Retention Anonymous Command Tenant');
     retentionAuthz(true);
-    retentionConfigure([RETENTION_ISSUES_TABLE => ['days' => 365, 'column' => 'first_seen_at']]);
+    retentionConfigureComplete([RETENTION_ISSUES_TABLE => ['days' => 365, 'column' => 'first_seen_at']]);
 
     // Retention is capability-gated. A console run that invented its own actor
     // would answer "may this person see this" with "a command asked, so yes".
@@ -258,9 +282,27 @@ test('the command refuses to run without a named operator', function (): void {
 test('the command surfaces a capability refusal instead of printing a report', function (): void {
     $f = retentionTenant('Retention Denied Command Tenant');
     retentionAuthz(false);
-    retentionConfigure([RETENTION_ISSUES_TABLE => ['days' => 365, 'column' => 'first_seen_at']]);
+    retentionConfigureComplete([RETENTION_ISSUES_TABLE => ['days' => 365, 'column' => 'first_seen_at']]);
     $operator = User::factory()->create(['company_id' => $f['actor']->companyId]);
 
     $this->artisan('people-connector:retention-report', ['--tenant' => $f['tenantId'], '--as' => $operator->id])
         ->assertExitCode(1);
+});
+
+test('the shipped retention policy already covers every connector-owned table', function (): void {
+    $f = retentionTenant('Retention Shipped Defaults Tenant');
+    retentionAuthz(true);
+
+    // Deliberately does not touch config: this asserts the policy the connector
+    // actually ships with. It is the test that would have caught the three
+    // tables I left undeclared, and it is what stops the next model arriving
+    // without anyone deciding how long its rows are kept.
+    $report = app(RetentionPolicy::class)->review($f['actor'], new DateTimeImmutable('2026-09-06T12:00:00+00:00'));
+
+    $owned = array_values(array_unique(array_map(
+        static fn (string $model): string => (new $model)->getTable(),
+        array_filter(DomainModels::all(), static fn (string $model): bool => is_subclass_of($model, Model::class)),
+    )));
+
+    expect(array_diff($owned, array_keys($report->tables)))->toBe([]);
 });

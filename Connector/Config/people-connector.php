@@ -51,5 +51,17 @@ return [
         'people_connector_connector_workforce_employees' => ['days' => null],
         'people_connector_connector_sync_checkpoints' => ['days' => null],
         'people_connector_connector_provider_connections' => ['days' => null],
+
+        // Break-glass evidence: who reached past the boundary, when, and under
+        // whose grant. Kept indefinitely, and not only as a preference — the
+        // models refuse update and delete outright, so a finite window here
+        // would be a policy no purge could ever carry out.
+        'people_connector_connector_privileged_support_actions' => ['days' => null],
+        'people_connector_connector_privileged_support_grants' => ['days' => null],
+
+        // Credential references, not credentials. Current state belonging to a
+        // connection, so it lives and dies with the connection rather than
+        // ageing out on a clock of its own.
+        'people_connector_connector_provider_credentials' => ['days' => null],
     ],
 ];
