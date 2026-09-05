@@ -1,12 +1,14 @@
 <?php
 
 use App\Base\Tenancy\Contracts\TenantContext;
+use App\Core\User\Models\User;
 use App\Domains\PeopleConnector\Connector\Models\ExternalIdentity;
 use App\Domains\PeopleConnector\Connector\Models\ProviderConnection;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceEmployeeProjection;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceEntity;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceOrganizationUnitProjection;
 use App\Domains\PeopleConnector\Connector\Models\WorkforcePositionProjection;
+use App\Domains\PeopleConnector\Skill\Contracts\ResolvesSkillRequirements;
 use App\Domains\PeopleConnector\Skill\Data\AssessmentDraft;
 use App\Domains\PeopleConnector\Skill\Data\DevelopmentActionDraft;
 use App\Domains\PeopleConnector\Skill\Data\ResolvedSkillRequirement;
@@ -22,12 +24,13 @@ use App\Domains\PeopleConnector\Skill\Enums\ReassessmentRequestStatus;
 use App\Domains\PeopleConnector\Skill\Enums\RequirementCriticality;
 use App\Domains\PeopleConnector\Skill\Enums\SkillCoverageState;
 use App\Domains\PeopleConnector\Skill\Enums\SkillScope;
-use App\Domains\PeopleConnector\Skill\Contracts\ResolvesSkillRequirements;
 use App\Domains\PeopleConnector\Skill\Models\EmployeeSkillScore;
 use App\Domains\PeopleConnector\Skill\Models\ReassessmentRequest;
+use App\Domains\PeopleConnector\Skill\Models\SkillAssessment;
 use App\Domains\PeopleConnector\Skill\Services\AssessmentStore;
 use App\Domains\PeopleConnector\Skill\Services\DevelopmentActionStore;
 use App\Domains\PeopleConnector\Skill\Services\ReassessmentRequestStore;
+use App\Domains\PeopleConnector\Skill\Services\SkillAudience;
 use App\Domains\PeopleConnector\Skill\Services\SkillCatalogDefaults;
 use App\Domains\PeopleConnector\Skill\Services\SkillCatalogStore;
 use App\Domains\PeopleConnector\Skill\Services\SkillScoreHistory;
@@ -50,6 +53,36 @@ final class ReassessmentFixtureRequirements implements ResolvesSkillRequirements
     {
         return $this->rows;
     }
+}
+
+function reassessmentWorkflowAudience(): void
+{
+    app()->instance(SkillAudience::class, new class extends SkillAudience
+    {
+        public function __construct() {}
+
+        public function authorizeAssessmentSubmission(User $user, int $companyEntityId, int $employeeEntityId): void {}
+
+        public function authorizeHodVerification(User $user, int $companyEntityId, int $employeeEntityId): void {}
+
+        public function authorizeAssessmentFinalization(User $user, int $companyEntityId, int $employeeEntityId): void {}
+    });
+}
+
+function reassessmentActor(int $id): User
+{
+    return User::factory()->make(['id' => $id]);
+}
+
+function finalizeReassessmentAssessment(int $companyEntityId, AssessmentDraft $draft, int $hodVerifierUserId = 10): SkillAssessment
+{
+    $store = app(AssessmentStore::class);
+    $assessorId = $draft->assessorUserId ?? 9;
+    $submitted = $store->submit(reassessmentActor($assessorId), $companyEntityId, $draft);
+    $pending = $store->requestHodVerification(reassessmentActor($assessorId), $companyEntityId, (int) $submitted->id);
+    $store->verifyHod(reassessmentActor($hodVerifierUserId), $companyEntityId, (int) $pending->id, 'Verified.');
+
+    return $store->finalizeVerified(reassessmentActor($hodVerifierUserId), $companyEntityId, (int) $pending->id);
 }
 
 /**
@@ -156,13 +189,15 @@ function reassessmentFixture(): array
         ),
     ]));
 
+    reassessmentWorkflowAudience();
+
     return [$tenantId, (int) $company->id, $employeeId, (int) $skill->id, $ownerId];
 }
 
 test('completing a development intervention opens a reassessment request without changing the score', function (): void {
     [, $companyEntityId, $employeeEntityId, $skillId, $ownerId] = reassessmentFixture();
 
-    $baseline = app(AssessmentStore::class)->finalize($companyEntityId, new AssessmentDraft(
+    $baseline = finalizeReassessmentAssessment($companyEntityId, new AssessmentDraft(
         employeeEntityId: $employeeEntityId,
         skillId: $skillId,
         assessedLevel: 2,
@@ -233,7 +268,7 @@ test('completing a development intervention opens a reassessment request without
 test('expired certificate validity clears current coverage while history remains', function (): void {
     [, $companyEntityId, $employeeEntityId, $skillId] = reassessmentFixture();
 
-    $expired = app(AssessmentStore::class)->finalize($companyEntityId, new AssessmentDraft(
+    $expired = finalizeReassessmentAssessment($companyEntityId, new AssessmentDraft(
         employeeEntityId: $employeeEntityId,
         skillId: $skillId,
         assessedLevel: 4,
@@ -254,7 +289,7 @@ test('expired certificate validity clears current coverage while history remains
 
     expect($expired->refresh()->status)->toBe(AssessmentStatus::Finalized);
 
-    $fresh = app(AssessmentStore::class)->finalize($companyEntityId, new AssessmentDraft(
+    $fresh = finalizeReassessmentAssessment($companyEntityId, new AssessmentDraft(
         employeeEntityId: $employeeEntityId,
         skillId: $skillId,
         assessedLevel: 3,
@@ -281,7 +316,7 @@ test('expired certificate validity clears current coverage while history remains
 test('linking a post-training assessment fulfills the open reassessment request', function (): void {
     [, $companyEntityId, $employeeEntityId, $skillId, $ownerId] = reassessmentFixture();
 
-    $baseline = app(AssessmentStore::class)->finalize($companyEntityId, new AssessmentDraft(
+    $baseline = finalizeReassessmentAssessment($companyEntityId, new AssessmentDraft(
         employeeEntityId: $employeeEntityId,
         skillId: $skillId,
         assessedLevel: 2,
@@ -318,7 +353,7 @@ test('linking a post-training assessment fulfills the open reassessment request'
         actorUserId: 9,
     );
 
-    $post = app(AssessmentStore::class)->finalize($companyEntityId, new AssessmentDraft(
+    $post = finalizeReassessmentAssessment($companyEntityId, new AssessmentDraft(
         employeeEntityId: $employeeEntityId,
         skillId: $skillId,
         assessedLevel: 4,
@@ -357,7 +392,7 @@ test('linking a post-training assessment fulfills the open reassessment request'
 test('verified training participation opens reassessment without changing the score', function (): void {
     [, $companyEntityId, $employeeEntityId, $skillId, $ownerId] = reassessmentFixture();
 
-    app(AssessmentStore::class)->finalize($companyEntityId, new AssessmentDraft(
+    finalizeReassessmentAssessment($companyEntityId, new AssessmentDraft(
         employeeEntityId: $employeeEntityId,
         skillId: $skillId,
         assessedLevel: 2,
@@ -429,7 +464,7 @@ test('verified training participation opens reassessment without changing the sc
 test('expired coverage opens renewal work and score history stays append-only', function (): void {
     [, $companyEntityId, $employeeEntityId, $skillId] = reassessmentFixture();
 
-    $expired = app(AssessmentStore::class)->finalize($companyEntityId, new AssessmentDraft(
+    $expired = finalizeReassessmentAssessment($companyEntityId, new AssessmentDraft(
         employeeEntityId: $employeeEntityId,
         skillId: $skillId,
         assessedLevel: 4,

@@ -1,7 +1,7 @@
 <div class="space-y-section-gap">
     <x-ui.page-header
         :title="__('Skill assessments')"
-        :subtitle="__('HOD batch matrix — scored cells save as official assessment history.')"
+        :subtitle="__('Assessment matrix — scored cells are submitted for independent HOD verification.')"
     />
 
     @if (session('status'))
@@ -117,7 +117,7 @@
             </div>
 
             @if ($canAssess)
-                <x-ui.button wire:click="saveMatrix">{{ __('Save verified rows to history') }}</x-ui.button>
+                <x-ui.button wire:click="saveMatrix">{{ __('Submit scored rows for HOD verification') }}</x-ui.button>
             @endif
         @endif
     @endif

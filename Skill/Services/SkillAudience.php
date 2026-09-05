@@ -33,7 +33,7 @@ use App\Domains\PeopleConnector\Skill\Models\SkillAssessorAssignment;
  * that reason permits. A grant_all role alone is rejected: platform
  * administration must not silently become HR administration.
  */
-final class SkillAudience
+class SkillAudience
 {
     public const HR = 'hr';
 
@@ -359,6 +359,54 @@ final class SkillAudience
             && $targetUnits->every(fn (int $unitId): bool => in_array($unitId, $visibleUnits, true));
     }
 
+    public function authorizeAssessmentSubmission(
+        User $user,
+        int $companyEntityId,
+        int $employeeEntityId,
+    ): void {
+        if (! $this->mayForEmployee(
+            $user,
+            'people-connector.skill.assessment.submit',
+            $companyEntityId,
+            $employeeEntityId,
+            [self::HR, self::HOD, self::ASSESSOR],
+        )) {
+            $this->deny();
+        }
+    }
+
+    public function authorizeHodVerification(
+        User $user,
+        int $companyEntityId,
+        int $employeeEntityId,
+    ): void {
+        if (! $this->mayForEmployee(
+            $user,
+            'people-connector.skill.assessment.verify',
+            $companyEntityId,
+            $employeeEntityId,
+            [self::HOD],
+        )) {
+            $this->deny();
+        }
+    }
+
+    public function authorizeAssessmentFinalization(
+        User $user,
+        int $companyEntityId,
+        int $employeeEntityId,
+    ): void {
+        if (! $this->mayForEmployee(
+            $user,
+            'people-connector.skill.assessment.approve',
+            $companyEntityId,
+            $employeeEntityId,
+            [self::HOD],
+        )) {
+            $this->deny();
+        }
+    }
+
     public function boundEmployeeEntityId(User $user, int $companyEntityId): ?int
     {
         return ($binding = $this->activeBinding($user, $companyEntityId)) === null
@@ -377,6 +425,29 @@ final class SkillAudience
 
         return $this->companies->mayActFor($user, $companyEntityId)
             && array_intersect($requiredAudiences, $audiences) !== [];
+    }
+
+    /** @param list<string> $requiredAudiences */
+    private function mayForEmployee(
+        User $user,
+        string $capability,
+        int $companyEntityId,
+        int $employeeEntityId,
+        array $requiredAudiences,
+    ): bool {
+        try {
+            $audiences = $this->authorizeAudience($user, $capability);
+        } catch (AuthorizationDeniedException) {
+            return false;
+        }
+
+        return $this->companies->mayActFor($user, $companyEntityId)
+            && array_intersect($requiredAudiences, $audiences) !== []
+            && in_array(
+                $employeeEntityId,
+                $this->visibleEmployeeEntityIds($user, $companyEntityId, manage: true),
+                true,
+            );
     }
 
     private function hasAudience(Actor $actor, string $audience): bool
