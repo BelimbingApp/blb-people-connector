@@ -31,34 +31,17 @@ use App\Domains\PeopleConnector\Connector\Services\ProviderCredentialStore;
 use App\Domains\PeopleConnector\Connector\Services\WorkforceProjectionStore;
 use App\Domains\PeopleConnector\Connector\Testing\CompanyIsolationContract;
 use App\Domains\PeopleConnector\Connector\Testing\TwoCompanyTenant;
-use App\Domains\PeopleConnector\Skill\Data\ProficiencyLevelDraft;
-use App\Domains\PeopleConnector\Skill\Data\RequirementItemDraft;
-use App\Domains\PeopleConnector\Skill\Data\RequirementProfileDraft;
-use App\Domains\PeopleConnector\Skill\Data\RequirementSelectorDraft;
-use App\Domains\PeopleConnector\Skill\Data\SkillDraft;
-use App\Domains\PeopleConnector\Skill\Enums\AssessmentMethod;
-use App\Domains\PeopleConnector\Skill\Enums\RequirementCriticality;
-use App\Domains\PeopleConnector\Skill\Enums\RequirementProfileStatus;
-use App\Domains\PeopleConnector\Skill\Enums\SelectorType;
-use App\Domains\PeopleConnector\Skill\Enums\SkillScope;
-use App\Domains\PeopleConnector\Skill\Models\RequirementProfile;
-use App\Domains\PeopleConnector\Skill\Models\Skill;
-use App\Domains\PeopleConnector\Skill\Services\ProficiencyScaleStore;
-use App\Domains\PeopleConnector\Skill\Services\RequirementProfileStore;
-use App\Domains\PeopleConnector\Skill\Services\SkillCatalogStore;
-use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Storage;
 
 /**
  * The platform's DataShare packages are the export/backup/restore vehicle
  * for connector-owned data (blb-people-connector#53): the connector's tables
- * are registered with their module path, and the scope catalog derives two
- * scopes from that. Nothing had ever driven the vehicle over these tables.
- * These tests do, on both drivers, with two companies in one tenant.
+ * are registered with their module path. These tests drive the vehicle over
+ * the integration-owned tables on both drivers, with two companies in one
+ * tenant. People-owned Skill and Training scopes are verified in People.
  */
 const PEOPLE_CONNECTOR_SHARE_SCOPE = 'app/Domains/PeopleConnector/Connector';
-const PEOPLE_CONNECTOR_SKILL_SHARE_SCOPE = 'app/Domains/PeopleConnector/Skill';
 
 beforeEach(function (): void {
     // Packages are real files; keep them out of storage/app/private like the
@@ -112,31 +95,14 @@ function connectorShareReceive(DataShareTransferOfferBundle $bundle, DataShareEx
     return app(DataSharePackageInbox::class)->receiveFromProtectedPath($export->path, DataSharePackageExpectation::fromOffer($bundle));
 }
 
-/**
- * Two companies in one tenant, each with a category and a skill, so a leak
- * across the company axis is visible in what leaves and what comes back.
- *
- * @return array{TwoCompanyTenant, Skill, Skill}
- */
-function connectorShareFixture(): array
+/** Two companies in one tenant plus connector-owned hierarchy projections. */
+function connectorShareFixture(): TwoCompanyTenant
 {
     $fixture = CompanyIsolationContract::twoCompaniesInOneTenant();
     app(TenantContext::class)->set($fixture->tenantId);
-    $catalog = app(SkillCatalogStore::class);
-    $skills = [];
-
-    foreach ([[$fixture->alphaCompanyEntityId, 'alpha'], [$fixture->betaCompanyEntityId, 'beta']] as [$company, $prefix]) {
-        $category = $catalog->defineCategory($company, "{$prefix}.safety", ucfirst($prefix).' Safety');
-        $skills[] = $catalog->defineSkill($company, new SkillDraft(
-            code: "{$prefix}.forklift", name: ucfirst($prefix).' Forklift', definition: 'Operates the line to the approved standard.',
-            categoryId: (int) $category->id, scope: SkillScope::Shared, criticalClassification: null, evidenceGuide: null,
-            defaultAssessmentMethod: AssessmentMethod::DirectObservation, defaultReassessmentMonths: 12,
-        ));
-    }
 
     // These are the relations belimbing#528 repaired: optional references
-    // must round-trip both absent and present, not merely work for a Skill
-    // fixture that happens to have no projection rows at all.
+    // must round-trip both absent and present.
     $connection = ProviderConnection::query()
         ->where('tenant_id', $fixture->tenantId)
         ->where('company_id', $fixture->alphaCompany->id)
@@ -179,62 +145,7 @@ function connectorShareFixture(): array
         $at,
     ));
 
-    // A published scale carries immutable parent and child rows. It remains
-    // unchanged during a package apply, proving the planner does not try to
-    // "restore" it by rewriting protected records.
-    $scale = app(ProficiencyScaleStore::class)->draft($fixture->alphaCompanyEntityId, 'share-scale', 'Share Scale', [
-        new ProficiencyLevelDraft(0, 'Untrained', 'Cannot yet perform the task.', 'No authority.'),
-        new ProficiencyLevelDraft(1, 'Qualified', 'Performs the task independently.', 'May perform the task.'),
-    ]);
-    app(ProficiencyScaleStore::class)->publish($fixture->alphaCompanyEntityId, (int) $scale->id);
-
-    return [$fixture, $skills[0], $skills[1]];
-}
-
-/** Test setup only: emulate a fresh destination without weakening installed guards. */
-function connectorShareRemovePublishedRequirementProfile(int $profileId): void
-{
-    $tables = [
-        'people_connector_skill_requirement_items',
-        'people_connector_skill_requirement_profile_selectors',
-        'people_connector_skill_requirement_profiles',
-    ];
-
-    if (DB::connection()->getDriverName() === 'pgsql') {
-        foreach ($tables as $table) {
-            DB::statement("ALTER TABLE {$table} DISABLE TRIGGER USER");
-        }
-
-        try {
-            DB::table($tables[0])->where('profile_id', $profileId)->delete();
-            DB::table($tables[1])->where('profile_id', $profileId)->delete();
-            DB::table($tables[2])->where('id', $profileId)->delete();
-        } finally {
-            foreach ($tables as $table) {
-                DB::statement("ALTER TABLE {$table} ENABLE TRIGGER USER");
-            }
-        }
-
-        return;
-    }
-
-    $triggers = DB::table('sqlite_master')
-        ->where('type', 'trigger')
-        ->whereIn('tbl_name', $tables)
-        ->get(['name', 'sql']);
-    foreach ($triggers as $trigger) {
-        DB::statement('DROP TRIGGER '.DB::connection()->getQueryGrammar()->wrap($trigger->name));
-    }
-
-    try {
-        DB::table($tables[0])->where('profile_id', $profileId)->delete();
-        DB::table($tables[1])->where('profile_id', $profileId)->delete();
-        DB::table($tables[2])->where('id', $profileId)->delete();
-    } finally {
-        foreach ($triggers as $trigger) {
-            DB::unprepared($trigger->sql);
-        }
-    }
+    return $fixture;
 }
 
 /** @return array<string, list<array<string, mixed>>> every row of every table in the scope, keyed by table, ordered by id */
@@ -249,137 +160,23 @@ function connectorShareSnapshot(string $scope): array
     return $rows;
 }
 
-test('both connector scopes export every row faithfully: a re-plan against the source reports nothing but unchanged', function (string $scope): void {
+test('the connector scope exports every row faithfully', function (): void {
     connectorShareFixture();
-    $before = connectorShareSnapshot($scope);
+    $before = connectorShareSnapshot(PEOPLE_CONNECTOR_SHARE_SCOPE);
     $rowCount = array_sum(array_map('count', $before));
     expect($rowCount)->toBeGreaterThan(0);
 
-    ['bundle' => $bundle, 'export' => $export] = connectorSharePublish($scope);
+    ['bundle' => $bundle, 'export' => $export] = connectorSharePublish(PEOPLE_CONNECTOR_SHARE_SCOPE);
     $plan = app(DataShareImportPlanner::class)->plan(connectorShareReceive($bundle, $export));
 
     // "unchanged" is matched by key and content, so this is the package
-    // representing every row of every table in the scope identically.
+    // representing every connector-owned row identically.
     expect($plan->status)->toBe('ready')
         ->and($plan->summary['counts'])->toBe(['insert' => 0, 'unchanged' => $rowCount, 'conflict' => 0]);
-})->with([PEOPLE_CONNECTOR_SHARE_SCOPE, PEOPLE_CONNECTOR_SKILL_SHARE_SCOPE]);
-
-test('the skill scope restores into an emptied catalog identically, with the company guard and the skills-table triggers still standing', function (): void {
-    [$fixture, $alphaSkill, $betaSkill] = connectorShareFixture();
-    $before = connectorShareSnapshot(PEOPLE_CONNECTOR_SKILL_SHARE_SCOPE);
-    ['bundle' => $bundle, 'export' => $export] = connectorSharePublish(PEOPLE_CONNECTOR_SKILL_SHARE_SCOPE);
-
-    // Empty the mutable catalog the way a fresh instance would be: raw,
-    // children first. Published scales deliberately cannot be deleted — their
-    // immutability trigger is part of the contract — so leave those rows in
-    // place and prove the package classifies them as unchanged.
-    foreach (['people_connector_skill_skills', 'people_connector_skill_categories'] as $table) {
-        DB::table($table)->delete();
-    }
-    $retained = connectorShareSnapshot(PEOPLE_CONNECTOR_SKILL_SHARE_SCOPE);
-    $retainedRows = array_sum(array_map('count', $retained));
-    $removedRows = array_sum(array_map('count', $before)) - $retainedRows;
-    expect($removedRows)->toBeGreaterThan(0);
-
-    $receipt = connectorShareReceive($bundle, $export);
-    $plan = app(DataShareImportPlanner::class)->plan($receipt);
-    expect($plan->summary['counts']['conflict'])->toBe(0)
-        ->and($plan->summary['counts']['insert'])->toBe($removedRows)
-        ->and($plan->summary['counts']['unchanged'])->toBe($retainedRows);
-    app(DataSharePackageApplier::class)->apply($plan, $receipt->package_sha256, $plan->plan_hash, confirmed: true);
-
-    expect(connectorShareSnapshot(PEOPLE_CONNECTOR_SKILL_SHARE_SCOPE))->toEqual($before);
-
-    // Restored rows are still company-owned rows. The guard is the model's,
-    // not the package's: a query that pins no company is refused outright
-    // (deleting RequireCompanyScope from CompanyOwned turns this red — the
-    // forCompany() assertions alone stayed green without it), and pinned to
-    // one company the other's rows are invisible.
-    expect(fn () => Skill::query()->forTenant($fixture->tenantId)->get())->toThrow(MissingCompanyScopeException::class);
-    expect(Skill::query()->forCompany($fixture->tenantId, $fixture->alphaCompanyEntityId)->pluck('code')->all())->toBe(['alpha.forklift'])
-        ->and(Skill::query()->forCompany($fixture->tenantId, $fixture->betaCompanyEntityId)->pluck('code')->all())->toBe(['beta.forklift']);
-
-    // The database guards are the migration's, not the package's. The
-    // published scale and its levels were retained as unchanged during apply,
-    // so deliberately write them now: an unchanged plan does not fire a
-    // write-trigger by itself.
-    expect(fn () => DB::transaction(fn () => DB::table('people_connector_skill_skills')->where('id', $alphaSkill->id)->update(['code' => 'renamed'])))
-        ->toThrow(QueryException::class);
-    expect(fn () => DB::transaction(fn () => DB::table('people_connector_skill_skills')->where('id', $betaSkill->id)->update(['company_entity_id' => $fixture->alphaCompanyEntityId])))
-        ->toThrow(QueryException::class);
-
-    $scaleId = DB::table('people_connector_skill_proficiency_scales')->where('code', 'share-scale')->value('id');
-    expect($scaleId)->not->toBeNull();
-    expect(fn () => DB::transaction(fn () => DB::table('people_connector_skill_proficiency_scales')->where('id', $scaleId)->update(['name' => 'Rewritten after restore'])))
-        ->toThrow(QueryException::class);
-    expect(fn () => DB::transaction(fn () => DB::table('people_connector_skill_proficiency_scale_levels')->where('scale_id', $scaleId)->where('level', 0)->update(['name' => 'Rewritten level after restore'])))
-        ->toThrow(QueryException::class);
-});
-
-test('the skill scope restores a published requirement profile through exact transaction-scoped authority', function (): void {
-    [$fixture, $alphaSkill] = connectorShareFixture();
-    $profile = app(RequirementProfileStore::class)->draft(
-        $fixture->alphaCompanyEntityId,
-        new RequirementProfileDraft(
-            code: 'share-profile',
-            name: 'Share Profile',
-            selectors: [new RequirementSelectorDraft(SelectorType::Company)],
-            items: [new RequirementItemDraft(
-                skillId: (int) $alphaSkill->id,
-                sequence: 1,
-                requiredLevel: 1,
-                criticality: RequirementCriticality::Essential,
-                weightPercent: 100,
-            )],
-        ),
-    );
-    $profile = app(RequirementProfileStore::class)->publish(
-        $fixture->alphaCompanyEntityId,
-        (int) $profile->id,
-    );
-    $before = connectorShareSnapshot(PEOPLE_CONNECTOR_SKILL_SHARE_SCOPE);
-    ['bundle' => $bundle, 'export' => $export] = connectorSharePublish(PEOPLE_CONNECTOR_SKILL_SHARE_SCOPE);
-
-    connectorShareRemovePublishedRequirementProfile((int) $profile->id);
-    expect(RequirementProfile::query()->forCompany(
-        $fixture->tenantId,
-        $fixture->alphaCompanyEntityId,
-    )->whereKey($profile->id)->doesntExist())->toBeTrue();
-
-    $receipt = connectorShareReceive($bundle, $export);
-    $plan = app(DataShareImportPlanner::class)->plan($receipt);
-    expect($plan->status)->toBe('ready')
-        ->and($plan->summary['counts']['conflict'])->toBe(0)
-        ->and($plan->summary['counts']['insert'])->toBe(3);
-
-    app(DataSharePackageApplier::class)->apply(
-        $plan,
-        $receipt->package_sha256,
-        $plan->plan_hash,
-        confirmed: true,
-    );
-
-    expect(connectorShareSnapshot(PEOPLE_CONNECTOR_SKILL_SHARE_SCOPE))->toEqual($before)
-        ->and($profile->fresh()->status)->toBe(RequirementProfileStatus::Published)
-        ->and(DB::table('people_connector_skill_requirement_profile_transition_proofs')->count())->toBe(0);
-
-    expect(fn () => DB::transaction(fn (): bool => DB::table(
-        'people_connector_skill_requirement_profiles',
-    )->insert([
-        'tenant_id' => $fixture->tenantId,
-        'company_entity_id' => $fixture->alphaCompanyEntityId,
-        'code' => 'raw-governed-state',
-        'name' => 'Raw governed state',
-        'version' => 1,
-        'status' => RequirementProfileStatus::Published->value,
-        'published_at' => now(),
-        'created_at' => now(),
-        'updated_at' => now(),
-    ])))->toThrow(QueryException::class);
 });
 
 test('connector projections restore optional hierarchy and assignment references without disturbing append-only history', function (): void {
-    [$fixture] = connectorShareFixture();
+    $fixture = connectorShareFixture();
     $before = connectorShareSnapshot(PEOPLE_CONNECTOR_SHARE_SCOPE);
     ['bundle' => $bundle, 'export' => $export] = connectorSharePublish(PEOPLE_CONNECTOR_SHARE_SCOPE);
 
@@ -441,7 +238,7 @@ test('connector projections restore optional hierarchy and assignment references
 });
 
 test('a scope export is instance-level: one package carries every company in the tenant, and what the credential row carries is measured', function (): void {
-    [$fixture] = connectorShareFixture();
+    $fixture = connectorShareFixture();
     $connections = app(ProviderConnectionStore::class);
     $connection = $connections->active(ProviderScope::company((int) $fixture->alphaCompany->id));
     $issuedAt = new DateTimeImmutable('2026-09-02T00:00:00+00:00');
@@ -500,7 +297,7 @@ test('a scope export is instance-level: one package carries every company in the
 });
 
 test('an operator can redact the credential reference on export, and the platform names what that costs', function (): void {
-    [$fixture] = connectorShareFixture();
+    $fixture = connectorShareFixture();
     $connections = app(ProviderConnectionStore::class);
     $connection = $connections->active(ProviderScope::company((int) $fixture->alphaCompany->id));
     $issuedAt = new DateTimeImmutable('2026-09-02T00:00:00+00:00');

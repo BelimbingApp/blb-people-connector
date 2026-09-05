@@ -1,7 +1,7 @@
 {
     "name": "blb/people-connector",
     "type": "blb-module",
-    "description": "Provider-neutral People adapter contracts, discovery, health, and compatibility.",
+    "description": "Provider-neutral People integration contracts, workforce projections, synchronization, and reconciliation.",
     "license": "MIT",
     "autoload": {
         "psr-4": {
@@ -12,7 +12,7 @@
         "blb": {
             "module": "people-connector/connector",
             "version": "0.1.0",
-            "description": "People Connector provider contract and adapter registry.",
+            "description": "People integration identities, projections, checkpoints, reconciliation, and provider connections.",
             "requires-modules": {
                 "core/company": "*",
                 "people/provider": "*"

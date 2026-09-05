@@ -11,7 +11,7 @@ use App\Core\Company\Models\Company;
  *
  * Each side carries both ids that the word "company" refers to here: the
  * platform company a user belongs to, and the workforce company entity that
- * connector and Skill rows are owned by. See
+ * connector workforce projections are owned by. See
  * docs/contracts/company-ownership.md.
  */
 final readonly class TwoCompanyTenant
