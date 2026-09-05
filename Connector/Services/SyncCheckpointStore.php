@@ -61,6 +61,49 @@ final class SyncCheckpointStore
         return $cursor === null ? null : (string) $cursor;
     }
 
+    /**
+     * Record that the current cursor was refused again, and return the running
+     * count.
+     *
+     * The counter belongs to the cursor rather than to the connection: a page
+     * must not inherit the failures of the one before it, and advancing is what
+     * clears the slate.
+     */
+    public function recordFailedAttempt(int $connectionId, string $stream): int
+    {
+        $tenantId = $this->tenantContext->requireTenantId();
+        $this->assertStream($stream);
+
+        return DB::transaction(function () use ($connectionId, $stream, $tenantId): int {
+            $checkpoint = SyncCheckpoint::query()
+                ->forTenant($tenantId)
+                ->where('connection_id', $connectionId)
+                ->where('stream', $stream)
+                ->lockForUpdate()
+                ->first();
+
+            if ($checkpoint === null) {
+                return 0;
+            }
+
+            $checkpoint->fill(['failed_attempts' => (int) $checkpoint->failed_attempts + 1])->save();
+
+            return (int) $checkpoint->failed_attempts;
+        });
+    }
+
+    public function clearFailedAttempts(int $connectionId, string $stream): void
+    {
+        $tenantId = $this->tenantContext->requireTenantId();
+        $this->assertStream($stream);
+
+        SyncCheckpoint::query()
+            ->forTenant($tenantId)
+            ->where('connection_id', $connectionId)
+            ->where('stream', $stream)
+            ->update(['failed_attempts' => 0]);
+    }
+
     public function advanceCompletedPage(
         int $connectionId,
         string $stream,
@@ -130,6 +173,10 @@ final class SyncCheckpointStore
                     'version' => $nextVersion,
                     'as_of_at' => $page->asOf,
                     'completed_at' => $finishedAt,
+                    // The cursor moved, so the failures counted against the old
+                    // one are spent. Carrying them forward would park a healthy
+                    // page for the sins of its predecessor.
+                    'failed_attempts' => 0,
                 ])->save();
             }
 

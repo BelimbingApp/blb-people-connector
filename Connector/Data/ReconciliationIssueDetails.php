@@ -12,6 +12,14 @@ final readonly class ReconciliationIssueDetails
         public ?int $expectedCount = null,
         public ?int $observedCount = null,
         public ?string $relatedExternalId = null,
+        /**
+         * A hex digest of a feed page that could not be applied, so an operator
+         * can tell two parked pages apart and recognise the same one coming
+         * back. Validated as a digest and nothing else: a hash field that
+         * accepted arbitrary text would be the generic payload slot
+         * docs/contracts/diagnostic-privacy.md says this DTO must not have.
+         */
+        public ?string $payloadHash = null,
     ) {
         foreach ([$field, $reasonCode] as $identifier) {
             if ($identifier !== null
@@ -29,6 +37,12 @@ final readonly class ReconciliationIssueDetails
             }
         }
 
+        if ($payloadHash !== null && preg_match('/^[0-9a-f]{64}$/', $payloadHash) !== 1) {
+            throw new InvalidReconciliationIssueException(
+                'A reconciliation payload hash is a 64-character lowercase hex digest and never the payload itself.',
+            );
+        }
+
         if ($relatedExternalId !== null && (trim($relatedExternalId) === '' || strlen($relatedExternalId) > 512)) {
             throw new InvalidReconciliationIssueException('Related reconciliation external identifiers must be non-empty and cannot exceed 512 bytes.');
         }
@@ -43,6 +57,7 @@ final readonly class ReconciliationIssueDetails
             'expected_count' => $this->expectedCount,
             'observed_count' => $this->observedCount,
             'related_external_id' => $this->relatedExternalId,
+            'payload_hash' => $this->payloadHash,
         ], static fn (int|string|null $value): bool => $value !== null);
     }
 }

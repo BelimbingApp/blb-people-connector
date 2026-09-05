@@ -16,6 +16,15 @@ return [
         'stream' => 'workforce',
         'page_limit' => 250,
         'max_age_minutes' => 1440,
+
+        /*
+         * How many consecutive passes may be refused at the same cursor before
+         * the page is parked for an operator. Retrying a page that the provider
+         * and the connector disagree about is not going to change either of
+         * their minds; past this point the retry is noise and the disagreement
+         * is the thing worth surfacing.
+         */
+        'dead_letter_attempts' => 3,
     ],
 
     /*

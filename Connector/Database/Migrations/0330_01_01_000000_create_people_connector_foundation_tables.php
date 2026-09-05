@@ -315,6 +315,10 @@ return new class extends Migration
             $table->string('stream', 100);
             $table->text('resume_cursor');
             $table->unsignedBigInteger('version')->default(0);
+            // Consecutive failed attempts at the *current* resume cursor. The
+            // cursor only moves when a pass succeeds, so advancing is what
+            // resets this: a page cannot inherit the failures of the one before.
+            $table->unsignedInteger('failed_attempts')->default(0);
             $table->timestamp('as_of_at');
             $table->timestamp('completed_at');
             $table->timestamps();
