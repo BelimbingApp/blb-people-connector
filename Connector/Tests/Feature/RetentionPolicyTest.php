@@ -188,6 +188,18 @@ test('a retention entry naming a table the connector does not own is refused', f
         ->toThrow(RetentionPolicyException::class);
 });
 
+test('a connector-owned table omitted from the retention policy is refused', function (): void {
+    $f = retentionTenant('Retention Missing Table Tenant');
+    retentionAuthz(true);
+    retentionConfigure([]);
+
+    // Missing and indefinite are different policy states. Silently omitting a
+    // newly owned table leaves operators unable to tell whether its retention
+    // was deliberately decided or simply never considered.
+    expect(fn () => app(RetentionPolicy::class)->review($f['actor'], new DateTimeImmutable('2026-09-06T12:00:00+00:00')))
+        ->toThrow(RetentionPolicyException::class);
+});
+
 test('a retention entry naming a column the table does not have is refused', function (): void {
     $f = retentionTenant('Retention Bad Column Tenant');
     retentionAuthz(true);
