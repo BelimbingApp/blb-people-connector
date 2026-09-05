@@ -282,6 +282,12 @@ test('HOD assessor and employee audiences resolve department assignment and self
         (int) $teamWorker->workforce_entity_id,
     ))->toThrow(AuthorizationDeniedException::class);
 
+    expect(fn () => $audience->authorizeHodVerification(
+        $hod,
+        $companyAEntityId,
+        (int) $otherDepartment->workforce_entity_id,
+    ))->toThrow(AuthorizationDeniedException::class);
+
     expect(fn () => $audience->visibleEmployeeEntityIds($employee, $companyAEntityId, manage: true))
         ->toThrow(AuthorizationDeniedException::class);
 

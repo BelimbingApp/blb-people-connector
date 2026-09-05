@@ -357,6 +357,7 @@ class SkillAudience
 
         return ! $targetUnits->contains(null)
             && $targetUnits->every(fn (int $unitId): bool => in_array($unitId, $visibleUnits, true));
+    }
 
     public function authorizeAssessmentSubmission(
         User $user,

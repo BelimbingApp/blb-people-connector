@@ -241,6 +241,87 @@ test('score projection waits for an independent HOD decision', function (): void
     Event::assertNotDispatched(SkillAssessmentFinalized::class);
 });
 
+test('a pending assessment cannot finalize before HOD verification', function (): void {
+    Event::fake([SkillAssessmentFinalized::class]);
+    [$tenantId, $companyEntityId, $employeeEntityId, $skillId] = assessmentFixture();
+    $store = app(AssessmentStore::class);
+
+    $submitted = $store->submit(assessmentActor(9), $companyEntityId, assessmentDraft($employeeEntityId, $skillId));
+    $pending = $store->requestHodVerification(assessmentActor(9), $companyEntityId, (int) $submitted->id);
+
+    expect(fn () => $store->finalizeVerified(assessmentActor(10), $companyEntityId, (int) $pending->id))
+        ->toThrow(InvalidAssessmentException::class, 'HOD verification is required');
+
+    expect($pending->fresh()->status)->toBe(AssessmentStatus::PendingHodVerification)
+        ->and(EmployeeSkillScore::query()->forCompany($tenantId, $companyEntityId)->count())->toBe(0);
+
+    Event::assertNotDispatched(SkillAssessmentFinalized::class);
+});
+
+test('the assessor cannot finalize an independently verified assessment', function (): void {
+    Event::fake([SkillAssessmentFinalized::class]);
+    [$tenantId, $companyEntityId, $employeeEntityId, $skillId] = assessmentFixture();
+    $store = app(AssessmentStore::class);
+
+    $submitted = $store->submit(assessmentActor(9), $companyEntityId, assessmentDraft($employeeEntityId, $skillId));
+    $pending = $store->requestHodVerification(assessmentActor(9), $companyEntityId, (int) $submitted->id);
+    $verified = $store->verifyHod(assessmentActor(10), $companyEntityId, (int) $pending->id);
+
+    expect(fn () => $store->finalizeVerified(assessmentActor(9), $companyEntityId, (int) $verified->id))
+        ->toThrow(InvalidAssessmentException::class, 'assessor cannot finalize');
+
+    expect($verified->fresh()->status)->toBe(AssessmentStatus::PendingHodVerification)
+        ->and(EmployeeSkillScore::query()->forCompany($tenantId, $companyEntityId)->count())->toBe(0);
+
+    Event::assertNotDispatched(SkillAssessmentFinalized::class);
+});
+
+test('only submitted assessments can enter the HOD verification queue', function (): void {
+    [, $companyEntityId, $employeeEntityId, $skillId] = assessmentFixture();
+    $store = app(AssessmentStore::class);
+    $submitted = $store->submit(assessmentActor(9), $companyEntityId, assessmentDraft($employeeEntityId, $skillId));
+
+    $draftAttributes = $submitted->getAttributes();
+    unset($draftAttributes['id']);
+    $draftAttributes['status'] = AssessmentStatus::Draft->value;
+    $draftAttributes['hod_verification'] = HodVerification::Pending->value;
+    $draftAttributes['hod_verifier_user_id'] = null;
+    $draftAttributes['hod_verified_at'] = null;
+    $draftAttributes['hod_decision_notes'] = null;
+    $draftAttributes['finalized_at'] = null;
+    $draftAttributes['finalized_by_user_id'] = null;
+    $draft = SkillAssessment::query()->create($draftAttributes);
+
+    expect(fn () => $store->requestHodVerification(assessmentActor(9), $companyEntityId, (int) $draft->id))
+        ->toThrow(InvalidAssessmentException::class, 'Only a submitted assessment');
+});
+
+test('HOD decisions are accepted only once for a pending assessment', function (): void {
+    [, $companyEntityId, $employeeEntityId, $skillId] = assessmentFixture();
+    $store = app(AssessmentStore::class);
+
+    $submitted = $store->submit(assessmentActor(9), $companyEntityId, assessmentDraft($employeeEntityId, $skillId));
+    $pending = $store->requestHodVerification(assessmentActor(9), $companyEntityId, (int) $submitted->id);
+    $verified = $store->verifyHod(assessmentActor(10), $companyEntityId, (int) $pending->id);
+
+    expect(fn () => $store->verifyHod(assessmentActor(10), $companyEntityId, (int) $verified->id))
+        ->toThrow(InvalidAssessmentException::class, 'pending, undecided');
+
+    $secondSubmitted = $store->submit(assessmentActor(9), $companyEntityId, assessmentDraft($employeeEntityId, $skillId, [
+        'assessedLevel' => 3,
+    ]));
+    $secondPending = $store->requestHodVerification(assessmentActor(9), $companyEntityId, (int) $secondSubmitted->id);
+    $returned = $store->returnForCorrection(
+        assessmentActor(10),
+        $companyEntityId,
+        (int) $secondPending->id,
+        'Attach the observation record before resubmission.',
+    );
+
+    expect(fn () => $store->verifyHod(assessmentActor(10), $companyEntityId, (int) $returned->id))
+        ->toThrow(InvalidAssessmentException::class, 'pending, undecided');
+});
+
 test('returned assessments resubmit through a new governed lineage', function (): void {
     [$tenantId, $companyEntityId, $employeeEntityId, $skillId] = assessmentFixture();
     $store = app(AssessmentStore::class);
