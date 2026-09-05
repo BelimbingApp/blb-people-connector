@@ -2,7 +2,15 @@
 
 declare(strict_types=1);
 
+use App\Base\Authz\Enums\PrincipalType;
+use App\Base\Authz\Models\PrincipalRole;
+use App\Base\Authz\Models\Role;
 use App\Base\Tenancy\Contracts\TenantContext;
+use App\Base\Workflow\Models\StatusHistory;
+use App\Base\Workflow\Models\Workflow;
+use App\Base\Workflow\Notifications\TransitionNotification;
+use App\Core\Company\Models\Company;
+use App\Core\User\Models\User;
 use App\Domains\PeopleConnector\Connector\Data\ExternalReference;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceCompany;
 use App\Domains\PeopleConnector\Connector\Data\WorkforcePosition;
@@ -11,6 +19,8 @@ use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
 use App\Domains\PeopleConnector\Connector\Models\DomainModels;
 use App\Domains\PeopleConnector\Connector\Models\ExternalIdentity;
 use App\Domains\PeopleConnector\Connector\Models\ProviderConnection;
+use App\Domains\PeopleConnector\Connector\Models\WorkforceCompanyProjection;
+use App\Domains\PeopleConnector\Connector\Models\WorkforceEmployeeProjection;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceEntity;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceOrganizationUnitProjection;
 use App\Domains\PeopleConnector\Connector\Models\WorkforcePositionProjection;
@@ -20,6 +30,7 @@ use App\Domains\PeopleConnector\Skill\Data\RequirementItemDraft;
 use App\Domains\PeopleConnector\Skill\Data\RequirementProfileDraft;
 use App\Domains\PeopleConnector\Skill\Data\RequirementSelectorDraft;
 use App\Domains\PeopleConnector\Skill\Data\SkillDraft;
+use App\Domains\PeopleConnector\Skill\Database\Seeders\RequirementProfileWorkflowSeeder;
 use App\Domains\PeopleConnector\Skill\Enums\AssessmentMethod;
 use App\Domains\PeopleConnector\Skill\Enums\CriticalClassification;
 use App\Domains\PeopleConnector\Skill\Enums\RequirementCriticality;
@@ -31,18 +42,23 @@ use App\Domains\PeopleConnector\Skill\Events\RequirementProfileRetired;
 use App\Domains\PeopleConnector\Skill\Exceptions\InvalidRequirementProfileException;
 use App\Domains\PeopleConnector\Skill\Exceptions\PublishedRequirementImmutableException;
 use App\Domains\PeopleConnector\Skill\Exceptions\RequirementProfileNotFoundException;
+use App\Domains\PeopleConnector\Skill\Livewire\RequirementProfile\Show as RequirementProfileShow;
 use App\Domains\PeopleConnector\Skill\Models\RequirementItem;
 use App\Domains\PeopleConnector\Skill\Models\RequirementProfile;
 use App\Domains\PeopleConnector\Skill\Models\RequirementProfileSelector;
 use App\Domains\PeopleConnector\Skill\Models\Skill;
 use App\Domains\PeopleConnector\Skill\Services\RequirementProfileStore;
 use App\Domains\PeopleConnector\Skill\Services\RequirementResolver;
+use App\Domains\PeopleConnector\Skill\Services\SkillAudienceAssignmentStore;
 use App\Domains\PeopleConnector\Skill\Services\SkillCatalogStore;
+use App\Domains\PeopleConnector\Skill\Workflow\RequirementProfileTransitionAuthority;
 use Carbon\Carbon;
 use Illuminate\Database\Eloquent\ModelNotFoundException;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Event;
+use Illuminate\Support\Facades\Notification;
+use Livewire\Livewire;
 
 afterEach(function (): void {
     app(TenantContext::class)->clear();
@@ -181,6 +197,18 @@ test('a requirement profile carries workbook parity fields and fires lifecycle e
     [$tenantId, $companyEntityId, $skillA, $skillB] = requirementFixture();
 
     $store = app(RequirementProfileStore::class);
+
+    expect(fn () => DB::transaction(fn (): bool => DB::table('people_connector_skill_requirement_profiles')->insert([
+        'tenant_id' => $tenantId,
+        'company_entity_id' => $companyEntityId,
+        'code' => 'hostile.published',
+        'name' => 'Hostile published insert',
+        'version' => 1,
+        'status' => RequirementProfileStatus::Published->value,
+        'published_at' => now(),
+        'created_at' => now(),
+        'updated_at' => now(),
+    ])))->toThrow(QueryException::class);
     $profile = $store->draft($companyEntityId, simpleProfileDraft($skillA, $skillB));
 
     $itemCount = RequirementItem::query()->forCompany($tenantId, $companyEntityId)->where('profile_id', $profile->id)->count();
@@ -772,4 +800,428 @@ test('criticality enum provides workbook priority multipliers', function (): voi
     expect(RequirementCriticality::Critical->multiplier())->toBe(3)
         ->and(RequirementCriticality::Essential->multiplier())->toBe(2)
         ->and(RequirementCriticality::Development->multiplier())->toBe(1);
+});
+
+function requirementGovernanceRole(User $user, string $code): void
+{
+    setupAuthzRoles();
+    $role = Role::query()->whereNull('company_id')->where('code', $code)->sole();
+    PrincipalRole::query()->firstOrCreate([
+        'company_id' => $user->company_id,
+        'principal_type' => PrincipalType::USER->value,
+        'principal_id' => $user->id,
+        'role_id' => $role->id,
+    ]);
+}
+
+/** @return array{int, ProviderConnection} */
+function requirementGovernanceCompany(int $tenantId, Company $platformCompany): array
+{
+    $company = requirementEntity($tenantId, 'company');
+    $connection = ProviderConnection::query()->create([
+        'tenant_id' => $tenantId,
+        'company_id' => $platformCompany->id,
+        'scope_key' => 'company:'.$platformCompany->id,
+        'active_scope_key' => 'company:'.$platformCompany->id,
+        'provider_id' => 'governance.test',
+        'status' => ProviderConnection::STATUS_ACTIVE,
+    ]);
+    $identity = ExternalIdentity::query()->create([
+        'tenant_id' => $tenantId,
+        'connection_id' => $connection->id,
+        'workforce_entity_id' => $company->id,
+        'provider_id' => 'governance.test',
+        'resource_type' => 'company',
+        'external_id' => 'company-'.$company->id,
+        'external_id_hash' => hash('sha256', 'company-'.$company->id),
+        'state' => ExternalIdentity::STATE_ACTIVE,
+        'effective_from' => now(),
+        'last_observed_at' => now(),
+    ]);
+    WorkforceCompanyProjection::query()->create([
+        'tenant_id' => $tenantId,
+        'workforce_entity_id' => $company->id,
+        'source_identity_id' => $identity->id,
+        'name' => $platformCompany->name,
+        'active' => true,
+        'effective_at' => now(),
+        'observed_at' => now(),
+    ]);
+
+    return [(int) $company->id, $connection];
+}
+
+function requirementGovernanceEmployee(
+    int $tenantId,
+    int $companyEntityId,
+    ProviderConnection $connection,
+    int $departmentEntityId,
+): WorkforceEmployeeProjection {
+    $employee = requirementEntity($tenantId, 'employee');
+    $userEntity = requirementEntity($tenantId, 'user');
+    $externalId = 'employee-'.$employee->id;
+    $identity = ExternalIdentity::query()->create([
+        'tenant_id' => $tenantId,
+        'connection_id' => $connection->id,
+        'workforce_entity_id' => $employee->id,
+        'provider_id' => 'governance.test',
+        'resource_type' => 'employee',
+        'external_id' => $externalId,
+        'external_id_hash' => hash('sha256', $externalId),
+        'state' => ExternalIdentity::STATE_ACTIVE,
+        'effective_from' => now(),
+        'last_observed_at' => now(),
+    ]);
+
+    return WorkforceEmployeeProjection::query()->create([
+        'tenant_id' => $tenantId,
+        'workforce_entity_id' => $employee->id,
+        'source_identity_id' => $identity->id,
+        'company_entity_id' => $companyEntityId,
+        'user_entity_id' => $userEntity->id,
+        'organization_entity_id' => $departmentEntityId,
+        'department_head_entity_id' => $employee->id,
+        'display_name' => 'Department Head',
+        'active' => true,
+        'effective_at' => now(),
+        'observed_at' => now(),
+    ]);
+}
+
+test('governed profiles require in-scope HOD review and HR approval before publication', function (): void {
+    Notification::fake();
+    [$tenant, $platformCompany] = createTenantWithCompany(
+        ['name' => 'Governance Tenant'],
+        ['name' => 'Governance Company'],
+    );
+    $tenantId = (int) $tenant->id;
+    app(TenantContext::class)->set($tenantId);
+    [$companyEntityId, $connection] = requirementGovernanceCompany($tenantId, $platformCompany);
+    $department = requirementEntity($tenantId, 'organization_unit', $companyEntityId);
+    $hodEmployee = requirementGovernanceEmployee($tenantId, $companyEntityId, $connection, (int) $department->id);
+
+    $hr = User::factory()->create(['company_id' => $platformCompany->id]);
+    $hod = User::factory()->create(['company_id' => $platformCompany->id]);
+    $outsider = User::factory()->create(['company_id' => $platformCompany->id]);
+    requirementGovernanceRole($hr, 'people_hr');
+    requirementGovernanceRole($hod, 'people_hod');
+    requirementGovernanceRole($outsider, 'people_hod');
+    app(SkillAudienceAssignmentStore::class)->confirmActor(
+        $hr,
+        $hod,
+        $companyEntityId,
+        (int) $hodEmployee->workforce_entity_id,
+        'review:hod-governance-binding',
+    );
+    (new RequirementProfileWorkflowSeeder)->run();
+    expect(Workflow::query()
+        ->forModule('people-connector/skill')
+        ->where('code', RequirementProfile::WORKFLOW_FLOW)
+        ->exists())->toBeTrue();
+
+    $category = app(SkillCatalogStore::class)->defineCategory($companyEntityId, 'governed', 'Governed');
+    $skill = app(SkillCatalogStore::class)->defineSkill($companyEntityId, new SkillDraft(
+        code: 'governed.skill',
+        name: 'Governed Skill',
+        definition: 'Technical requirement.',
+        categoryId: (int) $category->id,
+        scope: SkillScope::Shared,
+        defaultAssessmentMethod: AssessmentMethod::DirectObservation,
+    ));
+    $profile = app(RequirementProfileStore::class)->draft($companyEntityId, new RequirementProfileDraft(
+        code: 'governed.profile',
+        name: 'Governed Profile',
+        selectors: [new RequirementSelectorDraft(SelectorType::Department, null, (int) $department->id)],
+        items: [new RequirementItemDraft(
+            skillId: (int) $skill->id,
+            sequence: 1,
+            requiredLevel: 3,
+            criticality: RequirementCriticality::Critical,
+            weightPercent: 100.0,
+        )],
+    ));
+    $store = app(RequirementProfileStore::class);
+
+    expect(fn () => $profile->update(['status' => RequirementProfileStatus::PendingHodReview]))
+        ->toThrow(PublishedRequirementImmutableException::class, 'must use the governed workflow');
+    expect($profile->refresh()->status)->toBe(RequirementProfileStatus::Draft)
+        ->and(StatusHistory::timeline(RequirementProfile::WORKFLOW_FLOW, (int) $profile->id))->toBeEmpty();
+    DB::transaction(function () use ($profile): void {
+        $rejected = false;
+
+        try {
+            app(RequirementProfileTransitionAuthority::class)->authorize(
+                $profile,
+                RequirementProfileStatus::Draft,
+                RequirementProfileStatus::PendingHodReview,
+            );
+            $profile->update([
+                'status' => RequirementProfileStatus::PendingHodReview->value,
+                'published_at' => now(),
+            ]);
+        } catch (QueryException) {
+            $rejected = true;
+            // Deliberately keep the outer transaction alive: the lifecycle
+            // savepoint must already have rolled the rejected proof back.
+        }
+
+        expect($rejected)->toBeTrue()
+            ->and(DB::table('people_connector_skill_requirement_profiles')
+                ->where('id', $profile->id)
+                ->value('status'))->toBe(RequirementProfileStatus::Draft->value)
+            ->and(DB::table('people_connector_skill_requirement_profile_transition_proofs')->count())->toBe(0);
+        expect(fn () => DB::transaction(fn (): int => DB::table(
+            'people_connector_skill_requirement_profiles',
+        )
+            ->where('id', $profile->id)
+            ->update(['status' => RequirementProfileStatus::PendingHodReview->value])))
+            ->toThrow(QueryException::class);
+    });
+    expect($profile->refresh()->status)->toBe(RequirementProfileStatus::Draft)
+        ->and(DB::table('people_connector_skill_requirement_profile_transition_proofs')->count())->toBe(0);
+
+    $dispatcher = RequirementProfile::getEventDispatcher();
+    $updatingEvent = 'eloquent.updating: '.RequirementProfile::class;
+    $originalUpdatingListeners = $dispatcher->getRawListeners()[$updatingEvent] ?? [];
+
+    try {
+        RequirementProfile::updating(
+            fn (RequirementProfile $candidate): ?bool => $candidate->is($profile) ? false : null,
+        );
+
+        DB::transaction(function () use ($profile): void {
+            app(RequirementProfileTransitionAuthority::class)->authorize(
+                $profile,
+                RequirementProfileStatus::Draft,
+                RequirementProfileStatus::PendingHodReview,
+            );
+
+            expect($profile->update([
+                'status' => RequirementProfileStatus::PendingHodReview->value,
+            ]))->toBeFalse()
+                ->and(DB::table('people_connector_skill_requirement_profiles')
+                    ->where('id', $profile->id)
+                    ->value('status'))->toBe(RequirementProfileStatus::Draft->value)
+                ->and(DB::table('people_connector_skill_requirement_profile_transition_proofs')->count())->toBe(0);
+
+            expect(fn () => DB::transaction(fn (): int => DB::table(
+                'people_connector_skill_requirement_profiles',
+            )
+                ->where('id', $profile->id)
+                ->update(['status' => RequirementProfileStatus::PendingHodReview->value])))
+                ->toThrow(QueryException::class);
+        });
+    } finally {
+        $dispatcher->forget($updatingEvent);
+        foreach ($originalUpdatingListeners as $listener) {
+            $dispatcher->listen($updatingEvent, $listener);
+        }
+        $profile->refresh();
+    }
+
+    expect(fn () => DB::transaction(fn (): int => DB::table('people_connector_skill_requirement_profiles')
+        ->where('id', $profile->id)
+        ->update(['status' => RequirementProfileStatus::PendingHodReview->value])))
+        ->toThrow(QueryException::class);
+    expect($profile->refresh()->status)->toBe(RequirementProfileStatus::Draft)
+        ->and(StatusHistory::timeline(RequirementProfile::WORKFLOW_FLOW, (int) $profile->id))->toBeEmpty();
+
+    $draftItem = RequirementItem::query()->forCompany($tenantId, $companyEntityId)
+        ->where('profile_id', $profile->id)->firstOrFail();
+    DB::table('people_connector_skill_requirement_items')
+        ->where('id', $draftItem->id)
+        ->update(['required_level' => 6]);
+    expect(fn () => $store->submitForReview($hr, $companyEntityId, (int) $profile->id))
+        ->toThrow(InvalidRequirementProfileException::class, 'Required level must be between 0 and 5');
+    expect($profile->refresh()->status)->toBe(RequirementProfileStatus::Draft)
+        ->and(StatusHistory::timeline(RequirementProfile::WORKFLOW_FLOW, (int) $profile->id))->toBeEmpty();
+    DB::table('people_connector_skill_requirement_items')
+        ->where('id', $draftItem->id)
+        ->update(['required_level' => 3]);
+    $draftItem->update(['weight_percent' => 90]);
+    expect(fn () => $store->submitForReview($hr, $companyEntityId, (int) $profile->id))
+        ->toThrow(InvalidRequirementProfileException::class, 'weights must total 100%');
+    expect($profile->refresh()->status)->toBe(RequirementProfileStatus::Draft)
+        ->and(StatusHistory::timeline(RequirementProfile::WORKFLOW_FLOW, (int) $profile->id))->toBeEmpty();
+    $draftItem->update(['weight_percent' => 100]);
+
+    $profile = $store->submitForReview($hr, $companyEntityId, (int) $profile->id, 'Ready for technical review.');
+    expect($profile->status)->toBe(RequirementProfileStatus::PendingHodReview)
+        ->and($store->reviewQueue($hod, $companyEntityId)->pluck('id')->all())->toBe([(int) $profile->id])
+        ->and($store->reviewQueue($outsider, $companyEntityId))->toBeEmpty()
+        ->and(DB::table('people_connector_skill_requirement_profile_transition_proofs')->count())->toBe(0)
+        ->and(StatusHistory::latest(RequirementProfile::WORKFLOW_FLOW, (int) $profile->id)?->assignees)
+        ->toBe([['user_id' => (int) $hod->id]]);
+    Notification::assertSentTo(
+        $hod,
+        TransitionNotification::class,
+        fn (TransitionNotification $notification): bool => $notification->model->getKey() === $profile->getKey()
+            && $notification->transition->to_code === RequirementProfileStatus::PendingHodReview->value,
+    );
+    Notification::assertNothingSentTo($outsider);
+    Livewire::actingAs($hod)->test(RequirementProfileShow::class, ['profileId' => $profile->id])
+        ->assertSee('Governed Profile')
+        ->assertSee('v1');
+    Livewire::actingAs($outsider)->test(
+        RequirementProfileShow::class,
+        ['profileId' => $profile->id],
+    )->assertStatus(404);
+
+    expect(fn () => $store->newDraftFrom($companyEntityId, (int) $profile->id))
+        ->toThrow(InvalidRequirementProfileException::class, 'already has an open version');
+
+    expect(fn () => DB::transaction(fn (): int => DB::table('people_connector_skill_requirement_items')
+        ->where('id', $draftItem->id)
+        ->update(['required_level' => 4])))
+        ->toThrow(QueryException::class);
+    expect(fn () => DB::transaction(fn (): bool => DB::table('people_connector_skill_requirement_profile_selectors')
+        ->insert([
+            'tenant_id' => $tenantId,
+            'company_entity_id' => $companyEntityId,
+            'profile_id' => $profile->id,
+            'selector_type' => SelectorType::Company->value,
+            'created_at' => now(),
+            'updated_at' => now(),
+        ])))
+        ->toThrow(QueryException::class);
+    expect(fn () => DB::transaction(fn (): int => DB::table('people_connector_skill_requirement_profiles')
+        ->where('id', $profile->id)
+        ->delete()))
+        ->toThrow(QueryException::class);
+
+    expect(fn () => $store->publishApproved($hr, $companyEntityId, (int) $profile->id))
+        ->toThrow(InvalidRequirementProfileException::class, 'No transition defined');
+
+    expect(fn () => $store->approveHod($outsider, $companyEntityId, (int) $profile->id, 'Looks good.'))
+        ->toThrow(InvalidRequirementProfileException::class, 'outside the required company or department');
+
+    $profile = $store->approveHod($hod, $companyEntityId, (int) $profile->id, 'Technical requirements verified.');
+    Notification::assertSentTo(
+        $hr,
+        TransitionNotification::class,
+        fn (TransitionNotification $notification): bool => $notification->model->getKey() === $profile->getKey()
+            && $notification->transition->to_code === RequirementProfileStatus::PendingHrReview->value,
+    );
+    expect(fn () => $store->publishApproved($hr, $companyEntityId, (int) $profile->id))
+        ->toThrow(InvalidRequirementProfileException::class, 'No transition defined');
+    $profile = $store->approveHr($hr, $companyEntityId, (int) $profile->id, 'Governance controls verified.');
+    expect(fn () => DB::transaction(fn (): int => DB::table('people_connector_skill_requirement_profiles')
+        ->where('id', $profile->id)
+        ->update([
+            'status' => RequirementProfileStatus::Published->value,
+            'published_at' => null,
+        ])))
+        ->toThrow(QueryException::class);
+    $profile = $store->publishApproved($hr, $companyEntityId, (int) $profile->id);
+
+    expect($profile->status)->toBe(RequirementProfileStatus::Published)
+        ->and($profile->published_at)->not->toBeNull()
+        ->and(StatusHistory::timeline(RequirementProfile::WORKFLOW_FLOW, (int) $profile->id)->pluck('status')->all())
+        ->toBe(['pending_hod_review', 'pending_hr_review', 'approved', 'published'])
+        ->and(StatusHistory::latest(RequirementProfile::WORKFLOW_FLOW, (int) $profile->id)?->metadata)
+        ->toMatchArray([
+            'tenant_id' => $tenantId,
+            'company_entity_id' => $companyEntityId,
+            'profile_code' => 'governed.profile',
+            'profile_version' => 1,
+            'capability' => 'people-connector.skill-requirement-publication.approve',
+        ]);
+    expect(fn () => DB::transaction(fn (): int => DB::table('people_connector_skill_requirement_profiles')
+        ->where('id', $profile->id)
+        ->update([
+            'status' => RequirementProfileStatus::Retired->value,
+            'retired_at' => null,
+        ])))
+        ->toThrow(QueryException::class);
+
+    $revision = $store->newDraftFrom($companyEntityId, (int) $profile->id);
+    $revision = $store->submitForReview($hr, $companyEntityId, (int) $revision->id);
+    $item = RequirementItem::query()->forCompany($tenantId, $companyEntityId)
+        ->where('profile_id', $revision->id)->firstOrFail();
+    expect(fn () => $item->update(['required_level' => 4]))
+        ->toThrow(PublishedRequirementImmutableException::class);
+
+    $revision = $store->returnByHod($hod, $companyEntityId, (int) $revision->id, 'Clarify the technical evidence.');
+    expect($revision->status)->toBe(RequirementProfileStatus::Draft)
+        ->and(StatusHistory::latest(RequirementProfile::WORKFLOW_FLOW, (int) $revision->id)?->comment)
+        ->toBe('Clarify the technical evidence.');
+    $revision->update(['name' => 'Governed Profile Revised']);
+
+    $revision = $store->submitForReview($hr, $companyEntityId, (int) $revision->id);
+    $revision = $store->approveHod($hod, $companyEntityId, (int) $revision->id, 'Technical revision accepted.');
+    $revision = $store->returnByHr($hr, $companyEntityId, (int) $revision->id, 'Add a governance rationale.');
+    expect($revision->status)->toBe(RequirementProfileStatus::Draft)
+        ->and(StatusHistory::timeline(RequirementProfile::WORKFLOW_FLOW, (int) $revision->id)
+            ->pluck('status')->all())
+        ->toBe(['pending_hod_review', 'draft', 'pending_hod_review', 'pending_hr_review', 'draft']);
+
+    $revision = $store->submitForReview($hr, $companyEntityId, (int) $revision->id);
+    $revision = $store->approveHod($hod, $companyEntityId, (int) $revision->id, 'Technical review complete.');
+    $revision = $store->approveHr($hr, $companyEntityId, (int) $revision->id, 'Governance review complete.');
+    Event::fake([RequirementProfilePublished::class, RequirementProfileRetired::class]);
+    $revision = $store->publishApproved($hr, $companyEntityId, (int) $revision->id);
+
+    expect($profile->refresh()->status)->toBe(RequirementProfileStatus::Retired)
+        ->and($revision->status)->toBe(RequirementProfileStatus::Published)
+        ->and(StatusHistory::timeline(RequirementProfile::WORKFLOW_FLOW, (int) $profile->id)->pluck('status')->all())
+        ->toBe(['pending_hod_review', 'pending_hr_review', 'approved', 'published', 'retired'])
+        ->and(StatusHistory::latest(RequirementProfile::WORKFLOW_FLOW, (int) $profile->id)?->metadata)
+        ->toMatchArray([
+            'profile_code' => 'governed.profile',
+            'profile_version' => 1,
+            'replacement_profile_id' => (int) $revision->id,
+            'replacement_profile_version' => 2,
+            'capability' => 'people-connector.skill-requirement-retirement.approve',
+        ])
+        ->and(RequirementProfile::query()->forCompany($tenantId, $companyEntityId)
+            ->where('code', 'governed.profile')
+            ->where('status', RequirementProfileStatus::Published->value)
+            ->count())->toBe(1);
+    Event::assertDispatched(
+        RequirementProfilePublished::class,
+        fn (RequirementProfilePublished $event): bool => $event->profileId === (int) $revision->id
+            && $event->retiredPreviousProfileId === (int) $profile->id,
+    );
+    Event::assertDispatched(
+        RequirementProfileRetired::class,
+        fn (RequirementProfileRetired $event): bool => $event->profileId === (int) $profile->id,
+    );
+
+    $notificationUrl = $revision->workflowNotificationUrl();
+    expect($notificationUrl)->toBe(route('people-connector.skill.requirement-profiles.show', [
+        'profileId' => $revision->id,
+    ]));
+    $this->actingAs($hr);
+    Livewire::test(RequirementProfileShow::class, [
+        'profileId' => $revision->id,
+    ])
+        ->assertSee('Governed Profile Revised')
+        ->assertSee('v2');
+
+    $concurrentContender = RequirementProfile::query()->create([
+        'tenant_id' => $tenantId,
+        'company_entity_id' => $companyEntityId,
+        'code' => 'governed.profile',
+        'name' => 'Concurrent contender',
+        'version' => 99,
+        'status' => RequirementProfileStatus::Draft,
+    ]);
+    DB::transaction(function () use ($concurrentContender): void {
+        foreach ([
+            RequirementProfileStatus::PendingHodReview,
+            RequirementProfileStatus::PendingHrReview,
+            RequirementProfileStatus::Approved,
+        ] as $contenderStatus) {
+            app(RequirementProfileTransitionAuthority::class)->authorize(
+                $concurrentContender,
+                $concurrentContender->status,
+                $contenderStatus,
+            );
+            $concurrentContender->update(['status' => $contenderStatus]);
+        }
+    });
+    expect(fn () => DB::transaction(fn (): int => DB::table('people_connector_skill_requirement_profiles')
+        ->where('id', $concurrentContender->id)
+        ->update(['status' => RequirementProfileStatus::Published->value, 'published_at' => now()])))
+        ->toThrow(QueryException::class);
 });

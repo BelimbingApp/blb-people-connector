@@ -32,11 +32,19 @@ use App\Domains\PeopleConnector\Connector\Services\WorkforceProjectionStore;
 use App\Domains\PeopleConnector\Connector\Testing\CompanyIsolationContract;
 use App\Domains\PeopleConnector\Connector\Testing\TwoCompanyTenant;
 use App\Domains\PeopleConnector\Skill\Data\ProficiencyLevelDraft;
+use App\Domains\PeopleConnector\Skill\Data\RequirementItemDraft;
+use App\Domains\PeopleConnector\Skill\Data\RequirementProfileDraft;
+use App\Domains\PeopleConnector\Skill\Data\RequirementSelectorDraft;
 use App\Domains\PeopleConnector\Skill\Data\SkillDraft;
 use App\Domains\PeopleConnector\Skill\Enums\AssessmentMethod;
+use App\Domains\PeopleConnector\Skill\Enums\RequirementCriticality;
+use App\Domains\PeopleConnector\Skill\Enums\RequirementProfileStatus;
+use App\Domains\PeopleConnector\Skill\Enums\SelectorType;
 use App\Domains\PeopleConnector\Skill\Enums\SkillScope;
+use App\Domains\PeopleConnector\Skill\Models\RequirementProfile;
 use App\Domains\PeopleConnector\Skill\Models\Skill;
 use App\Domains\PeopleConnector\Skill\Services\ProficiencyScaleStore;
+use App\Domains\PeopleConnector\Skill\Services\RequirementProfileStore;
 use App\Domains\PeopleConnector\Skill\Services\SkillCatalogStore;
 use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
@@ -183,6 +191,52 @@ function connectorShareFixture(): array
     return [$fixture, $skills[0], $skills[1]];
 }
 
+/** Test setup only: emulate a fresh destination without weakening installed guards. */
+function connectorShareRemovePublishedRequirementProfile(int $profileId): void
+{
+    $tables = [
+        'people_connector_skill_requirement_items',
+        'people_connector_skill_requirement_profile_selectors',
+        'people_connector_skill_requirement_profiles',
+    ];
+
+    if (DB::connection()->getDriverName() === 'pgsql') {
+        foreach ($tables as $table) {
+            DB::statement("ALTER TABLE {$table} DISABLE TRIGGER USER");
+        }
+
+        try {
+            DB::table($tables[0])->where('profile_id', $profileId)->delete();
+            DB::table($tables[1])->where('profile_id', $profileId)->delete();
+            DB::table($tables[2])->where('id', $profileId)->delete();
+        } finally {
+            foreach ($tables as $table) {
+                DB::statement("ALTER TABLE {$table} ENABLE TRIGGER USER");
+            }
+        }
+
+        return;
+    }
+
+    $triggers = DB::table('sqlite_master')
+        ->where('type', 'trigger')
+        ->whereIn('tbl_name', $tables)
+        ->get(['name', 'sql']);
+    foreach ($triggers as $trigger) {
+        DB::statement('DROP TRIGGER '.DB::connection()->getQueryGrammar()->wrap($trigger->name));
+    }
+
+    try {
+        DB::table($tables[0])->where('profile_id', $profileId)->delete();
+        DB::table($tables[1])->where('profile_id', $profileId)->delete();
+        DB::table($tables[2])->where('id', $profileId)->delete();
+    } finally {
+        foreach ($triggers as $trigger) {
+            DB::unprepared($trigger->sql);
+        }
+    }
+}
+
 /** @return array<string, list<array<string, mixed>>> every row of every table in the scope, keyed by table, ordered by id */
 function connectorShareSnapshot(string $scope): array
 {
@@ -260,6 +314,68 @@ test('the skill scope restores into an emptied catalog identically, with the com
         ->toThrow(QueryException::class);
     expect(fn () => DB::transaction(fn () => DB::table('people_connector_skill_proficiency_scale_levels')->where('scale_id', $scaleId)->where('level', 0)->update(['name' => 'Rewritten level after restore'])))
         ->toThrow(QueryException::class);
+});
+
+test('the skill scope restores a published requirement profile through exact transaction-scoped authority', function (): void {
+    [$fixture, $alphaSkill] = connectorShareFixture();
+    $profile = app(RequirementProfileStore::class)->draft(
+        $fixture->alphaCompanyEntityId,
+        new RequirementProfileDraft(
+            code: 'share-profile',
+            name: 'Share Profile',
+            selectors: [new RequirementSelectorDraft(SelectorType::Company)],
+            items: [new RequirementItemDraft(
+                skillId: (int) $alphaSkill->id,
+                sequence: 1,
+                requiredLevel: 1,
+                criticality: RequirementCriticality::Essential,
+                weightPercent: 100,
+            )],
+        ),
+    );
+    $profile = app(RequirementProfileStore::class)->publish(
+        $fixture->alphaCompanyEntityId,
+        (int) $profile->id,
+    );
+    $before = connectorShareSnapshot(PEOPLE_CONNECTOR_SKILL_SHARE_SCOPE);
+    ['bundle' => $bundle, 'export' => $export] = connectorSharePublish(PEOPLE_CONNECTOR_SKILL_SHARE_SCOPE);
+
+    connectorShareRemovePublishedRequirementProfile((int) $profile->id);
+    expect(RequirementProfile::query()->forCompany(
+        $fixture->tenantId,
+        $fixture->alphaCompanyEntityId,
+    )->whereKey($profile->id)->doesntExist())->toBeTrue();
+
+    $receipt = connectorShareReceive($bundle, $export);
+    $plan = app(DataShareImportPlanner::class)->plan($receipt);
+    expect($plan->status)->toBe('ready')
+        ->and($plan->summary['counts']['conflict'])->toBe(0)
+        ->and($plan->summary['counts']['insert'])->toBe(3);
+
+    app(DataSharePackageApplier::class)->apply(
+        $plan,
+        $receipt->package_sha256,
+        $plan->plan_hash,
+        confirmed: true,
+    );
+
+    expect(connectorShareSnapshot(PEOPLE_CONNECTOR_SKILL_SHARE_SCOPE))->toEqual($before)
+        ->and($profile->fresh()->status)->toBe(RequirementProfileStatus::Published)
+        ->and(DB::table('people_connector_skill_requirement_profile_transition_proofs')->count())->toBe(0);
+
+    expect(fn () => DB::transaction(fn (): bool => DB::table(
+        'people_connector_skill_requirement_profiles',
+    )->insert([
+        'tenant_id' => $fixture->tenantId,
+        'company_entity_id' => $fixture->alphaCompanyEntityId,
+        'code' => 'raw-governed-state',
+        'name' => 'Raw governed state',
+        'version' => 1,
+        'status' => RequirementProfileStatus::Published->value,
+        'published_at' => now(),
+        'created_at' => now(),
+        'updated_at' => now(),
+    ])))->toThrow(QueryException::class);
 });
 
 test('connector projections restore optional hierarchy and assignment references without disturbing append-only history', function (): void {
