@@ -4,6 +4,7 @@ namespace App\Domains\PeopleConnector\Connector\Livewire\Connections;
 
 use App\Base\Authz\Contracts\AuthorizationService;
 use App\Base\Authz\DTO\Actor;
+use App\Base\Tenancy\Contracts\TenantContext;
 use App\Core\User\Models\User;
 use App\Domains\PeopleConnector\Connector\Contracts\ProviderAdapter;
 use App\Domains\PeopleConnector\Connector\Models\ProviderConnection;
@@ -22,6 +23,11 @@ class Index extends Component
         ProviderRegistry $registry,
         ProviderHealthMonitor $monitor,
     ): void {
+        $user = Auth::user();
+        $tenantId = app(TenantContext::class)->currentTenantId();
+        abort_unless($user instanceof User && $tenantId !== null && $user->tenant_id === $tenantId, 403);
+        app(AuthorizationService::class)->authorize(Actor::forUser($user), 'people-connector.connection.list');
+
         $provider = $registry->find($providerId);
 
         if ($provider !== null) {

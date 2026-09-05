@@ -81,6 +81,7 @@ test('connections page renders cached health without invoking an adapter health 
 });
 
 test('connections page refreshes and preserves provider health evidence on demand', function (): void {
+    $this->actingAs(createAdminUser());
     $checkedAt = new DateTimeImmutable('2026-08-31T01:00:00+00:00');
     $lastSyncAt = new DateTimeImmutable('2026-08-31T00:30:00+00:00');
     $provider = Mockery::mock(ProviderAdapter::class);
