@@ -21,7 +21,6 @@ return [
                 'people-connector.training.event.manage',
                 'people-connector.training.request.submit',
                 'people-connector.training.request.hr-review',
-                'people-connector.training.request.approve',
             ],
         ],
         'people_hod' => [
@@ -32,6 +31,8 @@ return [
             ],
         ],
         'people_training_approver' => [
+            'name' => 'Training approver',
+            'description' => 'Approves fully reviewed training requests for the company.',
             'capabilities' => [
                 'people-connector.training.event.view',
                 'people-connector.training.request.approve',
