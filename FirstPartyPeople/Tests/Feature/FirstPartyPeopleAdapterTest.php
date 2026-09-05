@@ -596,7 +596,7 @@ test('an unknown command outcome against the co-located adapter refuses rather t
     // implement ReconcilesProviderCommands, and the reconciler must refuse
     // rather than read that absence as "not delivered" and send it again.
     expect(fn () => app(ProviderCommandReconciler::class)->settle(
-        CommandOutcome::unknown('idem-colocated', 'read timeout'),
+        CommandOutcome::unknown('idem-colocated'),
         app(FirstPartyPeopleAdapter::class),
     ))->toThrow(ProviderUnknownOutcomeException::class);
 });

@@ -4,6 +4,7 @@ namespace App\Domains\PeopleConnector\Connector\Services;
 
 use App\Domains\PeopleConnector\Connector\Contracts\ReconcilesProviderCommands;
 use App\Domains\PeopleConnector\Connector\Data\CommandOutcome;
+use App\Domains\PeopleConnector\Connector\Enums\CommandFailureReason;
 use App\Domains\PeopleConnector\Connector\Exceptions\ProviderUnknownOutcomeException;
 
 /**
@@ -38,7 +39,7 @@ final class ProviderCommandReconciler
         // that an adapter which cannot look does not implement it.
         return $known ?? CommandOutcome::notDelivered(
             $outcome->idempotencyKey,
-            'The provider holds no command under this key.',
+            CommandFailureReason::AbsentAtProvider,
         );
     }
 

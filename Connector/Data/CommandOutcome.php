@@ -2,6 +2,7 @@
 
 namespace App\Domains\PeopleConnector\Connector\Data;
 
+use App\Domains\PeopleConnector\Connector\Enums\CommandFailureReason;
 use App\Domains\PeopleConnector\Connector\Enums\CommandOutcomeState;
 
 /**
@@ -17,7 +18,7 @@ final readonly class CommandOutcome
         public CommandOutcomeState $state,
         public string $idempotencyKey,
         public ?string $providerReference = null,
-        public ?string $reason = null,
+        public ?CommandFailureReason $reason = null,
     ) {
         if (trim($idempotencyKey) === '') {
             throw new \InvalidArgumentException('A command outcome requires the idempotency key reconciliation will ask about.');
@@ -29,19 +30,19 @@ final readonly class CommandOutcome
         return new self(CommandOutcomeState::DeliveredAccepted, $idempotencyKey, $providerReference);
     }
 
-    public static function deliveredRejected(string $idempotencyKey, string $reason): self
+    public static function deliveredRejected(string $idempotencyKey): self
     {
-        return new self(CommandOutcomeState::DeliveredRejected, $idempotencyKey, reason: $reason);
+        return new self(CommandOutcomeState::DeliveredRejected, $idempotencyKey, reason: CommandFailureReason::ProviderRefused);
     }
 
-    public static function notDelivered(string $idempotencyKey, string $reason): self
+    public static function notDelivered(string $idempotencyKey, CommandFailureReason $reason = CommandFailureReason::NotSent): self
     {
         return new self(CommandOutcomeState::NotDelivered, $idempotencyKey, reason: $reason);
     }
 
-    public static function unknown(string $idempotencyKey, string $reason): self
+    public static function unknown(string $idempotencyKey): self
     {
-        return new self(CommandOutcomeState::Unknown, $idempotencyKey, reason: $reason);
+        return new self(CommandOutcomeState::Unknown, $idempotencyKey, reason: CommandFailureReason::AnswerLost);
     }
 
     public function isSettled(): bool

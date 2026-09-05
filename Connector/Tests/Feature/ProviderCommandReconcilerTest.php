@@ -34,8 +34,8 @@ test('a settled outcome is returned untouched and the adapter is never asked', f
 
     foreach ([
         CommandOutcome::deliveredAccepted('k1', 'ref'),
-        CommandOutcome::deliveredRejected('k2', 'refused'),
-        CommandOutcome::notDelivered('k3', 'connection refused'),
+        CommandOutcome::deliveredRejected('k2'),
+        CommandOutcome::notDelivered('k3'),
     ] as $settled) {
         expect(app(ProviderCommandReconciler::class)->settle($settled, $adapter))->toBe($settled);
     }
@@ -53,7 +53,7 @@ test('an unknown outcome is settled from what the provider already holds, not re
     );
 
     $settled = app(ProviderCommandReconciler::class)
-        ->settle(CommandOutcome::unknown('idem-7', 'read timeout after send'), $adapter);
+        ->settle(CommandOutcome::unknown('idem-7'), $adapter);
 
     // Duplicate suppression: the command was already there under this key, so
     // the caller learns it succeeded instead of sending a second one.
@@ -65,7 +65,7 @@ test('an unknown outcome is settled from what the provider already holds, not re
 
 test('an unknown outcome the provider never received becomes retryable', function (): void {
     $settled = app(ProviderCommandReconciler::class)
-        ->settle(CommandOutcome::unknown('idem-8', 'read timeout'), reconcilingAdapter(null));
+        ->settle(CommandOutcome::unknown('idem-8'), reconcilingAdapter(null));
 
     expect($settled->state)->toBe(CommandOutcomeState::NotDelivered)
         ->and($settled->mayRetry())->toBeTrue()
@@ -77,6 +77,6 @@ test('an unknown outcome is never settled by an adapter that cannot reconcile', 
     // exists. Guessing "not delivered" here is exactly the blind retry this
     // contract exists to prevent.
     expect(fn () => app(ProviderCommandReconciler::class)
-        ->settle(CommandOutcome::unknown('idem-9', 'read timeout'), new Hr2000Adapter(Hr2000DeploymentProfile::undiscovered())))
+        ->settle(CommandOutcome::unknown('idem-9'), new Hr2000Adapter(Hr2000DeploymentProfile::undiscovered())))
         ->toThrow(ProviderUnknownOutcomeException::class);
 });
