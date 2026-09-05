@@ -53,6 +53,11 @@ final class ProviderConnectionStore
                 ]);
             }
 
+            // One row exists per (tenant, scope, provider), so this finds a
+            // retired connection rather than making a second one. Rewriting its
+            // label or versions would edit history that retirement froze.
+            ConnectionRetirementService::assertWritable($connection);
+
             $connection->fill([
                 'label' => $label,
                 'adapter_version' => $adapterVersion,

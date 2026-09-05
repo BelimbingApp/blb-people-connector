@@ -5,6 +5,8 @@ namespace App\Domains\PeopleConnector\Connector\Services;
 use App\Base\Authz\Contracts\AuthorizationService;
 use App\Base\Authz\DTO\Actor;
 use App\Base\Tenancy\Contracts\TenantContext;
+use App\Domains\PeopleConnector\Connector\Data\ConnectionRetirementReport;
+use App\Domains\PeopleConnector\Connector\Data\WorkforceProvenance;
 use App\Domains\PeopleConnector\Connector\Exceptions\ConnectionRetirementException;
 use App\Domains\PeopleConnector\Connector\Exceptions\ProviderAuthorizationException;
 use App\Domains\PeopleConnector\Connector\Models\ProviderConnection;
@@ -40,7 +42,7 @@ final class ConnectionRetirementService
         int $connectionId,
         string $reviewReference,
         ?\DateTimeInterface $occurredAt = null,
-    ): ProviderConnection {
+    ): ConnectionRetirementReport {
         $tenantId = $this->tenantContext->requireTenantId();
         $this->authorization->authorize($actor, self::RETIRE_CAPABILITY);
 
@@ -58,9 +60,19 @@ final class ConnectionRetirementService
             );
         }
 
+        // Built here so the reference is validated by the same rule every other
+        // reviewed decision uses, before anything is written. Non-empty is not
+        // the bar: this field is quoted back to an operator, so it has to be an
+        // opaque identifier rather than prose.
+        $provenance = new WorkforceProvenance('connection.retirement', trim($reviewReference));
+
         $this->connections->get($connectionId);
 
-        return DB::transaction(function () use ($connectionId, $tenantId, $occurredAt): ProviderConnection {
+        $retiredAt = $occurredAt === null
+            ? \DateTimeImmutable::createFromInterface(now())
+            : \DateTimeImmutable::createFromInterface($occurredAt);
+
+        return DB::transaction(function () use ($connectionId, $tenantId, $provenance, $retiredAt): ConnectionRetirementReport {
             $connection = ProviderConnection::query()
                 ->forTenant($tenantId)
                 ->whereKey($connectionId)
@@ -90,12 +102,17 @@ final class ConnectionRetirementService
 
             $connection->fill([
                 'status' => ProviderConnection::STATUS_RETIRED,
-                'deactivated_at' => $occurredAt ?? now(),
+                'deactivated_at' => $retiredAt,
             ])->save();
 
             app(SchedulerPrincipalGrants::class)->revoke($connection);
 
-            return $connection->refresh();
+            return new ConnectionRetirementReport(
+                connectionId: $connectionId,
+                connection: $connection->refresh(),
+                reviewReference: (string) $provenance->reviewReference,
+                retiredAt: $retiredAt,
+            );
         });
     }
 

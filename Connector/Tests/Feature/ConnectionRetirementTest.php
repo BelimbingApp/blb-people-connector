@@ -15,6 +15,7 @@ use App\Domains\PeopleConnector\Connector\Data\WorkforceCompany;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceEmployee;
 use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
 use App\Domains\PeopleConnector\Connector\Exceptions\ConnectionRetirementException;
+use App\Domains\PeopleConnector\Connector\Exceptions\InvalidWorkforceProvenanceException;
 use App\Domains\PeopleConnector\Connector\Exceptions\ProviderAuthorizationException;
 use App\Domains\PeopleConnector\Connector\Models\ExternalIdentity;
 use App\Domains\PeopleConnector\Connector\Models\ProviderConnection;
@@ -137,7 +138,7 @@ test('retiring a connection freezes it without erasing what it recorded', functi
         'retirement-2026-09-06',
     );
 
-    expect($retired->status)->toBe(ProviderConnection::STATUS_RETIRED)
+    expect($retired->connection->status)->toBe(ProviderConnection::STATUS_RETIRED)
         ->and(ExternalIdentity::query()->forTenant($f['tenantId'])->count())->toBe($identitiesBefore)
         ->and((int) app(WorkforceIdentityStore::class)->resolve(
             $f['connectionId'],
@@ -217,7 +218,7 @@ test('a resolved reconciliation issue does not block retirement', function (): v
 
     $retired = app(ConnectionRetirementService::class)->retire($f['actor'], $f['connectionId'], 'retirement-2026-09-06');
 
-    expect($retired->status)->toBe(ProviderConnection::STATUS_RETIRED);
+    expect($retired->connection->status)->toBe(ProviderConnection::STATUS_RETIRED);
 });
 
 test('retirement without the operator capability is refused', function (): void {
@@ -270,4 +271,60 @@ test('retiring an already retired connection is refused rather than repeated', f
         $f['connectionId'],
         'retirement-2026-09-07',
     ))->toThrow(ConnectionRetirementException::class);
+});
+
+test('the retirement report carries the review reference that authorized it', function (): void {
+    $f = retirementFixture('Retirement Provenance Tenant');
+    retirementAuthz(true);
+
+    $report = app(ConnectionRetirementService::class)->retire(
+        $f['actor'],
+        $f['connectionId'],
+        'retirement-2026-09-06',
+    );
+
+    // A required review reference that evaporates is not an audit trail. A
+    // caller has to be able to prove which reference authorized this, the way
+    // ProviderReplacementService already reports its own.
+    expect($report->reviewReference)->toBe('retirement-2026-09-06')
+        ->and($report->connectionId)->toBe($f['connectionId'])
+        ->and($report->provenance()->source)->toBe('connection.retirement')
+        ->and($report->provenance()->reviewReference)->toBe('retirement-2026-09-06');
+});
+
+test('a review reference that is not an opaque identifier is refused', function (): void {
+    $f = retirementFixture('Retirement Bad Reference Tenant');
+    retirementAuthz(true);
+
+    // WorkforceProvenance already defines what a reference may look like.
+    // Accepting anything non-empty here would let prose, or a secret, into the
+    // one field meant to be quotable back to an operator.
+    expect(fn () => app(ConnectionRetirementService::class)->retire(
+        $f['actor'],
+        $f['connectionId'],
+        'approved by Dana over lunch',
+    ))->toThrow(InvalidWorkforceProvenanceException::class);
+
+    expect(ProviderConnection::query()->whereKey($f['connectionId'])->value('status'))
+        ->toBe(ProviderConnection::STATUS_ACTIVE);
+});
+
+test('reconfiguring a retired connection is refused rather than rewriting frozen metadata', function (): void {
+    $f = retirementFixture('Retirement Reconfigure Tenant');
+    retirementAuthz(true);
+    $company = (int) ProviderConnection::query()->whereKey($f['connectionId'])->value('company_id');
+    app(ConnectionRetirementService::class)->retire($f['actor'], $f['connectionId'], 'retirement-2026-09-06');
+    $labelBefore = ProviderConnection::query()->whereKey($f['connectionId'])->value('label');
+
+    // The schema allows one row per (tenant, scope, provider), so configure()
+    // finds the retired row rather than making a second one. Letting it through
+    // would rewrite the label and versions of a connection whose history is
+    // supposed to be frozen.
+    expect(fn () => app(ProviderConnectionStore::class)->configure(
+        ProviderScope::company($company),
+        RETIREMENT_PROVIDER,
+        label: 'Renamed after retirement',
+    ))->toThrow(ConnectionRetirementException::class);
+
+    expect(ProviderConnection::query()->whereKey($f['connectionId'])->value('label'))->toBe($labelBefore);
 });
