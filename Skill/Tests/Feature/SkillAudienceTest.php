@@ -272,6 +272,22 @@ test('HOD assessor and employee audiences resolve department assignment and self
         ->and($audience->allowedCompanies($hr, 'people-connector.skill.assessment.view'))
         ->toBe([$companyAEntityId => 'Workforce A']);
 
+    $audience->authorizeAssessmentSubmission($assessor, $companyAEntityId, (int) $teamWorker->workforce_entity_id);
+    $audience->authorizeHodVerification($hod, $companyAEntityId, (int) $teamWorker->workforce_entity_id);
+    $audience->authorizeAssessmentFinalization($hod, $companyAEntityId, (int) $teamWorker->workforce_entity_id);
+
+    expect(fn () => $audience->authorizeHodVerification(
+        $assessor,
+        $companyAEntityId,
+        (int) $teamWorker->workforce_entity_id,
+    ))->toThrow(AuthorizationDeniedException::class);
+
+    expect(fn () => $audience->authorizeHodVerification(
+        $hod,
+        $companyAEntityId,
+        (int) $otherDepartment->workforce_entity_id,
+    ))->toThrow(AuthorizationDeniedException::class);
+
     expect(fn () => $audience->visibleEmployeeEntityIds($employee, $companyAEntityId, manage: true))
         ->toThrow(AuthorizationDeniedException::class);
 
