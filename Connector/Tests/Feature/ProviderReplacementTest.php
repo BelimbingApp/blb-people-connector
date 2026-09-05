@@ -1,6 +1,7 @@
 <?php
 
 use App\Base\Tenancy\Contracts\TenantContext;
+use App\Core\Company\Models\Company;
 use App\Domains\PeopleConnector\Connector\Data\ExternalReference;
 use App\Domains\PeopleConnector\Connector\Data\ProviderIdentityMapping;
 use App\Domains\PeopleConnector\Connector\Data\ProviderScope;
@@ -285,4 +286,27 @@ test('an identity already handed over cannot be handed over a second time', func
     expect(replacementIdentity($f['tenantId'], $f['oldConnectionId'], 'OLD-EMP-1')?->replaced_by_identity_id)
         ->toBe(replacementIdentity($f['tenantId'], $f['newConnectionId'], 'NEW-EMP-1')?->id)
         ->and(replacementIdentity($f['tenantId'], $f['newConnectionId'], 'NEW-EMP-9'))->toBeNull();
+});
+
+test('a handover onto a connection in another company scope is refused', function (): void {
+    $f = replacementFixture('Replacement Cross Scope Tenant');
+    $sibling = Company::factory()->create(['tenant_id' => $f['tenantId'], 'name' => 'Sibling Co']);
+    $store = app(ProviderConnectionStore::class);
+    $siblingConnection = $store->configure(ProviderScope::company((int) $sibling->id), REPLACEMENT_NEW_PROVIDER);
+    $siblingConnectionId = (int) $store->activate((int) $siblingConnection->id)->id;
+
+    // Both connections are in this tenant, so the tenant locator lets both
+    // through. Activation only retires peers in the same scope, so the sibling
+    // company's connection is live alongside ours — and handing our entities to
+    // it would attach them to the wrong company while reporting success.
+    expect(fn () => app(ProviderReplacementService::class)->remap(
+        $f['oldConnectionId'],
+        $siblingConnectionId,
+        [replacementMapping('OLD-EMP-1', 'NEW-EMP-1')],
+        'replacement-2026-09-06',
+    ))->toThrow(ProviderReplacementException::class);
+
+    expect(replacementIdentity($f['tenantId'], $f['oldConnectionId'], 'OLD-EMP-1')?->state)
+        ->toBe(ExternalIdentity::STATE_ACTIVE)
+        ->and(replacementIdentity($f['tenantId'], $siblingConnectionId, 'NEW-EMP-1'))->toBeNull();
 });

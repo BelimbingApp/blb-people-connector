@@ -59,8 +59,20 @@ final class ProviderReplacementService
 
         // Both connections are resolved through the tenant-scoped locator, so a
         // connection in another tenant is not found rather than replaced.
-        $this->connections->get($fromConnectionId);
-        $this->connections->get($toConnectionId);
+        $from = $this->connections->get($fromConnectionId);
+        $to = $this->connections->get($toConnectionId);
+
+        // The tenant is not the boundary that matters here. Activation only
+        // retires peers in the same scope, so a sibling company's connection is
+        // live alongside this one, and handing these entities to it would
+        // reattach a whole workforce to the wrong company while reporting a
+        // successful reviewed replacement. A replacement swaps the provider
+        // behind one scope; it never moves anyone between scopes.
+        if ($from->scope_key !== $to->scope_key) {
+            throw new ProviderReplacementException(
+                "A provider replacement stays inside one scope; [{$from->scope_key}] cannot hand its identities to [{$to->scope_key}].",
+            );
+        }
 
         $this->assertUnambiguous($mappings);
 
