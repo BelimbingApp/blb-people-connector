@@ -12,6 +12,7 @@ final class TrainingRequestDecision extends TenantOwnedModel
     use CompanyOwned;
 
     public $timestamps = false;
+
     protected $table = 'people_connector_training_request_decisions';
 
     protected static function booted(): void
@@ -21,5 +22,8 @@ final class TrainingRequestDecision extends TenantOwnedModel
         self::deleting($immutable);
     }
 
-    protected function casts(): array { return ['occurred_at' => 'immutable_datetime']; }
+    protected function casts(): array
+    {
+        return ['occurred_at' => 'immutable_datetime'];
+    }
 }
