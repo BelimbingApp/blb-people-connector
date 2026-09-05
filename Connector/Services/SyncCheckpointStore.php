@@ -29,6 +29,38 @@ final class SyncCheckpointStore
             ->first();
     }
 
+    /**
+     * The resume cursor this stream stood at after the given version.
+     *
+     * The version history is append-only, so an older version is still readable
+     * long after the checkpoint itself has moved past it. Null means the
+     * connection never reached that version on this stream.
+     */
+    public function cursorAtVersion(int $connectionId, string $stream, int $version): ?string
+    {
+        $tenantId = $this->tenantContext->requireTenantId();
+        $this->connections->get($connectionId);
+        $this->assertStream($stream);
+
+        $checkpointId = SyncCheckpoint::query()
+            ->forTenant($tenantId)
+            ->where('connection_id', $connectionId)
+            ->where('stream', $stream)
+            ->value('id');
+
+        if ($checkpointId === null) {
+            return null;
+        }
+
+        $cursor = SyncCheckpointEvent::query()
+            ->forTenant($tenantId)
+            ->where('checkpoint_id', $checkpointId)
+            ->where('version', $version)
+            ->value('to_cursor');
+
+        return $cursor === null ? null : (string) $cursor;
+    }
+
     public function advanceCompletedPage(
         int $connectionId,
         string $stream,
