@@ -2,11 +2,15 @@
 
 namespace App\Domains\PeopleConnector\Connector;
 
+use App\Domains\People\Provider\Contracts\ResolvesWorkforceSubjects;
+use App\Domains\People\Provider\Data\ExternalReference as PeopleExternalReference;
 use App\Domains\PeopleConnector\Connector\Console\Commands\SyncWorkforceCommand;
+use App\Domains\PeopleConnector\Connector\Services\ProjectionWorkforceSubjectResolver;
 use App\Domains\PeopleConnector\Connector\Services\ProviderHealthStore;
 use App\Domains\PeopleConnector\Connector\Services\ProviderRegistry;
 use App\Domains\PeopleConnector\Connector\Services\WorkforceFreshnessPolicy;
 use Illuminate\Console\Scheduling\Schedule;
+use Illuminate\Contracts\Foundation\Application;
 use Illuminate\Support\ServiceProvider as BaseServiceProvider;
 
 class ServiceProvider extends BaseServiceProvider
@@ -29,6 +33,23 @@ class ServiceProvider extends BaseServiceProvider
     public function register(): void
     {
         $this->mergeConfigFrom(__DIR__.'/Config/people-connector.php', 'people-connector');
+        // The seam is People's contract, and People binds its own native
+        // resolver. Overriding that outright breaks every co-located install:
+        // the connector's projections are empty there, because nothing
+        // synchronizes a provider that is already in the process. So decide
+        // per resolution instead of per boot, and hand back People's own
+        // resolver whenever People is the authority. extend() keeps the
+        // fallback without this module having to name a People service.
+        //
+        // Neither side is a singleton: both inject the scoped TenantContext,
+        // which Octane discards across the request boundary a singleton
+        // survives.
+        $this->app->extend(
+            ResolvesWorkforceSubjects::class,
+            static fn (ResolvesWorkforceSubjects $native, Application $app): ResolvesWorkforceSubjects => self::connectorOwnsWorkforceIdentity()
+                ? $app->make(ProjectionWorkforceSubjectResolver::class)
+                : $native,
+        );
         $this->app->singleton(ProviderRegistry::class);
         $this->app->singleton(ProviderHealthStore::class);
 
@@ -37,6 +58,24 @@ class ServiceProvider extends BaseServiceProvider
                 SyncWorkforceCommand::class,
             ]);
         }
+    }
+
+    /**
+     * Whether workforce identity is answered from this connector's
+     * projections rather than by People itself.
+     *
+     * A deployment that has not chosen a provider, or has chosen People, is
+     * co-located: People owns the records and answers for them directly. Any
+     * other adapter means the authoritative HR system is somewhere else and
+     * the synchronized projections are the only local truth.
+     */
+    public static function connectorOwnsWorkforceIdentity(): bool
+    {
+        $active = config('people-connector.active_provider');
+
+        return is_string($active)
+            && trim($active) !== ''
+            && $active !== PeopleExternalReference::PROVIDER_ID;
     }
 
     public function boot(): void
