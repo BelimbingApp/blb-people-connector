@@ -89,6 +89,41 @@ final readonly class WorkforceHistoryEvent
     }
 
     /**
+     * One identity handed from a retired connection to its replacement.
+     *
+     * This is not identityRemapped with different arguments. A remap names its
+     * replacement as a related reference, and history requires a related
+     * reference to live on the same connection as the subject — which is right
+     * for a remap and impossible for a handover, where the replacement is by
+     * definition on another connection and another provider.
+     *
+     * So the replacement travels in the payload instead. The row stays on the
+     * connection that lost the identity, which is the one whose story needs to
+     * explain where the record went.
+     */
+    public static function identityHandedOver(
+        ExternalReference $reference,
+        ExternalReference $replacement,
+        int $replacementConnectionId,
+        int $entityId,
+    ): self {
+        return new self(
+            WorkforceHistoryEventType::IdentityHandedOver,
+            $reference,
+            $entityId,
+            null,
+            null,
+            null,
+            [
+                'external_id' => $reference->externalId,
+                'replacement_external_id' => $replacement->externalId,
+                'replacement_provider_id' => $replacement->providerId,
+                'replacement_connection_id' => (string) $replacementConnectionId,
+            ],
+        );
+    }
+
+    /**
      * A privacy erasure of one provider identity.
      *
      * The external id stays in the payload on purpose. Erasure tombstones the

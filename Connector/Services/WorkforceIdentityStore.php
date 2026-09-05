@@ -227,6 +227,83 @@ final class WorkforceIdentityStore
         });
     }
 
+    /**
+     * Hand one identity over from a retired connection to its replacement,
+     * keeping the canonical workforce entity.
+     *
+     * remap() moves a reference within one connection, where both sides share a
+     * provider. A replacement crosses connections and therefore providers, so
+     * the shared-provider rule that remap() enforces is exactly what must not
+     * apply here; what still must hold is the resource type and the entity.
+     *
+     * The source connection is not required to be active. Activating the
+     * replacement already switched it off, and refusing to read from a retired
+     * connection would make the handover impossible to perform at all.
+     */
+    public function remapToConnection(
+        int $fromConnectionId,
+        int $toConnectionId,
+        ExternalReference $oldReference,
+        ExternalReference $newReference,
+        \DateTimeInterface $occurredAt,
+        ?WorkforceProvenance $provenance = null,
+    ): ExternalIdentity {
+        if ($provenance?->reviewReference === null) {
+            throw new ExternalIdentityCollisionException('Handing an identity to a replacement connection requires a review reference.');
+        }
+
+        if ($oldReference->resourceType !== $newReference->resourceType) {
+            throw new ExternalIdentityCollisionException('A provider replacement cannot change the workforce resource type.');
+        }
+
+        return DB::transaction(function () use ($fromConnectionId, $toConnectionId, $oldReference, $newReference, $occurredAt, $provenance): ExternalIdentity {
+            $fromConnection = $this->connections->get($fromConnectionId, lock: true);
+            $this->connections->get($toConnectionId, lock: true);
+            $this->assertReferenceFitsConnection($fromConnection, $oldReference);
+
+            $oldIdentity = $this->findIdentity($fromConnection, $oldReference, lock: true)
+                ?? throw new ConnectorRecordNotFoundException('The superseded external identity was not found on the retired connection.');
+
+            if ($oldIdentity->state !== ExternalIdentity::STATE_ACTIVE) {
+                throw new ExternalIdentityCollisionException('Only an active external identity can be handed to a replacement connection.');
+            }
+
+            $entity = $this->canonicalEntityForIdentity($oldIdentity, lock: true);
+
+            $newIdentity = $this->resolveOrCreateIdentity(
+                $toConnectionId,
+                $newReference,
+                $occurredAt,
+                preferredEntityId: (int) $entity->id,
+                provenance: $provenance,
+            );
+
+            $oldIdentity->fill([
+                'state' => ExternalIdentity::STATE_REMAPPED,
+                'replaced_by_identity_id' => $newIdentity->id,
+                'effective_to' => $occurredAt,
+                'last_observed_at' => $occurredAt,
+            ])->save();
+
+            $this->history->record(
+                $fromConnection,
+                $entity,
+                $oldIdentity,
+                WorkforceHistoryEvent::identityHandedOver(
+                    $oldReference,
+                    $newReference,
+                    $toConnectionId,
+                    (int) $entity->id,
+                ),
+                $occurredAt,
+                $occurredAt,
+                $provenance,
+            );
+
+            return $newIdentity;
+        });
+    }
+
     public function merge(
         int $connectionId,
         ExternalReference $supersededReference,
