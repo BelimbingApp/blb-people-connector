@@ -1,7 +1,7 @@
 # Tenant and company ownership in the People Connector
 
 **Document type:** Data-ownership contract
-**Status:** 2026-09-05 — ownership rebaseline governed by [People plan 0001](https://github.com/BelimbingApp/blb-people/blob/main/docs/plans/0001-people-architecture-and-provider-boundaries.md); relocation tracked below.
+**Status:** 2026-09-05 — relocation complete; ownership governed by [People plan 0001](https://github.com/BelimbingApp/blb-people/blob/main/docs/plans/0001-people-architecture-and-provider-boundaries.md).
 **Issue:** BelimbingApp/blb-people-connector#6 (cross-links BelimbingApp/blb-people#21)
 **Last updated:** 2026-09-05
 
@@ -20,13 +20,13 @@ development actions, training participation and progression decisions. Selecting
 a provider or losing its connection does not transfer that authority to the
 connector or create a fallback writer.
 
-`Skill/` and `Training/` in this repository are relocation sources. Move them
-through [People #113 (R2)](https://github.com/BelimbingApp/blb-people/issues/113)
-and [People #114 (R3)](https://github.com/BelimbingApp/blb-people/issues/114);
-[connector #121 (R4)](https://github.com/BelimbingApp/blb-people-connector/issues/121)
-removes the source modules after that handoff. Their presence, table prefixes
-and examples below do not establish a second authority. This documentation
-change does not certify relocation or duplicate-registration removal.
+The `Skill/` and `Training/` relocation sources moved through
+[People #113 (R2)](https://github.com/BelimbingApp/blb-people/issues/113) and
+[People #114 (R3)](https://github.com/BelimbingApp/blb-people/issues/114).
+[Connector #121 (R4)](https://github.com/BelimbingApp/blb-people-connector/issues/121)
+then removed both source modules. This repository now ships only the Connector
+integration module and the FirstPartyPeople adapter; it does not register a
+second Skill or Training writer.
 
 [People plan 0008](https://github.com/BelimbingApp/blb-people/blob/main/docs/plans/0008-people-existing-work-and-backlog-reconciliation.md)
 requires preserving the existing tenant/company safeguards, stable identities,
@@ -160,7 +160,7 @@ guessing is how the connector reached three identical defects.
 | `..._privileged_support_grants` | **T** | — | A tenant administration grant may optionally name a platform company scope; its service checks both actors against that scope before issuing or using it. |
 | `..._privileged_support_actions` | **T** | — | Immutable evidence of a tenant administration grant; ownership follows the grant through the composite foreign key, while append-only database guards protect the evidence. |
 
-### Skill module — People business records, relocation source
+### Historical Skill source inventory — now owned by People
 
 | Table | Class | Company key | Why |
 |---|---|---|---|
@@ -175,7 +175,7 @@ guessing is how the connector reached three identical defects.
 | `..._skill_actor_bindings` | **C** | `company_entity_id` | A reviewed platform-user to workforce-employee assertion is valid only inside the workforce company that supplied the confirmed user projection. |
 | `..._skill_assessor_assignments` | **C** | `company_entity_id` | An assessor's authority is an explicit assignment to one employee in one workforce company, never a tenant-wide consequence of holding a role. |
 
-### Training module — People business records, relocation source
+### Historical Training source inventory — now owned by People
 
 | Table | Class | Company key | Why |
 |---|---|---|---|
@@ -939,15 +939,18 @@ Two smaller things are also deliberately left open:
   administrator rather than only a tenant administrator. Today it is Class T
   and tenant-administered, which is safe but may be too coarse.
 
-## Re-audit checklist for relocation
+## Relocation proof and remaining re-audit checklist
 
-This PR does not verify the following code claims. Record the tested heads and
-results in the relocation work before presenting them as current guarantees.
+R4 verifies that the connector source modules are absent, the surviving module
+manifests name only integration modules, and Connector/FirstPartyPeople contain
+no imports from the removed namespaces. The composed platform route and
+migration checks run with the exact People relocation head before landing.
+The broader preservation work below remains owned by its destination workstreams.
 
 - [ ] Reconcile the preserved class table against all current models and migrations, including new Skill and Training tables and Connector Class D trait adoption.
 - [ ] Re-run tenant/company denial and raw-write/trigger checks on both database drivers for source and destination; preserve CompanyOwned, RequireCompanyScope, the bypass lint and named-escape rules.
 - [ ] Verify backend actor binding, company mapping and operation/record authorization in both co-located and remote paths, including tenant-scoped connections and the single-company carve-out.
 - [ ] Prove reviewed identity remapping and company transfers preserve business history, immutable evidence and scope without relying on coincident IDs across installations.
-- [ ] Verify source modules are removed after destination registration and that exactly one selected People writer owns each business capability, including during provider outages.
+- [x] Verify source modules are removed after destination registration and that the connector no longer registers or imports Skill or Training business modules.
 - [ ] Re-run DataShare round trips against the actual destination registrations and drivers, including company isolation, immutable rows and credential-reference redaction.
 - [ ] Re-audit privacy deletion and retention across projections, snapshots, People business records and exported/restored data without widening deletion authority.
