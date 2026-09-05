@@ -32,6 +32,7 @@ use App\Domains\PeopleConnector\Connector\Exceptions\WorkforceProjectionConflict
 use App\Domains\PeopleConnector\Connector\Exceptions\WorkforceSyncException;
 use App\Domains\PeopleConnector\Connector\Models\ExternalIdentity;
 use App\Domains\PeopleConnector\Connector\Models\ProviderConnection;
+use App\Domains\PeopleConnector\Connector\Models\ReconciliationIssue;
 
 /**
  * Drives an adapter's bootstrap and incremental pages through the persistence
@@ -65,6 +66,8 @@ final class WorkforceSyncRunner
     public const ISSUE_KIND_FEED_REFUSED = 'sync_feed_refused';
 
     public const ISSUE_KEY_FEED_REFUSED = 'sync:feed:refused';
+
+    public const ISSUE_KIND_DEAD_LETTER = 'sync_dead_letter';
 
     public function __construct(
         private TenantContext $tenantContext,
@@ -156,7 +159,21 @@ final class WorkforceSyncRunner
         } while (! $page->complete);
 
         if ($this->feedRefused($connectionId, $tally, $page->asOf)) {
-            return $this->report($connectionId, $stream, 'incremental', $tally, (int) $checkpoint->version, $page->asOf, checkpointAdvanced: false);
+            $attempts = $this->checkpoints->recordFailedAttempt($connectionId, $stream);
+
+            // Retrying a page the provider and the connector disagree about is
+            // not going to change either of their minds. Past the limit the
+            // retry is noise, so the page is parked for a human and the stream
+            // is allowed to carry on: one stuck page must not stop every later
+            // change from ever arriving.
+            if ($attempts < self::deadLetterAttempts()) {
+                return $this->report($connectionId, $stream, 'incremental', $tally, (int) $checkpoint->version, $page->asOf, checkpointAdvanced: false);
+            }
+
+            $this->parkDeadLetter($connectionId, $page, $tally);
+            $parked = $this->checkpoints->advanceCompletedPage($connectionId, $stream, $page, (int) $checkpoint->version);
+
+            return $this->report($connectionId, $stream, 'incremental', $tally, (int) $parked->version, $page->asOf);
         }
 
         $advanced = $this->checkpoints->advanceCompletedPage($connectionId, $stream, $page, (int) $checkpoint->version);
@@ -254,6 +271,113 @@ final class WorkforceSyncRunner
             ->where('resource_type', $reference->resourceType->value)
             ->where('external_id', $reference->externalId)
             ->value('last_observed_at');
+    }
+
+    /**
+     * Park a page nobody can apply, identified by a digest of what it carried.
+     *
+     * The payload never reaches the issue. docs/contracts/diagnostic-privacy.md
+     * gives ReconciliationIssueDetails named fields and no response-body slot,
+     * so what an operator gets is a digest that tells two parked pages apart and
+     * recognises the same one returning, plus the reason code the refusals
+     * mapped to.
+     *
+     * A page that was parked, re-queued, and then failed again is reopened
+     * rather than reported: the issue store refuses new evidence on a resolved
+     * issue, and this is exactly the case that produces it.
+     *
+     * @param  array<string, int>  $tally
+     */
+    private function parkDeadLetter(int $connectionId, WorkforceChangePage $page, array $tally): void
+    {
+        // The feed-refused row said "this stream is stuck". Parking is the
+        // decision that it is not stuck any more — the page is a known problem
+        // and the checkpoint moves past it — so leaving that row open would put
+        // two contradictory answers in one queue, and re-queueing the dead
+        // letter would never clear the other one.
+        $refused = ReconciliationIssue::query()
+            ->forTenant($this->tenantContext->requireTenantId())
+            ->where('connection_id', $connectionId)
+            ->where('issue_key', self::ISSUE_KEY_FEED_REFUSED)
+            ->where('status', ReconciliationIssue::STATUS_OPEN)
+            ->first();
+
+        if ($refused !== null) {
+            $this->issues->resolve((int) $refused->id, now());
+        }
+
+        $digest = self::pageDigest($page);
+        $details = new ReconciliationIssueDetails(
+            reasonCode: 'every_record_refused',
+            observedCount: $tally['conflicts'],
+            payloadHash: $digest,
+        );
+        $issueKey = 'sync:dead-letter:'.$digest;
+
+        // report() already folds a repeat of an open issue into the same row.
+        // The one case it refuses is new evidence on a resolved issue, which is
+        // exactly what a re-queued page failing again produces.
+        $parked = ReconciliationIssue::query()
+            ->forTenant($this->tenantContext->requireTenantId())
+            ->where('connection_id', $connectionId)
+            ->where('issue_key', $issueKey)
+            ->first();
+
+        if ($parked !== null && $parked->status === ReconciliationIssue::STATUS_RESOLVED) {
+            // Reopening is dated now, not at the provider watermark. The
+            // evidence is "this page failed again on this pass", which happened
+            // now; the watermark is how old the provider's data is and will
+            // normally predate the moment an operator re-queued the page, so
+            // reopening on it would be refused every time.
+            $this->issues->reopen((int) $parked->id, now(), $details);
+
+            return;
+        }
+
+        $this->issues->report(
+            $connectionId,
+            $issueKey,
+            self::ISSUE_KIND_DEAD_LETTER,
+            $details,
+            severity: 'error',
+            seenAt: $page->asOf,
+        );
+    }
+
+    /**
+     * A stable fingerprint of what a page carried, built from the references it
+     * named and the watermark it claimed — never from the payload itself.
+     *
+     * It deliberately does not include the cursor the page was read from. The
+     * same page read again after the checkpoint moved past it is the same page,
+     * and an operator should see one queue entry for it rather than a new one
+     * each time it comes round.
+     */
+    private static function pageDigest(WorkforceChangePage $page): string
+    {
+        $parts = [$page->asOf->format(DATE_ATOM)];
+
+        foreach ($page->changes as $change) {
+            $reference = match (true) {
+                $change instanceof WorkforceUpsert => $change->record->reference,
+                $change instanceof WorkforceDeactivation => $change->reference,
+                default => $change->supersededReference,
+            };
+            $parts[] = $reference->providerId.'|'.$reference->resourceType->value.'|'.$reference->externalId;
+        }
+
+        return hash('sha256', implode("\n", $parts));
+    }
+
+    private static function deadLetterAttempts(): int
+    {
+        $attempts = config('people-connector.sync.dead_letter_attempts', 3);
+
+        if (! is_int($attempts) || $attempts < 1) {
+            throw new \InvalidArgumentException('people-connector.sync.dead_letter_attempts must be a positive integer.');
+        }
+
+        return $attempts;
     }
 
     /**
