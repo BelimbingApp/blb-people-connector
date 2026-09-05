@@ -26,6 +26,7 @@ use App\Domains\PeopleConnector\Connector\Contracts\ImportsWorkforceFiles;
 use App\Domains\PeopleConnector\Connector\Contracts\ProvidesProviderUiHandoff;
 use App\Domains\PeopleConnector\Connector\Contracts\ReadsWorkforceChanges;
 use App\Domains\PeopleConnector\Connector\Contracts\ReconcilesWorkforce;
+use App\Domains\PeopleConnector\Connector\Data\CommandOutcome;
 use App\Domains\PeopleConnector\Connector\Data\ProviderPortAuthorization;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceChangeRequest;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceDeactivation;
@@ -38,7 +39,9 @@ use App\Domains\PeopleConnector\Connector\Enums\CapabilityDirection;
 use App\Domains\PeopleConnector\Connector\Enums\PeopleCapability;
 use App\Domains\PeopleConnector\Connector\Enums\ProviderHealthState;
 use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
+use App\Domains\PeopleConnector\Connector\Exceptions\ProviderUnknownOutcomeException;
 use App\Domains\PeopleConnector\Connector\Exceptions\ProviderValidationException;
+use App\Domains\PeopleConnector\Connector\Services\ProviderCommandReconciler;
 use App\Domains\PeopleConnector\Connector\Services\ProviderRegistry;
 use App\Domains\PeopleConnector\Connector\Testing\ProviderConformance;
 use App\Domains\PeopleConnector\FirstPartyPeople\FirstPartyPeopleAdapter;
@@ -585,4 +588,22 @@ test('the incremental port refuses a foreign provider reference at its own bound
             ->and($exception->getMessage())->not->toContain('c-9')
             ->and(json_encode($exception->context))->not->toContain('c-9');
     }
+});
+
+test('an unknown command outcome against the co-located adapter refuses rather than retrying', function (): void {
+    // The first-party adapter is in-process: a command either completes or
+    // throws, so no unknown window exists to reconcile. It therefore does not
+    // implement ReconcilesProviderCommands, and the reconciler must refuse
+    // rather than read that absence as "not delivered" and send it again.
+    expect(fn () => app(ProviderCommandReconciler::class)->settle(
+        CommandOutcome::unknown('idem-colocated', 'read timeout'),
+        app(FirstPartyPeopleAdapter::class),
+    ))->toThrow(ProviderUnknownOutcomeException::class);
+});
+
+test('a settled outcome needs no reconciliation from the co-located adapter', function (): void {
+    $accepted = CommandOutcome::deliveredAccepted('idem-colocated-2', 'ref');
+
+    expect(app(ProviderCommandReconciler::class)->settle($accepted, app(FirstPartyPeopleAdapter::class)))
+        ->toBe($accepted);
 });
