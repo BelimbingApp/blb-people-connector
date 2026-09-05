@@ -72,6 +72,14 @@ test('an unknown outcome the provider never received becomes retryable', functio
         ->and($settled->idempotencyKey)->toBe('idem-8');
 });
 
+test('reconciliation refuses an outcome returned for a different idempotency key', function (): void {
+    $adapter = reconcilingAdapter(CommandOutcome::deliveredAccepted('another-command', 'provider-ref-42'));
+
+    expect(fn () => app(ProviderCommandReconciler::class)
+        ->settle(CommandOutcome::unknown('idem-expected'), $adapter))
+        ->toThrow(ProviderUnknownOutcomeException::class);
+});
+
 test('an unknown outcome is never settled by an adapter that cannot reconcile', function (): void {
     // HR2000 declares no operations, so it cannot answer whether a command
     // exists. Guessing "not delivered" here is exactly the blind retry this
