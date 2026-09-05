@@ -11,6 +11,7 @@ use App\Domains\PeopleConnector\Connector\Models\WorkforcePositionProjection;
 use App\Domains\PeopleConnector\Skill\Contracts\ResolvesSkillRequirements;
 use App\Domains\PeopleConnector\Skill\Data\AssessmentDraft;
 use App\Domains\PeopleConnector\Skill\Data\DevelopmentActionDraft;
+use App\Domains\PeopleConnector\Skill\Data\ReassessmentRequestDraft;
 use App\Domains\PeopleConnector\Skill\Data\ResolvedSkillRequirement;
 use App\Domains\PeopleConnector\Skill\Data\SkillDraft;
 use App\Domains\PeopleConnector\Skill\Enums\AssessmentCycle;
@@ -24,6 +25,7 @@ use App\Domains\PeopleConnector\Skill\Enums\ReassessmentRequestStatus;
 use App\Domains\PeopleConnector\Skill\Enums\RequirementCriticality;
 use App\Domains\PeopleConnector\Skill\Enums\SkillCoverageState;
 use App\Domains\PeopleConnector\Skill\Enums\SkillScope;
+use App\Domains\PeopleConnector\Skill\Exceptions\InvalidReassessmentRequestException;
 use App\Domains\PeopleConnector\Skill\Models\EmployeeSkillScore;
 use App\Domains\PeopleConnector\Skill\Models\ReassessmentRequest;
 use App\Domains\PeopleConnector\Skill\Models\SkillAssessment;
@@ -311,6 +313,72 @@ test('expired certificate validity clears current coverage while history remains
         ->and($score->source_assessment_id)->toBe($fresh->id)
         ->and($score->current_level)->toBe(3)
         ->and($score->coverageState())->toBe(SkillCoverageState::Current);
+});
+
+test('when every finalized validity window has expired the current score row is deleted', function (): void {
+    [, $companyEntityId, $employeeEntityId, $skillId] = reassessmentFixture();
+
+    finalizeReassessmentAssessment($companyEntityId, new AssessmentDraft(
+        employeeEntityId: $employeeEntityId,
+        skillId: $skillId,
+        assessedLevel: 4,
+        method: AssessmentMethod::Certification,
+        cycle: AssessmentCycle::Recertification,
+        assessedAt: now()->subMonths(2),
+        evidence: 'Current licence on file.',
+        certificateNumber: 'LIC-LIVE',
+        validUntil: today()->addDays(2),
+        assessorUserId: 9,
+    ));
+
+    expect(EmployeeSkillScore::query()
+        ->forCompany(app(TenantContext::class)->requireTenantId(), $companyEntityId)
+        ->where('employee_entity_id', $employeeEntityId)
+        ->where('skill_id', $skillId)
+        ->count())->toBe(1);
+
+    $this->travel(5)->days();
+
+    finalizeReassessmentAssessment($companyEntityId, new AssessmentDraft(
+        employeeEntityId: $employeeEntityId,
+        skillId: $skillId,
+        assessedLevel: 2,
+        method: AssessmentMethod::Certification,
+        cycle: AssessmentCycle::Annual,
+        assessedAt: now()->subDay(),
+        evidence: 'Observed after both windows expired.',
+        certificateNumber: 'LIC-STALE',
+        validUntil: today()->subDay(),
+        assessorUserId: 9,
+    ));
+
+    expect(EmployeeSkillScore::query()
+        ->forCompany(app(TenantContext::class)->requireTenantId(), $companyEntityId)
+        ->where('employee_entity_id', $employeeEntityId)
+        ->where('skill_id', $skillId)
+        ->count())->toBe(0);
+});
+
+test('a second open reassessment request for the same employee and skill is rejected', function (): void {
+    [, $companyEntityId, $employeeEntityId, $skillId] = reassessmentFixture();
+    $store = app(ReassessmentRequestStore::class);
+    $draft = new ReassessmentRequestDraft(
+        employeeEntityId: $employeeEntityId,
+        skillId: $skillId,
+        dueDate: today()->addDays(10),
+        cycle: AssessmentCycle::PostTraining,
+        source: ReassessmentRequestSource::Manual,
+        targetLevel: 4,
+        assignedEvaluatorUserId: 11,
+        requiredEvidence: 'Observed competence.',
+        notes: 'Manual evaluator request.',
+    );
+
+    $first = $store->request($companyEntityId, $draft, createdByUserId: 11);
+    expect($first->status)->toBe(ReassessmentRequestStatus::Open);
+
+    expect(fn () => $store->request($companyEntityId, $draft, createdByUserId: 11))
+        ->toThrow(InvalidReassessmentRequestException::class, 'An open reassessment request already exists for this employee and skill.');
 });
 
 test('linking a post-training assessment fulfills the open reassessment request', function (): void {
