@@ -7,6 +7,7 @@ use App\Base\Authz\DTO\ResourceContext;
 use App\Base\Authz\Enums\AuthorizationReasonCode;
 use App\Base\Authz\Enums\PrincipalType;
 use App\Base\Tenancy\Contracts\TenantContext;
+use App\Core\User\Models\User;
 use App\Domains\PeopleConnector\Connector\Data\ProviderScope;
 use App\Domains\PeopleConnector\Connector\Data\ReconciliationIssueDetails;
 use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
@@ -214,4 +215,40 @@ test('the report deletes nothing', function (): void {
     // later, separately approved step.
     expect($writes)->toBe([])
         ->and(DB::table(RETENTION_ISSUES_TABLE)->count())->toBe($before);
+});
+
+test('the command reports the count and states that nothing was deleted', function (): void {
+    $f = retentionTenant('Retention Command Tenant');
+    retentionAuthz(true);
+    retentionConfigure([RETENTION_ISSUES_TABLE => ['days' => 365, 'column' => 'first_seen_at']]);
+    $operator = User::factory()->create(['company_id' => $f['actor']->companyId]);
+    $before = DB::table(RETENTION_ISSUES_TABLE)->count();
+
+    $this->artisan('people-connector:retention-report', ['--tenant' => $f['tenantId'], '--as' => $operator->id])
+        ->expectsOutputToContain('Rows past retention: 1. Nothing was deleted.')
+        ->assertExitCode(0);
+
+    expect(DB::table(RETENTION_ISSUES_TABLE)->count())->toBe($before);
+});
+
+test('the command refuses to run without a named operator', function (): void {
+    $f = retentionTenant('Retention Anonymous Command Tenant');
+    retentionAuthz(true);
+    retentionConfigure([RETENTION_ISSUES_TABLE => ['days' => 365, 'column' => 'first_seen_at']]);
+
+    // Retention is capability-gated. A console run that invented its own actor
+    // would answer "may this person see this" with "a command asked, so yes".
+    $this->artisan('people-connector:retention-report', ['--tenant' => $f['tenantId']])
+        ->expectsOutputToContain('runs as a named operator')
+        ->assertExitCode(1);
+});
+
+test('the command surfaces a capability refusal instead of printing a report', function (): void {
+    $f = retentionTenant('Retention Denied Command Tenant');
+    retentionAuthz(false);
+    retentionConfigure([RETENTION_ISSUES_TABLE => ['days' => 365, 'column' => 'first_seen_at']]);
+    $operator = User::factory()->create(['company_id' => $f['actor']->companyId]);
+
+    $this->artisan('people-connector:retention-report', ['--tenant' => $f['tenantId'], '--as' => $operator->id])
+        ->assertExitCode(1);
 });
