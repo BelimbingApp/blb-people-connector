@@ -297,3 +297,16 @@ test('erasing an external reference the connection never issued is refused', fun
         ->where('workforce_entity_id', $f['entityId'])
         ->value('privacy_deleted_at'))->toBeNull();
 });
+
+test('identity erasure refuses a company reference and names eraseCompany instead', function (): void {
+    $f = identityErasureFixture();
+    identityErasureAuthz(true);
+    $company = new ExternalReference('test.erasure', WorkforceResourceType::Company, 'ERASE-CO');
+
+    expect(fn () => app(PrivacyDeletionService::class)->eraseIdentity(
+        $f['actor'],
+        $f['connectionId'],
+        $company,
+        identityErasureProvenance(),
+    ))->toThrow(PrivacyDeletionException::class, 'eraseCompany');
+});

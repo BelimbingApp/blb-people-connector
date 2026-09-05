@@ -16,7 +16,6 @@ use App\Domains\PeopleConnector\Connector\Exceptions\ProviderAuthorizationExcept
 use App\Domains\PeopleConnector\Connector\Models\ExternalIdentity;
 use App\Domains\PeopleConnector\Connector\Models\ProviderConnection;
 use App\Domains\PeopleConnector\Connector\Models\ReconciliationIssue;
-use App\Domains\PeopleConnector\Connector\Models\WorkforceCompanyProjection;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceEmployeeProjection;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceEntity;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceOrganizationUnitProjection;
@@ -75,6 +74,16 @@ final class PrivacyDeletionService
         if ($connection === null) {
             throw new PrivacyDeletionException(
                 "Privacy deletion requires a connection in the current tenant; [{$connectionId}] is not one.",
+            );
+        }
+
+        // A company workforce entity is the scope personal data hangs off, not
+        // personal data itself: its projection has no privacy_deleted_at column
+        // and never did. Erasing a whole company is eraseCompany's job, which
+        // tombstones the company's members and leaves the company row standing.
+        if ($reference->resourceType === WorkforceResourceType::Company) {
+            throw new PrivacyDeletionException(
+                'Identity erasure covers a person, not a company; use eraseCompany to erase a company scope.',
             );
         }
 
@@ -297,19 +306,6 @@ final class PrivacyDeletionService
             'name' => self::REDACTED_LABEL,
             'code' => null,
             'tier' => null,
-            'active' => false,
-            'privacy_deleted_at' => $erasedAt,
-        ])->save();
-
-        $company = WorkforceCompanyProjection::query()
-            ->forTenant($tenantId)
-            ->withoutCompanyScope('Addresses one projection by the canonical workforce entity id, which is unique per tenant; the caller resolved that entity through the connection it is already authorized for.')
-            ->where('workforce_entity_id', $entityId)
-            ->whereNull('privacy_deleted_at')
-            ->first();
-        $company?->forceFill([
-            'name' => self::REDACTED_LABEL,
-            'code' => null,
             'active' => false,
             'privacy_deleted_at' => $erasedAt,
         ])->save();
