@@ -89,6 +89,28 @@ final readonly class WorkforceHistoryEvent
     }
 
     /**
+     * A privacy erasure of one provider identity.
+     *
+     * The external id stays in the payload on purpose. Erasure tombstones the
+     * personal projection fields; the identity token itself is what the audit
+     * trail is *for*, and eraseCompany() has left those intact since the first
+     * deletion slice. Without it the row cannot answer which identity was
+     * erased, which is the one question an erasure audit exists to answer.
+     */
+    public static function identityErased(ExternalReference $reference): self
+    {
+        return new self(
+            WorkforceHistoryEventType::IdentityErased,
+            $reference,
+            null,
+            null,
+            null,
+            null,
+            ['external_id' => $reference->externalId],
+        );
+    }
+
+    /**
      * A deactivated identity coming back into force — a re-hire, or a
      * provider correcting a deactivation it should not have emitted.
      *
