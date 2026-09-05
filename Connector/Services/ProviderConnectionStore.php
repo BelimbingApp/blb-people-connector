@@ -53,6 +53,11 @@ final class ProviderConnectionStore
                 ]);
             }
 
+            // One row exists per (tenant, scope, provider), so this finds a
+            // retired connection rather than making a second one. Rewriting its
+            // label or versions would edit history that retirement froze.
+            ConnectionRetirementService::assertWritable($connection);
+
             $connection->fill([
                 'label' => $label,
                 'adapter_version' => $adapterVersion,
@@ -80,6 +85,11 @@ final class ProviderConnectionStore
                 ?? throw new InvalidProviderConfigurationException(
                     'The provider connection scope changed while activation was in progress.',
                 );
+
+            // Retirement that a single activate() undoes is not retirement.
+            // Coming back means configuring a new connection, which carries its
+            // own provider-replacement decision.
+            ConnectionRetirementService::assertWritable($connection);
 
             if ($connection->status === ProviderConnection::STATUS_ACTIVE) {
                 app(SchedulerPrincipalGrants::class)->grant($connection);

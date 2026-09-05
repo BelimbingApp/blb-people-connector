@@ -36,6 +36,7 @@ final class WorkforceProjectionStore
     ): WorkforceCompanyProjection|WorkforceOrganizationUnitProjection|WorkforcePositionProjection|WorkforceEmployeeProjection {
         return DB::transaction(function () use ($connectionId, $record, $provenance): WorkforceCompanyProjection|WorkforceOrganizationUnitProjection|WorkforcePositionProjection|WorkforceEmployeeProjection {
             $connection = $this->connections->get($connectionId, lock: true);
+            ConnectionRetirementService::assertWritable($connection);
             $observedAt = $record->observedAt;
             $sourceVersion = $record->sourceVersion;
             $identity = $this->identities->resolveOrCreateIdentity(
