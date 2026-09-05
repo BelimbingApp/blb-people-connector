@@ -15,6 +15,7 @@ use App\Domains\PeopleConnector\Connector\Data\WorkforceEmployee;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceOrganizationUnit;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceUpsert;
 use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
+use App\Domains\PeopleConnector\FirstPartyPeople\Exceptions\ForeignProviderReferenceException;
 
 /**
  * Restates one published People record as its provider-neutral connector value.
@@ -27,8 +28,23 @@ use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
  */
 final readonly class WorkforceRecordTranslator
 {
+    /**
+     * This adapter is the `blb-people` provider, so every reference it hands
+     * the connector is stamped with that identity. A reference People
+     * published under someone else's is refused rather than relabelled: the
+     * connector keys durable external identities on the provider/id pair, so
+     * quietly rewriting the provider would mint a wrong identity instead of
+     * failing a read. Preserving it is not the alternative — a connector
+     * record rejects references that cross providers, so a foreign one among
+     * native siblings would throw from inside record construction rather than
+     * at this boundary.
+     */
     public function reference(PeopleExternalReference $reference): ExternalReference
     {
+        if ($reference->providerId !== PeopleExternalReference::PROVIDER_ID) {
+            throw new ForeignProviderReferenceException($reference->providerId);
+        }
+
         return new ExternalReference(
             providerId: PeopleExternalReference::PROVIDER_ID,
             resourceType: WorkforceResourceType::from($reference->resourceType->value),

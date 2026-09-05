@@ -9,6 +9,7 @@ use App\Domains\PeopleConnector\Connector\Contracts\ReadsWorkforceChanges;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceChangePage;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceChangeRequest;
 use App\Domains\PeopleConnector\Connector\Exceptions\ProviderValidationException;
+use App\Domains\PeopleConnector\FirstPartyPeople\Exceptions\ForeignProviderReferenceException;
 use App\Domains\PeopleConnector\FirstPartyPeople\FirstPartyPeopleAdapter;
 
 /**
@@ -34,6 +35,14 @@ final readonly class WorkforceChangePort implements ReadsWorkforceChanges
                 pageCursor: $request->pageCursor,
                 limit: $request->limit,
             ));
+
+            return new WorkforceChangePage(
+                changes: array_map($this->translator->change(...), $page->changes),
+                asOf: $page->asOf,
+                nextPageCursor: $page->nextPageCursor,
+                resumeCursor: $page->resumeCursor,
+                complete: $page->complete,
+            );
         } catch (BlbDataContractException $exception) {
             throw new ProviderValidationException(
                 providerId: FirstPartyPeopleAdapter::ID,
@@ -41,14 +50,14 @@ final readonly class WorkforceChangePort implements ReadsWorkforceChanges
                 message: 'The People provider refused the incremental workforce read.',
                 previous: $exception,
             );
+        } catch (ForeignProviderReferenceException $exception) {
+            throw new ProviderValidationException(
+                providerId: FirstPartyPeopleAdapter::ID,
+                operation: 'read_workforce_changes',
+                message: $exception->getMessage(),
+                context: ['published_provider_id' => $exception->publishedProviderId],
+                previous: $exception,
+            );
         }
-
-        return new WorkforceChangePage(
-            changes: array_map($this->translator->change(...), $page->changes),
-            asOf: $page->asOf,
-            nextPageCursor: $page->nextPageCursor,
-            resumeCursor: $page->resumeCursor,
-            complete: $page->complete,
-        );
     }
 }
