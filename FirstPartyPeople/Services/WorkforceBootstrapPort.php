@@ -9,6 +9,7 @@ use App\Domains\PeopleConnector\Connector\Contracts\BootstrapsWorkforce;
 use App\Domains\PeopleConnector\Connector\Data\WorkforcePage;
 use App\Domains\PeopleConnector\Connector\Data\WorkforcePageRequest;
 use App\Domains\PeopleConnector\Connector\Exceptions\ProviderValidationException;
+use App\Domains\PeopleConnector\FirstPartyPeople\Exceptions\ForeignProviderReferenceException;
 use App\Domains\PeopleConnector\FirstPartyPeople\FirstPartyPeopleAdapter;
 
 /**
@@ -32,6 +33,16 @@ final readonly class WorkforceBootstrapPort implements BootstrapsWorkforce
                 pageCursor: $request->pageCursor,
                 limit: $request->limit,
             ));
+
+            return new WorkforcePage(
+                employees: array_map($this->translator->employee(...), $page->employees),
+                asOf: $page->asOf,
+                nextPageCursor: $page->nextPageCursor,
+                resumeCursor: $page->resumeCursor,
+                complete: $page->complete,
+                companies: array_map($this->translator->company(...), $page->companies),
+                organizationUnits: array_map($this->translator->organizationUnit(...), $page->organizationUnits),
+            );
         } catch (BlbDataContractException $exception) {
             throw new ProviderValidationException(
                 providerId: FirstPartyPeopleAdapter::ID,
@@ -39,16 +50,14 @@ final readonly class WorkforceBootstrapPort implements BootstrapsWorkforce
                 message: 'The People provider refused the workforce bootstrap read.',
                 previous: $exception,
             );
+        } catch (ForeignProviderReferenceException $exception) {
+            throw new ProviderValidationException(
+                providerId: FirstPartyPeopleAdapter::ID,
+                operation: 'bootstrap_workforce',
+                message: $exception->getMessage(),
+                context: ['published_provider_id' => $exception->publishedProviderId],
+                previous: $exception,
+            );
         }
-
-        return new WorkforcePage(
-            employees: array_map($this->translator->employee(...), $page->employees),
-            asOf: $page->asOf,
-            nextPageCursor: $page->nextPageCursor,
-            resumeCursor: $page->resumeCursor,
-            complete: $page->complete,
-            companies: array_map($this->translator->company(...), $page->companies),
-            organizationUnits: array_map($this->translator->organizationUnit(...), $page->organizationUnits),
-        );
     }
 }

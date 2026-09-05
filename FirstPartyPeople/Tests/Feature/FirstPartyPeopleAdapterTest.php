@@ -469,3 +469,108 @@ test('a refused incremental read is translated at the boundary too', function ()
     expect(fn () => $port->changes(new WorkforceChangeRequest('resume-cursor')))
         ->toThrow(ProviderValidationException::class);
 });
+
+test('a published reference naming another provider is refused, not relabelled', function (): void {
+    $observedAt = new DateTimeImmutable('2026-03-05T10:00:00.000000+00:00');
+    // People can publish a provider identity since blb-people#116. This adapter
+    // *is* blb-people, so a reference naming someone else is a contract
+    // violation from here, and the connector must not mint an identity under
+    // the wrong provider.
+    $page = new WorkforceBootstrapPage(
+        employees: [],
+        companies: [new PeopleWorkforceCompany(
+            reference: new PeopleExternalReference(PeopleWorkforceResourceType::Company, 'c-1', 'hr2000.sbg'),
+            name: 'Foreign Company',
+            active: true,
+            observedAt: $observedAt,
+        )],
+        organizationUnits: [],
+        asOf: $observedAt,
+        nextPageCursor: null,
+        resumeCursor: 'resume',
+        complete: true,
+    );
+    app()->instance(ReadsWorkforceBootstrap::class, new class($page) implements ReadsWorkforceBootstrap
+    {
+        public function __construct(private readonly WorkforceBootstrapPage $page) {}
+
+        public function read(WorkforceBootstrapRequest $request): WorkforceBootstrapPage
+        {
+            return $this->page;
+        }
+    });
+
+    $port = app(FirstPartyPeopleAdapter::class)->resolvePort(
+        BootstrapsWorkforce::class,
+        ProviderPortAuthorization::forConformance(FirstPartyPeopleAdapter::ID),
+    );
+
+    expect(fn () => $port->bootstrap(new WorkforcePageRequest))
+        ->toThrow(ProviderValidationException::class);
+});
+
+test('a published reference naming this adapter still translates', function (): void {
+    $observedAt = new DateTimeImmutable('2026-03-05T10:00:00.000000+00:00');
+    $page = new WorkforceBootstrapPage(
+        employees: [],
+        companies: [new PeopleWorkforceCompany(
+            reference: new PeopleExternalReference(PeopleWorkforceResourceType::Company, 'c-1', 'blb-people'),
+            name: 'Native Company',
+            active: true,
+            observedAt: $observedAt,
+        )],
+        organizationUnits: [],
+        asOf: $observedAt,
+        nextPageCursor: null,
+        resumeCursor: 'resume',
+        complete: true,
+    );
+    app()->instance(ReadsWorkforceBootstrap::class, new class($page) implements ReadsWorkforceBootstrap
+    {
+        public function __construct(private readonly WorkforceBootstrapPage $page) {}
+
+        public function read(WorkforceBootstrapRequest $request): WorkforceBootstrapPage
+        {
+            return $this->page;
+        }
+    });
+
+    $port = app(FirstPartyPeopleAdapter::class)->resolvePort(
+        BootstrapsWorkforce::class,
+        ProviderPortAuthorization::forConformance(FirstPartyPeopleAdapter::ID),
+    );
+
+    expect($port->bootstrap(new WorkforcePageRequest)->companies[0]->reference->providerId)->toBe('blb-people');
+});
+
+test('the incremental port refuses a foreign provider reference at its own boundary', function (): void {
+    $occurredAt = new DateTimeImmutable('2026-03-05T11:00:00.000000+00:00');
+    $page = new PeopleWorkforceChangePage(
+        changes: [new PeopleWorkforceDeactivation(
+            reference: new PeopleExternalReference(PeopleWorkforceResourceType::Company, 'c-9', 'hr2000.sbg'),
+            occurredAt: $occurredAt,
+        )],
+        since: $occurredAt,
+        asOf: $occurredAt,
+        nextPageCursor: null,
+        resumeCursor: 'resume',
+        complete: true,
+    );
+    app()->instance(ReadsPeopleWorkforceChanges::class, new class($page) implements ReadsPeopleWorkforceChanges
+    {
+        public function __construct(private readonly PeopleWorkforceChangePage $page) {}
+
+        public function read(PeopleWorkforceChangeRequest $request): PeopleWorkforceChangePage
+        {
+            return $this->page;
+        }
+    });
+
+    $port = app(FirstPartyPeopleAdapter::class)->resolvePort(
+        ReadsWorkforceChanges::class,
+        ProviderPortAuthorization::forConformance(FirstPartyPeopleAdapter::ID),
+    );
+
+    expect(fn () => $port->changes(new WorkforceChangeRequest('resume-cursor')))
+        ->toThrow(ProviderValidationException::class);
+});
