@@ -31,5 +31,11 @@ return [
                 'people-connector.training.request.hod-review',
             ],
         ],
+        'people_training_approver' => [
+            'capabilities' => [
+                'people-connector.training.event.view',
+                'people-connector.training.request.approve',
+            ],
+        ],
     ],
 ];

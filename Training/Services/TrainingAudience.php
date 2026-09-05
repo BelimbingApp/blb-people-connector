@@ -15,6 +15,8 @@ use Illuminate\Database\Eloquent\Builder;
 /** Deep HR/company and HOD/department boundary for training records. */
 final class TrainingAudience
 {
+    public const APPROVER = 'training_approver';
+
     public const VIEW = 'people-connector.training.event.view';
 
     public const MANAGE = 'people-connector.training.event.manage';

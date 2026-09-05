@@ -57,7 +57,7 @@ final class TrainingRequestStore
 
     public function approve(User $actor, int $companyEntityId, int $requestId, ?string $notes = null): TrainingRequest
     {
-        return $this->move($actor, $companyEntityId, $requestId, TrainingRequestStatus::PendingApproval, TrainingRequestStatus::Approved, 'approved', TrainingAudience::REQUEST_APPROVE, SkillAudience::HR, $notes);
+        return $this->move($actor, $companyEntityId, $requestId, TrainingRequestStatus::PendingApproval, TrainingRequestStatus::Approved, 'approved', TrainingAudience::REQUEST_APPROVE, TrainingAudience::APPROVER, $notes);
     }
 
     public function reject(User $actor, int $companyEntityId, int $requestId, string $notes): TrainingRequest
