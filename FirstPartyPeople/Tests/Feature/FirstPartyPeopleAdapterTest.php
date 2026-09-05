@@ -505,8 +505,14 @@ test('a published reference naming another provider is refused, not relabelled',
         ProviderPortAuthorization::forConformance(FirstPartyPeopleAdapter::ID),
     );
 
-    expect(fn () => $port->bootstrap(new WorkforcePageRequest))
-        ->toThrow(ProviderValidationException::class);
+    try {
+        $port->bootstrap(new WorkforcePageRequest);
+        expect(false)->toBeTrue('expected ProviderValidationException');
+    } catch (ProviderValidationException $exception) {
+        expect($exception->context['published_provider_id'] ?? null)->toBe('hr2000.sbg')
+            ->and($exception->getMessage())->not->toContain('c-1')
+            ->and(json_encode($exception->context))->not->toContain('c-1');
+    }
 });
 
 test('a published reference naming this adapter still translates', function (): void {
@@ -571,6 +577,12 @@ test('the incremental port refuses a foreign provider reference at its own bound
         ProviderPortAuthorization::forConformance(FirstPartyPeopleAdapter::ID),
     );
 
-    expect(fn () => $port->changes(new WorkforceChangeRequest('resume-cursor')))
-        ->toThrow(ProviderValidationException::class);
+    try {
+        $port->changes(new WorkforceChangeRequest('resume-cursor'));
+        expect(false)->toBeTrue('expected ProviderValidationException');
+    } catch (ProviderValidationException $exception) {
+        expect($exception->context['published_provider_id'] ?? null)->toBe('hr2000.sbg')
+            ->and($exception->getMessage())->not->toContain('c-9')
+            ->and(json_encode($exception->context))->not->toContain('c-9');
+    }
 });
