@@ -15,10 +15,10 @@ on:
 
 jobs:
   ci:
-    uses: BelimbingApp/belimbing/.github/workflows/domain-ci.yml@a965c522e4065a35790fb9fe2d192d9d2e8e205a
+    uses: BelimbingApp/belimbing/.github/workflows/domain-ci.yml@c8e756edadf4df6edce737ac4c8c190a5fef3bb6
     with:
       domain-path: app/Domains/PeopleConnector
-      platform-ref: a965c522e4065a35790fb9fe2d192d9d2e8e205a
+      platform-ref: c8e756edadf4df6edce737ac4c8c190a5fef3bb6
       sonar-project-key: BelimbingApp_blb-people-connector
       sonar-organization: belimbingapp
     secrets:
