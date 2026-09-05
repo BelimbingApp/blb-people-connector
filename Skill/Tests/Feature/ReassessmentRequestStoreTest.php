@@ -17,6 +17,7 @@ use App\Domains\PeopleConnector\Skill\Enums\AssessmentStatus;
 use App\Domains\PeopleConnector\Skill\Enums\CriticalClassification;
 use App\Domains\PeopleConnector\Skill\Enums\DevelopmentActionStatus;
 use App\Domains\PeopleConnector\Skill\Enums\DevelopmentActionType;
+use App\Domains\PeopleConnector\Skill\Enums\ReassessmentRequestSource;
 use App\Domains\PeopleConnector\Skill\Enums\ReassessmentRequestStatus;
 use App\Domains\PeopleConnector\Skill\Enums\RequirementCriticality;
 use App\Domains\PeopleConnector\Skill\Enums\SkillCoverageState;
@@ -29,6 +30,12 @@ use App\Domains\PeopleConnector\Skill\Services\DevelopmentActionStore;
 use App\Domains\PeopleConnector\Skill\Services\ReassessmentRequestStore;
 use App\Domains\PeopleConnector\Skill\Services\SkillCatalogDefaults;
 use App\Domains\PeopleConnector\Skill\Services\SkillCatalogStore;
+use App\Domains\PeopleConnector\Skill\Services\SkillScoreHistory;
+use App\Domains\PeopleConnector\Training\Data\TrainingCourseDraft;
+use App\Domains\PeopleConnector\Training\Data\TrainingEventDraft;
+use App\Domains\PeopleConnector\Training\Enums\DeliveryMode;
+use App\Domains\PeopleConnector\Training\Services\TrainingCatalogStore;
+use App\Domains\PeopleConnector\Training\Services\TrainingEventStore;
 
 afterEach(function (): void {
     app(TenantContext::class)->clear();
@@ -342,5 +349,136 @@ test('linking a post-training assessment fulfills the open reassessment request'
 
     expect($fulfilled?->status)->toBe(ReassessmentRequestStatus::Fulfilled)
         ->and($fulfilled?->fulfilled_assessment_id)->toBe($post->id)
+        ->and($fulfilled?->before_level)->toBe(2)
+        ->and($fulfilled?->achieved)->toBeTrue()
         ->and($action->status)->toBe(DevelopmentActionStatus::Completed);
+});
+
+test('verified training participation opens reassessment without changing the score', function (): void {
+    [, $companyEntityId, $employeeEntityId, $skillId, $ownerId] = reassessmentFixture();
+
+    app(AssessmentStore::class)->finalize($companyEntityId, new AssessmentDraft(
+        employeeEntityId: $employeeEntityId,
+        skillId: $skillId,
+        assessedLevel: 2,
+        method: AssessmentMethod::DirectObservation,
+        cycle: AssessmentCycle::Baseline,
+        assessedAt: now()->subMonths(1),
+        evidence: 'Baseline.',
+        assessorUserId: 9,
+    ));
+
+    $before = EmployeeSkillScore::query()
+        ->forCompany(app(TenantContext::class)->requireTenantId(), $companyEntityId)
+        ->where('employee_entity_id', $employeeEntityId)
+        ->where('skill_id', $skillId)
+        ->first();
+
+    $course = app(TrainingCatalogStore::class)->defineCourse($companyEntityId, new TrainingCourseDraft(
+        code: 'forklift.refresh',
+        title: 'Forklift refresh',
+        deliveryMode: DeliveryMode::InternalClassroom,
+        skillIds: [$skillId],
+        internalTrainerEmployeeEntityId: $ownerId,
+    ));
+    $event = app(TrainingEventStore::class)->schedule($companyEntityId, new TrainingEventDraft(
+        courseId: (int) $course->id,
+        startsAt: now()->addDays(2)->setTime(9, 0),
+        endsAt: now()->addDays(2)->setTime(17, 0),
+        capacity: 8,
+        organizerEmployeeEntityId: $ownerId,
+        internalTrainerEmployeeEntityId: $ownerId,
+    ), actorUserId: 9);
+
+    $request = app(ReassessmentRequestStore::class)->requestFromTrainingEvent(
+        $companyEntityId,
+        (int) $event->id,
+        $employeeEntityId,
+        $skillId,
+        targetLevel: 4,
+        dueDate: today()->addDays(14),
+        assignedEvaluatorUserId: 11,
+        createdByUserId: 9,
+    );
+
+    expect($request->source)->toBe(ReassessmentRequestSource::TrainingEvent)
+        ->and($request->source_training_event_id)->toBe($event->id)
+        ->and($request->before_level)->toBe(2)
+        ->and($request->status)->toBe(ReassessmentRequestStatus::Open);
+
+    $again = app(ReassessmentRequestStore::class)->requestFromTrainingEvent(
+        $companyEntityId,
+        (int) $event->id,
+        $employeeEntityId,
+        $skillId,
+        targetLevel: 4,
+        dueDate: today()->addDays(14),
+    );
+    expect($again->id)->toBe($request->id);
+
+    $after = EmployeeSkillScore::query()
+        ->forCompany(app(TenantContext::class)->requireTenantId(), $companyEntityId)
+        ->where('employee_entity_id', $employeeEntityId)
+        ->where('skill_id', $skillId)
+        ->first();
+
+    expect($after?->current_level)->toBe($before?->current_level)
+        ->and($after?->source_assessment_id)->toBe($before?->source_assessment_id);
+});
+
+test('expired coverage opens renewal work and score history stays append-only', function (): void {
+    [, $companyEntityId, $employeeEntityId, $skillId] = reassessmentFixture();
+
+    $expired = app(AssessmentStore::class)->finalize($companyEntityId, new AssessmentDraft(
+        employeeEntityId: $employeeEntityId,
+        skillId: $skillId,
+        assessedLevel: 4,
+        method: AssessmentMethod::Certification,
+        cycle: AssessmentCycle::Recertification,
+        assessedAt: now()->subYear(),
+        evidence: 'Licence copy on file.',
+        certificateNumber: 'LIC-9',
+        validUntil: today()->subDay(),
+        assessorUserId: 9,
+    ));
+
+    expect(EmployeeSkillScore::query()
+        ->forCompany(app(TenantContext::class)->requireTenantId(), $companyEntityId)
+        ->where('employee_entity_id', $employeeEntityId)
+        ->where('skill_id', $skillId)
+        ->exists())->toBeFalse();
+
+    $opened = app(ReassessmentRequestStore::class)->openRenewalsForExpiredCoverage(
+        $companyEntityId,
+        today()->addDays(30),
+    );
+
+    expect($opened)->toBe(1);
+
+    $request = ReassessmentRequest::query()
+        ->forCompany(app(TenantContext::class)->requireTenantId(), $companyEntityId)
+        ->where('source_assessment_id', $expired->id)
+        ->first();
+
+    expect($request)->not->toBeNull()
+        ->and($request->source)->toBe(ReassessmentRequestSource::CertificationExpiry)
+        ->and($request->cycle)->toBe(AssessmentCycle::Recertification)
+        ->and($request->before_level)->toBeNull();
+
+    expect(app(ReassessmentRequestStore::class)->openRenewalsForExpiredCoverage(
+        $companyEntityId,
+        today()->addDays(30),
+    ))->toBe(0);
+
+    $history = app(SkillScoreHistory::class)->timeline($companyEntityId, $employeeEntityId, $skillId);
+    $kinds = array_column($history, 'kind');
+
+    expect($kinds)->toContain('assessment')
+        ->and($kinds)->toContain('reassessment_request')
+        ->and(app(SkillScoreHistory::class)->assessments($companyEntityId, $employeeEntityId, $skillId))->toHaveCount(1)
+        ->and(EmployeeSkillScore::query()
+            ->forCompany(app(TenantContext::class)->requireTenantId(), $companyEntityId)
+            ->where('employee_entity_id', $employeeEntityId)
+            ->where('skill_id', $skillId)
+            ->exists())->toBeFalse();
 });

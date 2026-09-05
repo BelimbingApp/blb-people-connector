@@ -35,7 +35,10 @@ return new class extends Migration
             $table->unsignedBigInteger('source_development_action_id')->nullable();
             $table->unsignedBigInteger('source_training_event_id')->nullable();
             $table->unsignedBigInteger('source_assessment_id')->nullable();
+            $table->unsignedTinyInteger('before_level')->nullable();
             $table->unsignedBigInteger('fulfilled_assessment_id')->nullable();
+            $table->boolean('achieved')->nullable();
+            $table->text('effectiveness_notes')->nullable();
             $table->timestamp('fulfilled_at')->nullable();
             $table->timestamp('cancelled_at')->nullable();
             $table->text('cancellation_reason')->nullable();
@@ -47,6 +50,10 @@ return new class extends Migration
             $table->index(['tenant_id', 'company_entity_id', 'status', 'due_date'], 'pcs_reassess_ops_idx');
             $table->index(['tenant_id', 'employee_entity_id', 'skill_id', 'status'], 'pcs_reassess_employee_skill_idx');
             $table->unique(['tenant_id', 'source_development_action_id'], 'pcs_reassess_source_action_uq');
+            $table->unique(
+                ['tenant_id', 'source_training_event_id', 'employee_entity_id', 'skill_id'],
+                'pcs_reassess_source_training_uq',
+            );
 
             $table->foreign('tenant_id', 'pcs_reassess_tenant_fk')
                 ->references('id')->on('tenants')->restrictOnDelete();

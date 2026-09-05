@@ -43,6 +43,8 @@ final class ReassessmentRequest extends TenantOwnedModel implements ReferencesWo
             'source' => ReassessmentRequestSource::class,
             'status' => ReassessmentRequestStatus::class,
             'due_date' => 'date',
+            'before_level' => 'integer',
+            'achieved' => 'boolean',
             'fulfilled_at' => 'datetime',
             'cancelled_at' => 'datetime',
         ];

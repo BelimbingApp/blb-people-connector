@@ -12,9 +12,11 @@ use App\Domains\PeopleConnector\Skill\Enums\ReassessmentRequestSource;
 use App\Domains\PeopleConnector\Skill\Enums\ReassessmentRequestStatus;
 use App\Domains\PeopleConnector\Skill\Exceptions\InvalidReassessmentRequestException;
 use App\Domains\PeopleConnector\Skill\Models\DevelopmentAction;
+use App\Domains\PeopleConnector\Skill\Models\EmployeeSkillScore;
 use App\Domains\PeopleConnector\Skill\Models\ReassessmentRequest;
 use App\Domains\PeopleConnector\Skill\Models\Skill;
 use App\Domains\PeopleConnector\Skill\Models\SkillAssessment;
+use App\Domains\PeopleConnector\Training\Models\TrainingEvent;
 use Carbon\Carbon;
 use DateTimeInterface;
 use Illuminate\Database\Eloquent\Builder;
@@ -67,6 +69,39 @@ final class ReassessmentRequestStore
                     ?? throw new InvalidReassessmentRequestException('The source development action was not found in this company.');
             }
 
+            if ($draft->sourceTrainingEventId !== null) {
+                $existingTraining = ReassessmentRequest::query()
+                    ->forCompany($tenantId, $companyEntityId)
+                    ->where('source_training_event_id', $draft->sourceTrainingEventId)
+                    ->where('employee_entity_id', $draft->employeeEntityId)
+                    ->where('skill_id', $draft->skillId)
+                    ->first();
+                if ($existingTraining !== null) {
+                    return $existingTraining;
+                }
+
+                TrainingEvent::query()->forCompany($tenantId, $companyEntityId)
+                    ->whereKey($draft->sourceTrainingEventId)
+                    ->first()
+                    ?? throw new InvalidReassessmentRequestException('The source training event was not found in this company.');
+            }
+
+            if ($draft->sourceAssessmentId !== null) {
+                $existingFromAssessment = ReassessmentRequest::query()
+                    ->forCompany($tenantId, $companyEntityId)
+                    ->where('source_assessment_id', $draft->sourceAssessmentId)
+                    ->where('status', ReassessmentRequestStatus::Open->value)
+                    ->first();
+                if ($existingFromAssessment !== null) {
+                    return $existingFromAssessment;
+                }
+
+                SkillAssessment::query()->forCompany($tenantId, $companyEntityId)
+                    ->whereKey($draft->sourceAssessmentId)
+                    ->first()
+                    ?? throw new InvalidReassessmentRequestException('The source assessment was not found in this company.');
+            }
+
             $openDuplicate = ReassessmentRequest::query()
                 ->forCompany($tenantId, $companyEntityId)
                 ->where('employee_entity_id', $draft->employeeEntityId)
@@ -78,6 +113,12 @@ final class ReassessmentRequestStore
                     'An open reassessment request already exists for this employee and skill.',
                 );
             }
+
+            $beforeLevel = EmployeeSkillScore::query()
+                ->forCompany($tenantId, $companyEntityId)
+                ->where('employee_entity_id', $draft->employeeEntityId)
+                ->where('skill_id', $draft->skillId)
+                ->value('current_level');
 
             return ReassessmentRequest::query()->create([
                 'tenant_id' => $tenantId,
@@ -95,6 +136,7 @@ final class ReassessmentRequestStore
                 'source_development_action_id' => $draft->sourceDevelopmentActionId,
                 'source_training_event_id' => $draft->sourceTrainingEventId,
                 'source_assessment_id' => $draft->sourceAssessmentId,
+                'before_level' => $beforeLevel === null ? null : (int) $beforeLevel,
                 'created_by_user_id' => $createdByUserId,
             ]);
         });
@@ -121,9 +163,124 @@ final class ReassessmentRequestStore
         ), $createdByUserId);
     }
 
-    public function fulfill(int $companyEntityId, int $requestId, int $assessmentId): ReassessmentRequest
+    /**
+     * Open post-training reassessment for one participant×skill after verified training.
+     * Caller supplies the employee — attendance register is not assumed here.
+     * Never changes proficiency.
+     */
+    public function requestFromTrainingEvent(
+        int $companyEntityId,
+        int $trainingEventId,
+        int $employeeEntityId,
+        int $skillId,
+        int $targetLevel,
+        DateTimeInterface $dueDate,
+        ?int $assignedEvaluatorUserId = null,
+        ?string $requiredEvidence = null,
+        ?int $createdByUserId = null,
+    ): ReassessmentRequest {
+        return $this->request($companyEntityId, new ReassessmentRequestDraft(
+            employeeEntityId: $employeeEntityId,
+            skillId: $skillId,
+            dueDate: $dueDate,
+            cycle: AssessmentCycle::PostTraining,
+            source: ReassessmentRequestSource::TrainingEvent,
+            targetLevel: $targetLevel,
+            assignedEvaluatorUserId: $assignedEvaluatorUserId,
+            requiredEvidence: $requiredEvidence,
+            sourceTrainingEventId: $trainingEventId,
+            notes: 'Opened after verified training participation; score unchanged until reassessment.',
+        ), $createdByUserId);
+    }
+
+    /**
+     * Open renewal work from an expired finalized assessment. Does not restore coverage.
+     */
+    public function requestFromExpiredAssessment(
+        int $companyEntityId,
+        SkillAssessment $assessment,
+        DateTimeInterface $dueDate,
+        ?int $assignedEvaluatorUserId = null,
+        ?int $createdByUserId = null,
+    ): ReassessmentRequest {
+        if ($assessment->status !== AssessmentStatus::Finalized) {
+            throw new InvalidReassessmentRequestException('Only a finalized assessment can open certification renewal work.');
+        }
+
+        if ($assessment->valid_until === null || ! $assessment->valid_until->startOfDay()->lt(today())) {
+            throw new InvalidReassessmentRequestException('The assessment is still within its validity window.');
+        }
+
+        return $this->request($companyEntityId, new ReassessmentRequestDraft(
+            employeeEntityId: (int) $assessment->employee_entity_id,
+            skillId: (int) $assessment->skill_id,
+            dueDate: $dueDate,
+            cycle: AssessmentCycle::Recertification,
+            source: ReassessmentRequestSource::CertificationExpiry,
+            targetLevel: (int) $assessment->required_level,
+            assignedEvaluatorUserId: $assignedEvaluatorUserId,
+            requiredEvidence: 'Renewed certification or observed competence after expiry.',
+            sourceAssessmentId: (int) $assessment->getKey(),
+            notes: 'Opened because certification/validity expired; previous score is not current coverage.',
+        ), $createdByUserId);
+    }
+
+    /**
+     * Scan company assessments whose latest finalized row has expired validity and no
+     * still-valid successor, opening one renewal request each. Returns how many opened.
+     */
+    public function openRenewalsForExpiredCoverage(int $companyEntityId, DateTimeInterface $dueDate): int
     {
-        return DB::transaction(function () use ($companyEntityId, $requestId, $assessmentId): ReassessmentRequest {
+        $tenantId = $this->tenantContext->requireTenantId();
+        $today = today()->toDateString();
+
+        $expiredLatest = SkillAssessment::query()
+            ->forCompany($tenantId, $companyEntityId)
+            ->where('status', AssessmentStatus::Finalized->value)
+            ->whereNotNull('valid_until')
+            ->whereRaw('date(valid_until) < date(?)', [$today])
+            ->orderByDesc('assessed_at')
+            ->orderByDesc('id')
+            ->get()
+            ->unique(fn (SkillAssessment $row): string => $row->employee_entity_id.'|'.$row->skill_id);
+
+        $opened = 0;
+        foreach ($expiredLatest as $assessment) {
+            $stillValid = SkillAssessment::query()
+                ->forCompany($tenantId, $companyEntityId)
+                ->where('employee_entity_id', $assessment->employee_entity_id)
+                ->where('skill_id', $assessment->skill_id)
+                ->where('status', AssessmentStatus::Finalized->value)
+                ->whereRaw('(valid_until is null or date(valid_until) >= date(?))', [$today])
+                ->exists();
+            if ($stillValid) {
+                continue;
+            }
+
+            $open = ReassessmentRequest::query()
+                ->forCompany($tenantId, $companyEntityId)
+                ->where('employee_entity_id', $assessment->employee_entity_id)
+                ->where('skill_id', $assessment->skill_id)
+                ->where('status', ReassessmentRequestStatus::Open->value)
+                ->exists();
+            if ($open) {
+                continue;
+            }
+
+            $this->requestFromExpiredAssessment($companyEntityId, $assessment, $dueDate);
+            $opened++;
+        }
+
+        return $opened;
+    }
+
+    public function fulfill(
+        int $companyEntityId,
+        int $requestId,
+        int $assessmentId,
+        ?string $effectivenessNotes = null,
+    ): ReassessmentRequest {
+        return DB::transaction(function () use ($companyEntityId, $requestId, $assessmentId, $effectivenessNotes): ReassessmentRequest {
             $tenantId = $this->tenantContext->requireTenantId();
             $request = ReassessmentRequest::query()->forCompany($tenantId, $companyEntityId)->whereKey($requestId)->lockForUpdate()->first()
                 ?? throw new InvalidReassessmentRequestException("Reassessment request [$requestId] was not found.");
@@ -148,6 +305,10 @@ final class ReassessmentRequestStore
                 'status' => ReassessmentRequestStatus::Fulfilled,
                 'fulfilled_assessment_id' => $assessment->getKey(),
                 'fulfilled_at' => now(),
+                'achieved' => (int) $assessment->assessed_level >= (int) $request->target_level,
+                'effectiveness_notes' => $effectivenessNotes === null || trim($effectivenessNotes) === ''
+                    ? null
+                    : trim($effectivenessNotes),
             ]);
 
             return $request->refresh();
