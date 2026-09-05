@@ -42,5 +42,7 @@ explicitly rejected. Direct database access requires written vendor/customer
 support and a later reviewed port implementation.
 
 HR2000 training history, if later verified, is import-only provenance.
-Connector-owned training requests, evaluations, effectiveness reviews, and
-skill scores remain connector-owned live records.
+Training requests, evaluations, effectiveness reviews and skill scores remain
+business records of the selected People installation under People plan 0001.
+See the [capability evidence register](../providers/hr2000-capability-evidence.md)
+for the current adapter surface and outstanding deployment evidence.
