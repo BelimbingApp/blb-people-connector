@@ -165,6 +165,98 @@ final class WorkforceSyncRunner
     }
 
     /**
+     * Re-read the change feed from a checkpoint the connection has already
+     * passed, without letting that re-read undo anything newer.
+     *
+     * A replay exists because a feed can be re-read: to recover from a bad
+     * pass, or to prove the connector reaches the same state twice. So it must
+     * be safe to run at any time, which means two things.
+     *
+     * It never moves the checkpoint. Progress belongs to the real passes; a
+     * replay that advanced it would rewind the connection's own idea of how far
+     * it has got, and a replay that advanced it *forwards* would claim credit
+     * for work it only re-read.
+     *
+     * And it skips what current state has already superseded instead of
+     * refusing it. In the incremental pass an out-of-order transition is an
+     * anomaly worth an operator's attention: the provider contradicted itself.
+     * In a replay it is the ordinary case — the deactivation that a later
+     * rehire already answered comes round again every single time — so putting
+     * it on the reconciliation queue would bury the operator in noise from a
+     * pass that found nothing wrong.
+     */
+    public function replay(Actor $actor, ProviderAdapter $provider, int $connectionId, int $fromVersion, ?int $limit = null): WorkforceSyncReport
+    {
+        $connection = $this->connectionFor($provider, $connectionId);
+        $stream = WorkforceFreshnessPolicy::stream();
+        $resumeCursor = $this->checkpoints->cursorAtVersion($connectionId, $stream, $fromVersion)
+            ?? throw new WorkforceSyncException("Connection {$connectionId} never reached version {$fromVersion} on stream '{$stream}', so there is nothing to replay from.");
+        $currentVersion = (int) ($this->checkpoints->current($connectionId, $stream)?->version ?? 0);
+        $provenance = $this->provenance('sync.replay', $provider, $stream);
+        $port = $this->ports->read($actor, $provider, PeopleCapability::EmployeeDirectory, ReadsWorkforceChanges::class, $this->scopeOf($connection));
+        $tally = $this->emptyTally();
+        $pageCursor = null;
+
+        do {
+            $page = $port->changes(new WorkforceChangeRequest($resumeCursor, $pageCursor, $limit ?? self::pageLimit()));
+            $tally['pages']++;
+
+            foreach ($page->changes as $change) {
+                if ($this->isSuperseded($connectionId, $change)) {
+                    $tally['superseded']++;
+
+                    continue;
+                }
+
+                match (true) {
+                    $change instanceof WorkforceUpsert => $this->applyRecord($connectionId, $change->record, $provenance, $tally),
+                    $change instanceof WorkforceDeactivation => $this->applyDeactivation($connectionId, $change, $provenance, $tally),
+                    $change instanceof WorkforceMerge => $this->queueMerge($connectionId, $change, $tally),
+                };
+            }
+
+            $pageCursor = $this->nextCursor($page, $pageCursor);
+        } while (! $page->complete);
+
+        return $this->report($connectionId, $stream, 'replay', $tally, $currentVersion, $page->asOf, checkpointAdvanced: false);
+    }
+
+    /**
+     * Whether current state already reflects a provider fact later than this
+     * change, which is what makes a replay safe to repeat.
+     *
+     * A merge is never superseded: it is queued for a human by a key, and
+     * re-queueing the same key is the reconciliation store's own no-op.
+     */
+    private function isSuperseded(int $connectionId, WorkforceUpsert|WorkforceDeactivation|WorkforceMerge $change): bool
+    {
+        [$reference, $occurredAt] = match (true) {
+            $change instanceof WorkforceUpsert => [$change->record->reference, $change->occurredAt],
+            $change instanceof WorkforceDeactivation => [$change->reference, $change->occurredAt],
+            default => [null, null],
+        };
+
+        if ($reference === null || $occurredAt === null) {
+            return false;
+        }
+
+        $lastObserved = $this->lastObservedAt($connectionId, $reference);
+
+        return $lastObserved !== null && $occurredAt->getTimestamp() < $lastObserved->getTimestamp();
+    }
+
+    private function lastObservedAt(int $connectionId, ExternalReference $reference): ?\DateTimeInterface
+    {
+        return ExternalIdentity::query()
+            ->forTenant($this->tenantContext->requireTenantId())
+            ->where('connection_id', $connectionId)
+            ->where('provider_id', $reference->providerId)
+            ->where('resource_type', $reference->resourceType->value)
+            ->where('external_id', $reference->externalId)
+            ->value('last_observed_at');
+    }
+
+    /**
      * A pass that turned its entire feed into reconciliation issues did not
      * synchronise anything, and must not look as though it did: it raises one
      * more issue naming that fact and leaves the checkpoint where it was, so
@@ -329,6 +421,7 @@ final class WorkforceSyncRunner
             'reactivations' => 0,
             'mergesQueued' => 0,
             'conflicts' => 0,
+            'superseded' => 0,
         ];
     }
 
@@ -369,6 +462,7 @@ final class WorkforceSyncRunner
             $version,
             $asOf,
             $checkpointAdvanced,
+            $tally['superseded'],
         );
     }
 
