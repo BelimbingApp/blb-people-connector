@@ -173,7 +173,7 @@ final class AssessmentStore
         $priority = $weightedGap * $requirement->criticality->multiplier();
         $resultBand = AssessmentResultBand::fromGap($gap, $draft->assessedLevel, $requirement->requiredLevel);
 
-        $nextDue = $this->nextDue($draft, $requirement);
+        $nextDue = $this->nextDue($draft, (int) ($skill->default_reassessment_months ?? 12));
         $now = now();
 
         if ($supersedesAssessmentId !== null) {
@@ -313,29 +313,42 @@ final class AssessmentStore
         );
     }
 
-    private function nextDue(AssessmentDraft $draft, ResolvedSkillRequirement $requirement): ?CarbonInterface
+    private function nextDue(AssessmentDraft $draft, int $reassessmentMonths): ?CarbonInterface
     {
         if ($draft->validUntil !== null) {
             return Carbon::instance(\DateTimeImmutable::createFromInterface($draft->validUntil))->startOfDay();
         }
 
         return Carbon::instance(\DateTimeImmutable::createFromInterface($draft->assessedAt))
-            ->addMonths(12)
+            ->addMonths(max(1, $reassessmentMonths))
             ->startOfDay();
     }
 
+    /**
+     * Project the current score from the newest still-valid finalized assessment.
+     * Expired certificate/validity windows never count as current coverage.
+     */
     private function projectCurrentScore(SkillAssessment $assessment): void
     {
+        $today = today();
         $latest = SkillAssessment::query()
             ->forCompany((int) $assessment->tenant_id, (int) $assessment->company_entity_id)
             ->where('employee_entity_id', $assessment->employee_entity_id)
             ->where('skill_id', $assessment->skill_id)
             ->where('status', AssessmentStatus::Finalized->value)
+            ->whereRaw('(valid_until is null or date(valid_until) >= date(?))', [$today->toDateString()])
             ->orderByDesc('assessed_at')
             ->orderByDesc('id')
             ->first();
 
+        $scoreQuery = EmployeeSkillScore::query()
+            ->forCompany((int) $assessment->tenant_id, (int) $assessment->company_entity_id)
+            ->where('employee_entity_id', $assessment->employee_entity_id)
+            ->where('skill_id', $assessment->skill_id);
+
         if ($latest === null) {
+            $scoreQuery->delete();
+
             return;
         }
 

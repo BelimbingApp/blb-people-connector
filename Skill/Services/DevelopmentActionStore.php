@@ -11,11 +11,13 @@ use App\Domains\PeopleConnector\Skill\Enums\AssessmentCycle;
 use App\Domains\PeopleConnector\Skill\Enums\AssessmentStatus;
 use App\Domains\PeopleConnector\Skill\Enums\DevelopmentActionClosure;
 use App\Domains\PeopleConnector\Skill\Enums\DevelopmentActionStatus;
+use App\Domains\PeopleConnector\Skill\Enums\ReassessmentRequestStatus;
 use App\Domains\PeopleConnector\Skill\Enums\RequirementCriticality;
 use App\Domains\PeopleConnector\Skill\Exceptions\InvalidDevelopmentActionException;
 use App\Domains\PeopleConnector\Skill\Models\DevelopmentAction;
 use App\Domains\PeopleConnector\Skill\Models\DevelopmentActionAuditEvent;
 use App\Domains\PeopleConnector\Skill\Models\EmployeeSkillScore;
+use App\Domains\PeopleConnector\Skill\Models\ReassessmentRequest;
 use App\Domains\PeopleConnector\Skill\Models\Skill;
 use App\Domains\PeopleConnector\Skill\Models\SkillAssessment;
 use App\Domains\PeopleConnector\Training\Models\TrainingCourse;
@@ -189,21 +191,35 @@ final class DevelopmentActionStore
         string $evidence,
         DateTimeInterface $reassessmentDue,
         ?int $actorUserId = null,
+        ?int $assignedEvaluatorUserId = null,
     ): DevelopmentAction {
         $this->requireText($evidence, 'Completion evidence is required.');
         if (Carbon::instance(\DateTimeImmutable::createFromInterface($reassessmentDue))->startOfDay()->isBefore(today())) {
             throw new InvalidDevelopmentActionException('Reassessment due date cannot be before today.');
         }
 
-        return $this->transition($companyEntityId, $actionId,
-            [DevelopmentActionStatus::NotStarted, DevelopmentActionStatus::Scheduled, DevelopmentActionStatus::InProgress, DevelopmentActionStatus::OnHold],
-            DevelopmentActionStatus::PendingReassessment, 'intervention_completed', evidence: $evidence,
-            actorUserId: $actorUserId, attributes: [
-                'closure_status' => DevelopmentActionClosure::PendingReassessment,
-                'completed_at' => now(),
-                'completion_evidence' => trim($evidence),
-                'reassessment_due' => $reassessmentDue,
-            ]);
+        return DB::transaction(function () use ($companyEntityId, $actionId, $evidence, $reassessmentDue, $actorUserId, $assignedEvaluatorUserId): DevelopmentAction {
+            $action = $this->transition($companyEntityId, $actionId,
+                [DevelopmentActionStatus::NotStarted, DevelopmentActionStatus::Scheduled, DevelopmentActionStatus::InProgress, DevelopmentActionStatus::OnHold],
+                DevelopmentActionStatus::PendingReassessment, 'intervention_completed', evidence: $evidence,
+                actorUserId: $actorUserId, attributes: [
+                    'closure_status' => DevelopmentActionClosure::PendingReassessment,
+                    'completed_at' => now(),
+                    'completion_evidence' => trim($evidence),
+                    'reassessment_due' => $reassessmentDue,
+                ]);
+
+            // Completing an intervention opens reassessment work; it never changes proficiency.
+            app(ReassessmentRequestStore::class)->requestFromDevelopmentAction(
+                $companyEntityId,
+                $action,
+                $reassessmentDue,
+                assignedEvaluatorUserId: $assignedEvaluatorUserId,
+                createdByUserId: $actorUserId,
+            );
+
+            return $action;
+        });
     }
 
     public function linkReassessment(
@@ -245,6 +261,19 @@ final class DevelopmentActionStore
             ]);
             $this->record($action, 'reassessment_linked', $from, DevelopmentActionStatus::Completed, null,
                 $assessment->evidence, $actorUserId, ['assessment_id' => $assessment->id, 'closure' => $closure->value]);
+
+            $openRequest = ReassessmentRequest::query()
+                ->forCompany($this->tenantContext->requireTenantId(), $companyEntityId)
+                ->where('source_development_action_id', $action->getKey())
+                ->where('status', ReassessmentRequestStatus::Open->value)
+                ->first();
+            if ($openRequest !== null) {
+                app(ReassessmentRequestStore::class)->fulfill(
+                    $companyEntityId,
+                    (int) $openRequest->getKey(),
+                    (int) $assessment->getKey(),
+                );
+            }
 
             return $action->refresh();
         });
