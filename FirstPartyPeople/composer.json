@@ -1,0 +1,25 @@
+{
+    "name": "blb/people-connector-first-party-people",
+    "type": "blb-module",
+    "description": "Co-located adapter that presents the published blb-people workforce reads as connector ports.",
+    "license": "MIT",
+    "autoload": {
+        "psr-4": {
+            "App\\Domains\\PeopleConnector\\FirstPartyPeople\\": ""
+        }
+    },
+    "extra": {
+        "blb": {
+            "module": "people-connector/first-party-people",
+            "version": "0.1.0",
+            "description": "First-party co-located People provider adapter for the connector workforce ports.",
+            "requires-modules": {
+                "people-connector/connector": "*",
+                "people/provider": "*"
+            },
+            "optional-modules": {},
+            "publishes-events": [],
+            "consumes-events": []
+        }
+    }
+}
