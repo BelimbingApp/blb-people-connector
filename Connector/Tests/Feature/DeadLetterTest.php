@@ -351,3 +351,28 @@ test('a re-queued page that fails again is reopened rather than refused as new e
     expect($parked->refresh()->status)->toBe(ReconciliationIssue::STATUS_OPEN)
         ->and(deadLetterIssues($f['tenantId']))->toHaveCount(1);
 });
+
+test('parking a page closes the feed-refused issue it had been raising', function (): void {
+    $f = deadLetterRefusingFeed('Dead Letter Single Voice Tenant');
+    config()->set('people-connector.sync.dead_letter_attempts', 2);
+    $runner = app(WorkforceSyncRunner::class);
+    $runner->incremental($f['actor'], $f['provider'], $f['connectionId']);
+
+    expect(ReconciliationIssue::query()->forTenant($f['tenantId'])
+        ->where('kind', WorkforceSyncRunner::ISSUE_KIND_FEED_REFUSED)
+        ->where('status', ReconciliationIssue::STATUS_OPEN)->count())->toBe(1);
+
+    $runner->incremental($f['actor'], $f['provider'], $f['connectionId']);
+
+    // Parking says "the stream has moved on". A feed-refused row still saying
+    // the feed is stuck would contradict it in the same queue, and re-queueing
+    // the dead letter would never clear it.
+    //
+    // The per-record sync_conflict rows are left alone on purpose: each names a
+    // record an operator can still act on, and the parked page does not answer
+    // them.
+    expect(ReconciliationIssue::query()->forTenant($f['tenantId'])
+        ->where('kind', WorkforceSyncRunner::ISSUE_KIND_FEED_REFUSED)
+        ->where('status', ReconciliationIssue::STATUS_OPEN)->count())->toBe(0)
+        ->and(deadLetterIssues($f['tenantId'])->where('status', ReconciliationIssue::STATUS_OPEN))->toHaveCount(1);
+});

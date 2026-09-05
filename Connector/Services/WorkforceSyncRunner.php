@@ -290,6 +290,22 @@ final class WorkforceSyncRunner
      */
     private function parkDeadLetter(int $connectionId, WorkforceChangePage $page, array $tally): void
     {
+        // The feed-refused row said "this stream is stuck". Parking is the
+        // decision that it is not stuck any more — the page is a known problem
+        // and the checkpoint moves past it — so leaving that row open would put
+        // two contradictory answers in one queue, and re-queueing the dead
+        // letter would never clear the other one.
+        $refused = ReconciliationIssue::query()
+            ->forTenant($this->tenantContext->requireTenantId())
+            ->where('connection_id', $connectionId)
+            ->where('issue_key', self::ISSUE_KEY_FEED_REFUSED)
+            ->where('status', ReconciliationIssue::STATUS_OPEN)
+            ->first();
+
+        if ($refused !== null) {
+            $this->issues->resolve((int) $refused->id, now());
+        }
+
         $digest = self::pageDigest($page);
         $details = new ReconciliationIssueDetails(
             reasonCode: 'every_record_refused',
