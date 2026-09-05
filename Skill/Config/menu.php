@@ -31,5 +31,13 @@ return [
             'permission' => 'people-connector.skill.development-action.view',
             'parent' => 'people',
         ],
+        [
+            'id' => 'people.skill-reassessment-requests',
+            'label' => 'Reassessment requests',
+            'icon' => 'heroicon-o-arrow-path',
+            'route' => 'people-connector.skill.reassessment.index',
+            'permission' => 'people-connector.skill.reassessment.view',
+            'parent' => 'people',
+        ],
     ],
 ];

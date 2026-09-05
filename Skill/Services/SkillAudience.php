@@ -148,6 +148,24 @@ class SkillAudience
     }
 
     /**
+     * @return list<int>
+     */
+    public function visibleReassessmentEmployeeEntityIds(User $user, int $companyEntityId, bool $manage): array
+    {
+        $capability = $manage
+            ? 'people-connector.skill.reassessment.manage'
+            : 'people-connector.skill.reassessment.view';
+
+        return $this->scopedEmployeeEntityIds(
+            $user,
+            $companyEntityId,
+            $this->authorizeAudience($user, $capability),
+            includeAssessorAssignments: true,
+            includeSelf: false,
+        );
+    }
+
+    /**
      * @param  list<string>  $audiences
      * @return list<int>
      */
