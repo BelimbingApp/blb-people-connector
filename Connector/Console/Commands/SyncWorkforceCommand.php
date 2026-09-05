@@ -73,9 +73,10 @@ final class SyncWorkforceCommand extends Command
                     $this->error("Connection {$connection->id}: feed refused — checkpoint not advanced.");
                     $failed++;
                 }
-            } catch (\Throwable $exception) {
+            } catch (\Throwable) {
                 $failed++;
-                $this->error("Connection {$connection->id}: {$exception->getMessage()}");
+                // Adapter exceptions may contain credentials or raw HR responses.
+                $this->error("Connection {$connection->id}: synchronization failed. Check provider availability and connection configuration.");
             } finally {
                 $tenants->clear();
             }

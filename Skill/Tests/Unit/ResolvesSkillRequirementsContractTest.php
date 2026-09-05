@@ -4,7 +4,6 @@ use App\Domains\PeopleConnector\Skill\Contracts\ResolvesSkillRequirements;
 use App\Domains\PeopleConnector\Skill\Data\ResolvedSkillRequirement;
 use App\Domains\PeopleConnector\Skill\Enums\RequirementCriticality;
 use App\Domains\PeopleConnector\Skill\Services\RequirementResolver;
-use DateTimeInterface;
 
 /**
  * Fixture-only resolver — unit-tests assessment gap math against the contract

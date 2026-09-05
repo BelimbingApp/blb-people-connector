@@ -57,8 +57,9 @@ final class ProviderHealthStore
 
     private function key(string $providerId): string
     {
+        // Invalidate entries written before adapter messages were excluded.
         return sprintf(
-            'people-connector:tenant:%d:provider:%s:health',
+            'people-connector:tenant:%d:provider:%s:health:v2',
             app(TenantContext::class)->requireTenantId(),
             hash('sha256', $providerId),
         );

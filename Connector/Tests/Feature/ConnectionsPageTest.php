@@ -105,7 +105,7 @@ test('connections page refreshes and preserves provider health evidence on deman
         ->call('refreshHealth', 'refresh.provider')
         ->assertSee('healthy')
         ->assertSee('Last successful sync')
-        ->assertSee('Connection is current.')
+        ->assertDontSee('Connection is current.')
         ->call('refreshHealth', 'refresh.provider')
         ->assertSee('unavailable')
         ->assertSee('Last successful sync')
@@ -113,7 +113,7 @@ test('connections page refreshes and preserves provider health evidence on deman
         ->call('refreshHealth', 'refresh.provider')
         ->assertSee('healthy')
         ->assertDontSee('Last successful sync')
-        ->assertSee('No synchronization has completed.');
+        ->assertDontSee('No synchronization has completed.');
 });
 
 test('connections page warns about a missing configured adapter even when another adapter is installed', function (): void {

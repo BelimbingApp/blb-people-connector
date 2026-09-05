@@ -84,7 +84,8 @@ test('the connections page shows each tenant only its own health evidence', func
     Livewire::test(Index::class)
         ->call('refreshHealth', 'shared.provider')
         ->assertSee('healthy')
-        ->assertSee('Tenant one connection is current.');
+        ->assertSee('Last successful sync')
+        ->assertDontSee('Tenant one connection is current.');
 
     crossOctaneRequestBoundary(2);
 
