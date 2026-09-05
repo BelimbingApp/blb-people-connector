@@ -1,11 +1,47 @@
 # Tenant and company ownership in the People Connector
 
 **Document type:** Data-ownership contract
-**Status:** Active
+**Status:** 2026-09-05 — ownership rebaseline governed by [People plan 0001](https://github.com/BelimbingApp/blb-people/blob/main/docs/plans/0001-people-architecture-and-provider-boundaries.md); relocation tracked below.
 **Issue:** BelimbingApp/blb-people-connector#6 (cross-links BelimbingApp/blb-people#21)
-**Last updated:** 2026-09-04
+**Last updated:** 2026-09-05
 
 ---
+
+## Approved ownership and relocation status
+
+The connector owns integration identities, workforce projections, synchronization
+checkpoints, reconciliation issues and provider connections. Provider adapters
+supply the selected source's facts through scoped contracts; the connector does
+not become their business authority.
+
+Skills, Training and Progression business records belong to the selected People
+installation. This includes catalogs, requirements, assessments, scores,
+development actions, training participation and progression decisions. Selecting
+a provider or losing its connection does not transfer that authority to the
+connector or create a fallback writer.
+
+`Skill/` and `Training/` in this repository are relocation sources. Move them
+through [People #113 (R2)](https://github.com/BelimbingApp/blb-people/issues/113)
+and [People #114 (R3)](https://github.com/BelimbingApp/blb-people/issues/114);
+[connector #121 (R4)](https://github.com/BelimbingApp/blb-people-connector/issues/121)
+removes the source modules after that handoff. Their presence, table prefixes
+and examples below do not establish a second authority. This documentation
+change does not certify relocation or duplicate-registration removal.
+
+[People plan 0008](https://github.com/BelimbingApp/blb-people/blob/main/docs/plans/0008-people-existing-work-and-backlog-reconciliation.md)
+requires preserving the existing tenant/company safeguards, stable identities,
+reviewed remapping and history during relocation. The table classifications and
+scoping rules below remain the preservation contract for the source schema;
+they do not prescribe connector foreign keys for new People business tables.
+Keep platform tenant/company, workforce identity, provider connection, external
+reference and login actor distinct. Resolve their mappings explicitly and fail
+closed when attribution is missing.
+
+**Evidence boundary:** descriptions of code, paths, schema gaps, tests and
+mutation results below are retained historical implementation evidence from the
+2026-09-04 document, not a fresh code audit. In particular, the classification
+table is a preserved source inventory, not a claim to enumerate every current
+table. The final checklist identifies what must be re-audited at relocation.
 
 ## Why this document exists
 
@@ -124,7 +160,7 @@ guessing is how the connector reached three identical defects.
 | `..._privileged_support_grants` | **T** | — | A tenant administration grant may optionally name a platform company scope; its service checks both actors against that scope before issuing or using it. |
 | `..._privileged_support_actions` | **T** | — | Immutable evidence of a tenant administration grant; ownership follows the grant through the composite foreign key, while append-only database guards protect the evidence. |
 
-### Skill module
+### Skill module — People business records, relocation source
 
 | Table | Class | Company key | Why |
 |---|---|---|---|
@@ -139,7 +175,7 @@ guessing is how the connector reached three identical defects.
 | `..._skill_actor_bindings` | **C** | `company_entity_id` | A reviewed platform-user to workforce-employee assertion is valid only inside the workforce company that supplied the confirmed user projection. |
 | `..._skill_assessor_assignments` | **C** | `company_entity_id` | An assessor's authority is an explicit assignment to one employee in one workforce company, never a tenant-wide consequence of holding a role. |
 
-### Training module
+### Training module — People business records, relocation source
 
 | Table | Class | Company key | Why |
 |---|---|---|---|
@@ -587,9 +623,12 @@ so any actor in the tenant can enumerate every entity id in it, including other
 companies' company entity ids — and `forCompany($tenantId, $anyOfThem)` will
 happily scope to one, as will the store methods that take a company entity id.
 
-Authorization lives in exactly one place: `Connector/Services/CompanyAttribution`,
-called from the Livewire components before any store call. Do not read a passing
-guard as permission.
+`Connector/Services/CompanyAttribution` is the source implementation's
+attribution entry point, called from Livewire components before store calls.
+Under plan 0001, the authoritative backend rechecks employee binding,
+tenant/company, operation and record access; a UI attribution check cannot
+substitute for those checks. Co-located and remote transports must preserve
+equivalent denials. Do not read a passing guard as permission.
 
 ### What the guard does not cover
 
@@ -771,8 +810,12 @@ three-line union refusal fails the union regression.
 
 ## Export, backup and restore
 
-Connector-owned data leaves and re-enters an instance through the platform's
-DataShare packages. Nothing connector-specific is involved: every table is
+The historical source implementation exports integration data and the
+People-owned Skill relocation source through the platform's DataShare packages.
+The paths below are source registrations pending R2/R4, not a second business
+authority or proof of the destination's export coverage.
+
+Nothing connector-specific is involved: every table is
 registered with its module path by its migration, and the scope catalog
 derives two scopes from that, `app/Domains/PeopleConnector/Connector` and
 `app/Domains/PeopleConnector/Skill`. `DataShareRoundTripTest` drives the
@@ -836,10 +879,17 @@ landed slice:
 - **Uses an explicit retention clock.** `privacy_deleted_at` / `redacted_at`
   are never derived from `updated_at` or from a company-entity ownership move.
 
-Skill-module catalogs, training aggregates, and export of tombstoned rows are
-not decided here; child lanes own those.
+Retention of People-owned Skill catalogs and Training aggregates, and export
+of tombstoned rows, are not decided here; the owning People workstreams must
+carry those decisions through relocation.
 
 ## What this contract cannot yet decide
+
+The following attribution gap and suggested storage shape are retained as
+historical source context. They do not authorize a new mapping schema or assert
+that later workforce-subject work left the gap unchanged. Reconcile them with
+plan 0001 and the selected backend at handoff; missing attribution still fails
+closed.
 
 One question is genuinely open, and this document does not answer it.
 
@@ -888,3 +938,16 @@ Two smaller things are also deliberately left open:
 - Whether `provider_connections` should ever be readable by a company
   administrator rather than only a tenant administrator. Today it is Class T
   and tenant-administered, which is safe but may be too coarse.
+
+## Re-audit checklist for relocation
+
+This PR does not verify the following code claims. Record the tested heads and
+results in the relocation work before presenting them as current guarantees.
+
+- [ ] Reconcile the preserved class table against all current models and migrations, including new Skill and Training tables and Connector Class D trait adoption.
+- [ ] Re-run tenant/company denial and raw-write/trigger checks on both database drivers for source and destination; preserve CompanyOwned, RequireCompanyScope, the bypass lint and named-escape rules.
+- [ ] Verify backend actor binding, company mapping and operation/record authorization in both co-located and remote paths, including tenant-scoped connections and the single-company carve-out.
+- [ ] Prove reviewed identity remapping and company transfers preserve business history, immutable evidence and scope without relying on coincident IDs across installations.
+- [ ] Verify source modules are removed after destination registration and that exactly one selected People writer owns each business capability, including during provider outages.
+- [ ] Re-run DataShare round trips against the actual destination registrations and drivers, including company isolation, immutable rows and credential-reference redaction.
+- [ ] Re-audit privacy deletion and retention across projections, snapshots, People business records and exported/restored data without widening deletion authority.
