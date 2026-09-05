@@ -3,6 +3,7 @@
 namespace App\Domains\PeopleConnector\Connector\Http\Controllers;
 
 use App\Domains\PeopleConnector\Connector\Contracts\AcceptsDelegatedCommands;
+use App\Domains\PeopleConnector\Connector\Enums\DelegatedAuthorityRefusal;
 use App\Domains\PeopleConnector\Connector\Exceptions\DelegatedAuthorityException;
 use App\Domains\PeopleConnector\Connector\Services\DelegatedAuthoritySigner;
 use Illuminate\Http\JsonResponse;
@@ -36,11 +37,14 @@ final class DelegatedCommandController
         try {
             $authority = $this->signer->verify($token, $audience);
             $this->port->accept($authority, $operation);
-        } catch (DelegatedAuthorityException) {
-            // A reason code, never the exception text: refusal messages name
-            // tenants and operations, and docs/contracts/diagnostic-privacy.md
-            // keeps adapter- and boundary-authored prose out of responses.
-            return new JsonResponse(['refused' => 'delegated_authority_refused'], 403);
+        } catch (DelegatedAuthorityException $refused) {
+            // The typed code, never the exception text. Naming the refusal lets
+            // an operator see which check rejected them; naming what was
+            // refused would put the tenant and operation in the body, which
+            // docs/contracts/diagnostic-privacy.md keeps out.
+            return new JsonResponse([
+                'refused' => ($refused->refusal ?? DelegatedAuthorityRefusal::Malformed)->value,
+            ], 403);
         }
 
         return new JsonResponse(['accepted' => true], 200);

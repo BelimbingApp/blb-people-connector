@@ -2,6 +2,7 @@
 
 namespace App\Domains\PeopleConnector\Connector\Data;
 
+use App\Domains\PeopleConnector\Connector\Enums\DelegatedAuthorityRefusal;
 use App\Domains\PeopleConnector\Connector\Exceptions\DelegatedAuthorityException;
 
 /**
@@ -54,17 +55,19 @@ final readonly class DelegatedAuthority
         if ($this->tenantId !== $tenantId) {
             throw new DelegatedAuthorityException(
                 "This authority was issued for tenant {$this->tenantId}, not {$tenantId}.",
+                DelegatedAuthorityRefusal::WrongTenant,
             );
         }
 
         if ($this->operation !== $operation) {
             throw new DelegatedAuthorityException(
                 "This authority permits [{$this->operation}], not [{$operation}].",
+                DelegatedAuthorityRefusal::WrongOperation,
             );
         }
 
         if ($now > $this->expiresAt) {
-            throw new DelegatedAuthorityException('This authority has expired.');
+            throw new DelegatedAuthorityException('This authority has expired.', DelegatedAuthorityRefusal::Expired);
         }
     }
 
