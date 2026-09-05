@@ -13,16 +13,11 @@ use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
 use App\Domains\PeopleConnector\Connector\Models\Concerns\CompanyOwned;
 use App\Domains\PeopleConnector\Connector\Models\DomainModels;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceEmployeeProjection;
+use App\Domains\PeopleConnector\Connector\Models\WorkforceOrganizationUnitProjection;
+use App\Domains\PeopleConnector\Connector\Models\WorkforcePositionProjection;
 use App\Domains\PeopleConnector\Connector\Services\ProviderConnectionStore;
 use App\Domains\PeopleConnector\Connector\Services\WorkforceIdentityStore;
 use App\Domains\PeopleConnector\Connector\Services\WorkforceProjectionStore;
-use App\Domains\PeopleConnector\Skill\Data\SkillDraft;
-use App\Domains\PeopleConnector\Skill\Enums\AssessmentMethod;
-use App\Domains\PeopleConnector\Skill\Enums\SkillScope;
-use App\Domains\PeopleConnector\Skill\Models\RequirementProfileSelector;
-use App\Domains\PeopleConnector\Skill\Models\Skill;
-use App\Domains\PeopleConnector\Skill\Models\SkillActorBinding;
-use App\Domains\PeopleConnector\Skill\Services\SkillCatalogStore;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 
@@ -62,7 +57,7 @@ function workforceReferenceUndeclaredColumns(string $model): array
 
 test('the repository actually contains models to check', function (): void {
     expect(DomainModels::all())->not->toBeEmpty()
-        ->and(DomainModels::all())->toContain(Skill::class, WorkforceEmployeeProjection::class);
+        ->and(DomainModels::all())->toContain(WorkforceEmployeeProjection::class);
 });
 
 test('every workforce reference column is declared, and every declaration is a column', function (string $model): void {
@@ -73,10 +68,14 @@ test('the two columns the merge forgot are now declared where the merge reads th
     $forOrganizationUnits = array_map(fn (array $pair): string => $pair[0].'.'.$pair[1]->column, DomainModels::referencing(WorkforceResourceType::OrganizationUnit));
     $forEmployees = array_map(fn (array $pair): string => $pair[0].'.'.$pair[1]->column, DomainModels::referencing(WorkforceResourceType::Employee));
 
-    expect($forOrganizationUnits)->toContain(Skill::class.'.department_entity_id')
-        ->and($forOrganizationUnits)->toContain(RequirementProfileSelector::class.'.selector_entity_id')
-        ->and($forEmployees)->toContain(Skill::class.'.owner_employee_entity_id')
-        ->and($forEmployees)->toContain(WorkforceEmployeeProjection::class.'.manager_entity_id');
+    expect($forOrganizationUnits)->toBe([
+        WorkforceEmployeeProjection::class.'.organization_entity_id',
+        WorkforceOrganizationUnitProjection::class.'.parent_entity_id',
+        WorkforcePositionProjection::class.'.organization_entity_id',
+    ])->and($forEmployees)->toBe([
+        WorkforceEmployeeProjection::class.'.manager_entity_id',
+        WorkforceEmployeeProjection::class.'.department_head_entity_id',
+    ]);
 
     // Exact Position list: every real Position reference the merge rewrites.
     // When another Position column lands, extend this array. The probe test
@@ -85,7 +84,6 @@ test('the two columns the merge forgot are now declared where the merge reads th
     $forPositions = array_map(fn (array $pair): string => $pair[0].'.'.$pair[1]->column, DomainModels::referencing(WorkforceResourceType::Position));
     expect($forPositions)->toBe([
         WorkforceEmployeeProjection::class.'.position_entity_id',
-        RequirementProfileSelector::class.'.selector_entity_id',
     ]);
 
     // Exact User list for the same reason the Position list used to be the
@@ -94,7 +92,6 @@ test('the two columns the merge forgot are now declared where the merge reads th
     $forUsers = array_map(fn (array $pair): string => $pair[0].'.'.$pair[1]->column, DomainModels::referencing(WorkforceResourceType::User));
     expect($forUsers)->toBe([
         WorkforceEmployeeProjection::class.'.user_entity_id',
-        SkillActorBinding::class.'.user_entity_id',
     ]);
 });
 
@@ -176,11 +173,11 @@ test('a model that declares a reference joins the merge without any list being e
     {
         use CompanyOwned;
 
-        protected $table = 'people_connector_skill_skills';
+        protected $table = 'people_connector_connector_workforce_employees';
 
         public function workforceReferences(): array
         {
-            return [new WorkforceReference('owner_employee_entity_id', WorkforceResourceType::Position)];
+            return [new WorkforceReference('position_entity_id', WorkforceResourceType::Position)];
         }
     }
     PHP);
@@ -207,7 +204,7 @@ test('a model that declares a reference joins the merge without any list being e
     try {
         $forPositions = array_map(fn (array $pair): string => $pair[0].'.'.$pair[1]->column, DomainModels::referencing(WorkforceResourceType::Position));
         expect(DomainModels::all())->toContain($owned, $plain)
-            ->and($forPositions)->toContain($owned.'.owner_employee_entity_id', $plain.'.manager_entity_id');
+            ->and($forPositions)->toContain($owned.'.position_entity_id', $plain.'.manager_entity_id');
 
         // Now the layer the registry check stops short of: a real merge.
         [$tenant] = createTenantWithCompany(['name' => 'Probe Merge Tenant']);
@@ -224,25 +221,22 @@ test('a model that declares a reference joins the merge without any list being e
         foreach (['POS-OLD', 'POS-NEW'] as $id) {
             $projections->upsert((int) $connection->id, new WorkforcePosition($position($id), $company, $id, true, $at, $at));
         }
-        $companyId = (int) $identities->resolve((int) $connection->id, $company)->id;
         $oldPosition = (int) $identities->resolve((int) $connection->id, $position('POS-OLD'))->id;
-        $catalog = app(SkillCatalogStore::class);
-        $category = $catalog->defineCategory($companyId, 'probe', 'Probe');
-        $skill = $catalog->defineSkill($companyId, new SkillDraft(
-            code: 'probe.skill', name: 'Probe', definition: 'Probe.', categoryId: (int) $category->id, scope: SkillScope::Shared,
-            criticalClassification: null, evidenceGuide: null, defaultAssessmentMethod: AssessmentMethod::DirectObservation, defaultReassessmentMonths: 12,
-        ));
         // Point the probe-declared columns at the position entity directly:
         // no store would, which is the point — only the probe declares them
         // as position references.
-        DB::table('people_connector_skill_skills')->where('id', $skill->id)->update(['owner_employee_entity_id' => $oldPosition]);
-        DB::table('people_connector_connector_workforce_employees')->where('tenant_id', $tenant->id)->update(['manager_entity_id' => $oldPosition]);
+        DB::table('people_connector_connector_workforce_employees')
+            ->where('tenant_id', $tenant->id)
+            ->update([
+                'position_entity_id' => $oldPosition,
+                'manager_entity_id' => $oldPosition,
+            ]);
 
         $identities->merge((int) $connection->id, $position('POS-OLD'), $position('POS-NEW'), $at->modify('+1 hour'), new WorkforceProvenance('identity_merge', 'probe-review'));
         $newPosition = (int) $identities->resolve((int) $connection->id, $position('POS-NEW'))->id;
 
         expect($newPosition)->not->toBe($oldPosition)
-            ->and((int) DB::table('people_connector_skill_skills')->where('id', $skill->id)->value('owner_employee_entity_id'))->toBe($newPosition)
+            ->and((int) DB::table('people_connector_connector_workforce_employees')->where('tenant_id', $tenant->id)->value('position_entity_id'))->toBe($newPosition)
             ->and((int) DB::table('people_connector_connector_workforce_employees')->where('tenant_id', $tenant->id)->value('manager_entity_id'))->toBe($newPosition);
     } finally {
         workforceReferenceProbeCleanup($ownedPath);

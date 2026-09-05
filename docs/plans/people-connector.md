@@ -1,23 +1,22 @@
 # people-connector
 
-**Status:** In progress
-**Last Updated:** 2026-08-31
+**Status:** Superseded for business-module ownership by People plan 0001; connector integration work remains in progress
+**Last Updated:** 2026-09-05
 **Sources:** BelimbingApp/blb-people#20–#38; BelimbingApp/belimbing#457; `SBTG_Skill_Management_System.xlsx`; Belimbing module, tenancy, database, authz, integration, and UI contracts
 **Agents:** codex/gpt-5, codex/gpt-5.6-sol
 
 ## Problem Essence
 
-Belimbing must support native and third-party HR providers without leaking provider-specific records into supplemental People workflows. SBG also needs a governed Skill and Training system that remains authoritative when HR2000 does not supply the required matrix or lifecycle.
+Belimbing must support native and third-party HR providers without leaking provider-specific records into People workflows. Skill and Training are now owned by the selected People installation; this repository retains only the provider-neutral integration seam and first-party adapter.
 
 ## Desired Outcome
 
-An installable PeopleConnector Domain supplies one provider-neutral workforce seam and connector-owned Skill and Training Modules. Provider replacement, outage, and remote/co-located placement do not rewrite supplemental history or create a second live writer.
+An installable PeopleConnector Domain supplies one provider-neutral workforce seam. Provider replacement, outage, and remote/co-located placement do not rewrite People-owned history or create a second live writer.
 
 ## Top-Level Components
 
 - `Connector` owns provider contracts, adapter discovery, health, capability truth, compatibility, workforce projections, and reconciliation.
-- `Skill` owns catalogues, requirements, assessments, development actions, current-score projection, coverage, and employee skill register.
-- `Training` owns requests, approvals, events, participants, evaluations, effectiveness reviews, evidence, and training history.
+- The selected People installation owns Skill and Training catalogues, workflows, evidence, and history; see People plan 0001.
 - Provider adapters translate `blb-people`, HR2000, or another supported source behind the Connector contract.
 
 ## Design Decisions
@@ -26,7 +25,9 @@ Three ownership shapes were considered. Extending `blb-people` directly would be
 
 Connector records use tenant-owned internal IDs plus stable provider references and captured organization snapshots. Mutable names and email addresses are never identity keys. Remote and co-located adapters implement the same contract and expose unsupported operations honestly.
 
-Keeping Skill and Training in one Module would reduce initial wiring but couple assessment truth to training-delivery workflow and permissions. Separate Modules cost one explicit collaboration seam and better preserve their different invariants. They collaborate through narrow contracts; neither reads the other's tables directly.
+The earlier connector-owned Skill and Training design was rebaselined by People
+plan 0001. Their source modules were relocated to People and removed here in
+R4; the connector exposes integration facts without becoming their authority.
 
 `lockForUpdate()` / `lock: true` in Connector stores is the PostgreSQL serialisation path. On SQLite those locks compile to no-ops; production concurrency there is WAL plus busy timeout with a single transaction attempt — see `docs/contracts/store-concurrency.md` (#12).
 
