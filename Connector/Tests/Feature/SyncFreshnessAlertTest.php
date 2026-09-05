@@ -1,15 +1,23 @@
 <?php
 
+use App\Base\Authz\Contracts\AuthorizationService;
+use App\Base\Authz\DTO\Actor;
+use App\Base\Authz\DTO\AuthorizationDecision;
+use App\Base\Authz\DTO\ResourceContext;
 use App\Base\Tenancy\Contracts\TenantContext;
+use App\Core\User\Models\User;
 use App\Domains\PeopleConnector\Connector\Data\ProviderScope;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceChangePage;
 use App\Domains\PeopleConnector\Connector\Exceptions\ConnectorRecordNotFoundException;
+use App\Domains\PeopleConnector\Connector\Livewire\Reconciliation\Index;
 use App\Domains\PeopleConnector\Connector\Models\ProviderConnection;
 use App\Domains\PeopleConnector\Connector\Models\ReconciliationIssue;
 use App\Domains\PeopleConnector\Connector\Services\ProviderConnectionStore;
 use App\Domains\PeopleConnector\Connector\Services\SyncCheckpointStore;
 use App\Domains\PeopleConnector\Connector\Services\SyncFreshnessAlerter;
 use App\Domains\PeopleConnector\Connector\Services\WorkforceFreshnessPolicy;
+use Illuminate\Support\Collection;
+use Livewire\Livewire;
 
 afterEach(function (): void {
     app(TenantContext::class)->clear();
@@ -35,17 +43,17 @@ function freshnessAlertCheckpoint(int $connectionId, DateTimeImmutable $asOf, in
     );
 }
 
-/** @return array{0: int, 1: DateTimeImmutable, 2: DateTimeImmutable} */
+/** @return array{0: int, 1: DateTimeImmutable, 2: DateTimeImmutable, 3: int, 4: int} */
 function freshnessAlertStaleConnection(string $name): array
 {
-    [$tenant] = createTenantWithCompany(['name' => $name]);
+    [$tenant, $company] = createTenantWithCompany(['name' => $name]);
     $connectionId = freshnessAlertConnection((int) $tenant->id);
     $asOf = new DateTimeImmutable('2026-09-01T09:00:00+00:00');
     freshnessAlertCheckpoint($connectionId, $asOf, 0);
 
     // The default maximum age is a day; three days past the provider watermark
     // is unambiguously a breach whatever the configured maximum happens to be.
-    return [$connectionId, $asOf, $asOf->modify('+3 days')];
+    return [$connectionId, $asOf, $asOf->modify('+3 days'), (int) $tenant->id, (int) $company->id];
 }
 
 function freshnessAlertOpenIssues(int $connectionId): int
@@ -133,15 +141,38 @@ test('an inactive connection raises no stale issue because no pass can clear one
 });
 
 test('reviewing a connection outside the current tenant is refused', function (): void {
-    [$connectionId, , $now] = freshnessAlertStaleConnection('Freshness Isolation Tenant');
+    [$connectionId, , $now, $tenantId] = freshnessAlertStaleConnection('Freshness Isolation Tenant');
     [$other] = createTenantWithCompany(['name' => 'Freshness Other Tenant']);
     app(TenantContext::class)->set((int) $other->id);
 
     expect(fn () => app(SyncFreshnessAlerter::class)->review($connectionId, $now))
         ->toThrow(ConnectorRecordNotFoundException::class);
 
-    app(TenantContext::class)->set(
-        (int) ProviderConnection::query()->withoutGlobalScopes()->whereKey($connectionId)->value('tenant_id')
-    );
+    app(TenantContext::class)->set($tenantId);
     expect(freshnessAlertOpenIssues($connectionId))->toBe(0);
+});
+
+test('the reconciliation queue names a stale synchronization issue', function (): void {
+    [$connectionId, , $now, , $companyId] = freshnessAlertStaleConnection('Freshness Queue Tenant');
+    $user = User::factory()->create(['company_id' => $companyId]);
+    app()->instance(AuthorizationService::class, new class implements AuthorizationService
+    {
+        public function can(Actor $actor, string $capability, ?ResourceContext $resource = null, array $context = []): AuthorizationDecision
+        {
+            return AuthorizationDecision::allow();
+        }
+
+        public function authorize(Actor $actor, string $capability, ?ResourceContext $resource = null, array $context = []): void {}
+
+        public function filterAllowed(Actor $actor, string $capability, iterable $resources, array $context = []): Collection
+        {
+            return collect($resources);
+        }
+    });
+    app(SyncFreshnessAlerter::class)->review($connectionId, $now);
+
+    Livewire::actingAs($user)
+        ->test(Index::class, ['connectionId' => $connectionId])
+        ->assertSee(__('Stale synchronization'))
+        ->assertSee(__('The provider watermark is older than the maximum age.'));
 });
