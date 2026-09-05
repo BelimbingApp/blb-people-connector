@@ -8,6 +8,7 @@ use App\Domains\PeopleConnector\Connector\Data\WorkforceCompany;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceEmployee;
 use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
 use App\Domains\PeopleConnector\Connector\Exceptions\ConnectorRecordNotFoundException;
+use App\Domains\PeopleConnector\Connector\Exceptions\ExternalIdentityCollisionException;
 use App\Domains\PeopleConnector\Connector\Exceptions\ProviderReplacementException;
 use App\Domains\PeopleConnector\Connector\Models\ExternalIdentity;
 use App\Domains\PeopleConnector\Connector\Services\ProviderConnectionStore;
@@ -259,4 +260,29 @@ test('a replacement writes to no table the connector does not own', function ():
 
     expect($written)->not->toBeEmpty()
         ->and($foreign)->toBe([]);
+});
+
+test('an identity already handed over cannot be handed over a second time', function (): void {
+    $f = replacementFixture('Replacement Twice Tenant');
+    $replacements = app(ProviderReplacementService::class);
+    $replacements->remap(
+        $f['oldConnectionId'],
+        $f['newConnectionId'],
+        [replacementMapping('OLD-EMP-1', 'NEW-EMP-1')],
+        'replacement-2026-09-06',
+    );
+
+    // The source identity is REMAPPED now. Running the same approved mapping
+    // again must not quietly rebind it somewhere else; the replacement already
+    // happened and a second destination is a different decision.
+    expect(fn () => $replacements->remap(
+        $f['oldConnectionId'],
+        $f['newConnectionId'],
+        [replacementMapping('OLD-EMP-1', 'NEW-EMP-9')],
+        'replacement-2026-09-06',
+    ))->toThrow(ExternalIdentityCollisionException::class);
+
+    expect(replacementIdentity($f['tenantId'], $f['oldConnectionId'], 'OLD-EMP-1')?->replaced_by_identity_id)
+        ->toBe(replacementIdentity($f['tenantId'], $f['newConnectionId'], 'NEW-EMP-1')?->id)
+        ->and(replacementIdentity($f['tenantId'], $f['newConnectionId'], 'NEW-EMP-9'))->toBeNull();
 });
