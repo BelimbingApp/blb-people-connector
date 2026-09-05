@@ -14,7 +14,12 @@ use App\Core\User\Models\User;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceEmployeeProjection;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceEntity;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceOrganizationUnitProjection;
+use App\Domains\PeopleConnector\Connector\Models\WorkforcePositionProjection;
 use App\Domains\PeopleConnector\Connector\Services\CompanyAttribution;
+use App\Domains\PeopleConnector\Skill\Enums\RequirementProfileStatus;
+use App\Domains\PeopleConnector\Skill\Enums\SelectorType;
+use App\Domains\PeopleConnector\Skill\Models\RequirementProfile;
+use App\Domains\PeopleConnector\Skill\Models\RequirementProfileSelector;
 use App\Domains\PeopleConnector\Skill\Models\SkillActorBinding;
 use App\Domains\PeopleConnector\Skill\Models\SkillAssessorAssignment;
 
@@ -62,6 +67,42 @@ final class SkillAudience
     public function mayManageCatalog(User $user, int $companyEntityId): bool
     {
         return $this->may($user, 'people-connector.skill.catalog.manage', $companyEntityId, [self::HR]);
+    }
+
+    /**
+     * Resolve the concrete users responsible for the target workflow state.
+     * The same deep audience checks used by transition guards are applied, so
+     * stale bindings and sibling-company roles never become notifications.
+     *
+     * @return list<int>
+     */
+    public function requirementReviewerUserIds(
+        RequirementProfile $profile,
+        RequirementProfileStatus $target,
+    ): array {
+        $role = match ($target) {
+            RequirementProfileStatus::PendingHodReview => self::HOD,
+            RequirementProfileStatus::PendingHrReview, RequirementProfileStatus::Approved => self::HR,
+            default => null,
+        };
+
+        if ($role === null) {
+            return [];
+        }
+
+        $candidateIds = PrincipalRole::query()
+            ->where('principal_type', PrincipalType::USER->value)
+            ->whereHas('role', fn ($query) => $query->where('code', self::ROLE_CODES[$role]))
+            ->pluck('principal_id')
+            ->map(intval(...))
+            ->unique();
+
+        return User::query()->whereKey($candidateIds)
+            ->get()
+            ->filter(fn (User $user): bool => $role === self::HOD
+                ? $this->mayReviewRequirementProfile($user, $profile)
+                : $this->mayGovernRequirements($user, (int) $profile->company_entity_id))
+            ->pluck('id')->map(intval(...))->values()->all();
     }
 
     public function authorizeCatalogManage(User $user, int $companyEntityId): void
@@ -246,6 +287,76 @@ final class SkillAudience
         if (! $this->may($user, 'people-connector.skill.catalog.manage', $companyEntityId, [self::HR])) {
             $this->deny();
         }
+    }
+
+    public function mayGovernRequirements(User $user, int $companyEntityId): bool
+    {
+        return $this->may(
+            $user,
+            'people-connector.skill-requirement.approve',
+            $companyEntityId,
+            [self::HR],
+        );
+    }
+
+    /** Requirement versions are visible only to their real governance audience. */
+    public function mayViewRequirementProfile(User $user, RequirementProfile $profile): bool
+    {
+        return $this->mayGovernRequirements($user, (int) $profile->company_entity_id)
+            || $this->mayReviewRequirementProfile($user, $profile);
+    }
+
+    /**
+     * HOD review is valid only when every department or position selector is
+     * inside a department currently headed by the actor. Company-wide
+     * profiles deliberately remain an HR-only concern: one HOD cannot attest
+     * technical correctness for sibling departments.
+     */
+    public function mayReviewRequirementProfile(User $user, RequirementProfile $profile): bool
+    {
+        try {
+            $visibleUnits = $this->visibleOrganizationUnitEntityIds(
+                $user,
+                (int) $profile->company_entity_id,
+                'people-connector.skill-requirement.hod-approve',
+            );
+        } catch (AuthorizationDeniedException) {
+            return false;
+        }
+
+        if ($visibleUnits === []) {
+            return false;
+        }
+
+        $selectors = RequirementProfileSelector::query()
+            ->forCompany($this->tenantContext->requireTenantId(), (int) $profile->company_entity_id)
+            ->where('profile_id', $profile->getKey())
+            ->get();
+
+        if ($selectors->isEmpty() || $selectors->contains(
+            fn (RequirementProfileSelector $selector): bool => $selector->selector_type === SelectorType::Company,
+        )) {
+            return false;
+        }
+
+        $targetUnits = $selectors->map(function (RequirementProfileSelector $selector) use ($profile): ?int {
+            if ($selector->selector_type === SelectorType::Department) {
+                return $selector->selector_entity_id === null ? null : (int) $selector->selector_entity_id;
+            }
+
+            if ($selector->selector_type !== SelectorType::Position || $selector->selector_entity_id === null) {
+                return null;
+            }
+
+            return WorkforcePositionProjection::query()
+                ->forCompany($this->tenantContext->requireTenantId(), (int) $profile->company_entity_id)
+                ->where('active', true)
+                ->where('workforce_entity_id', $selector->selector_entity_id)
+                ->value('organization_entity_id');
+        });
+
+        return ! $targetUnits->contains(null)
+            && $targetUnits->every(fn (int $unitId): bool => in_array($unitId, $visibleUnits, true));
     }
 
     public function boundEmployeeEntityId(User $user, int $companyEntityId): ?int
