@@ -8,6 +8,10 @@ return [
     'capabilities' => [
         'people-connector.training.event.view',
         'people-connector.training.event.manage',
+        'people-connector.training.request.submit',
+        'people-connector.training.request.hod-review',
+        'people-connector.training.request.hr-review',
+        'people-connector.training.request.approve',
     ],
 
     'roles' => [
@@ -15,11 +19,16 @@ return [
             'capabilities' => [
                 'people-connector.training.event.view',
                 'people-connector.training.event.manage',
+                'people-connector.training.request.submit',
+                'people-connector.training.request.hr-review',
+                'people-connector.training.request.approve',
             ],
         ],
         'people_hod' => [
             'capabilities' => [
                 'people-connector.training.event.view',
+                'people-connector.training.request.submit',
+                'people-connector.training.request.hod-review',
             ],
         ],
     ],

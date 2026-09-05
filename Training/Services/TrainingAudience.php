@@ -19,6 +19,11 @@ final class TrainingAudience
 
     public const MANAGE = 'people-connector.training.event.manage';
 
+    public const REQUEST_SUBMIT = 'people-connector.training.request.submit';
+    public const REQUEST_HOD_REVIEW = 'people-connector.training.request.hod-review';
+    public const REQUEST_HR_REVIEW = 'people-connector.training.request.hr-review';
+    public const REQUEST_APPROVE = 'people-connector.training.request.approve';
+
     public function __construct(
         private readonly SkillAudience $skills,
         private readonly CompanyAttribution $companies,
@@ -48,6 +53,12 @@ final class TrainingAudience
         if (! $this->canManage($user, $companyEntityId)) {
             $this->deny();
         }
+    }
+
+    public function authorizeRequest(User $user, string $capability, int $companyEntityId, string $audience): void
+    {
+        try { $audiences = $this->skills->authorizeAudience($user, $capability); } catch (AuthorizationDeniedException) { $this->deny(); }
+        if (! $this->companies->mayActFor($user, $companyEntityId) || ! in_array($audience, $audiences, true)) $this->deny();
     }
 
     public function visibleEvents(User $user, int $companyEntityId): Builder
