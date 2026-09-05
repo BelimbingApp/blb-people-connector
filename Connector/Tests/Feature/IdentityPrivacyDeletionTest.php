@@ -95,6 +95,7 @@ function identityErasureFixture(): array
     ));
 
     return [
+        'companyEntityId' => (int) app(WorkforceIdentityStore::class)->resolve($connectionId, $companyReference)->id,
         'tenantId' => $tenantId,
         'companyId' => $companyId,
         'connectionId' => $connectionId,
@@ -121,6 +122,7 @@ test('erasing an identity tombstones it and its projection while the workforce e
     );
 
     $projection = WorkforceEmployeeProjection::query()
+        ->forCompany($f['tenantId'], $f['companyEntityId'])
         ->where('workforce_entity_id', $f['entityId'])
         ->firstOrFail();
     $identity = ExternalIdentity::query()
@@ -166,6 +168,7 @@ test('erasing an identity is refused when the actor lacks the operator capabilit
     ))->toThrow(ProviderAuthorizationException::class);
 
     expect(WorkforceEmployeeProjection::query()
+        ->forCompany($f['tenantId'], $f['companyEntityId'])
         ->where('workforce_entity_id', $f['entityId'])
         ->value('privacy_deleted_at'))->toBeNull();
 });
@@ -183,6 +186,7 @@ test('erasing an identity is refused for an actor outside the connection tenant'
     ))->toThrow(ProviderAuthorizationException::class);
 
     expect(WorkforceEmployeeProjection::query()
+        ->forCompany($f['tenantId'], $f['companyEntityId'])
         ->where('workforce_entity_id', $f['entityId'])
         ->value('privacy_deleted_at'))->toBeNull();
 });
@@ -207,6 +211,7 @@ test('erasing an identity is refused while an open reconciliation issue still re
     ))->toThrow(PrivacyDeletionException::class);
 
     expect(WorkforceEmployeeProjection::query()
+        ->forCompany($f['tenantId'], $f['companyEntityId'])
         ->where('workforce_entity_id', $f['entityId'])
         ->value('privacy_deleted_at'))->toBeNull();
 });
@@ -261,4 +266,34 @@ test('erasing an identity writes to no table the connector does not own', functi
 
     expect($written)->not->toBeEmpty()
         ->and($foreign)->toBe([]);
+});
+
+test('erasing an identity on a connection outside the current tenant is refused', function (): void {
+    $f = identityErasureFixture();
+    identityErasureAuthz(true);
+
+    expect(fn () => app(PrivacyDeletionService::class)->eraseIdentity(
+        $f['actor'],
+        $f['connectionId'] + 9_999,
+        $f['reference'],
+        identityErasureProvenance(),
+    ))->toThrow(PrivacyDeletionException::class);
+});
+
+test('erasing an external reference the connection never issued is refused', function (): void {
+    $f = identityErasureFixture();
+    identityErasureAuthz(true);
+    $unknown = new ExternalReference('test.erasure', WorkforceResourceType::Employee, 'ERASE-NOBODY');
+
+    expect(fn () => app(PrivacyDeletionService::class)->eraseIdentity(
+        $f['actor'],
+        $f['connectionId'],
+        $unknown,
+        identityErasureProvenance(),
+    ))->toThrow(PrivacyDeletionException::class);
+
+    expect(WorkforceEmployeeProjection::query()
+        ->forCompany($f['tenantId'], $f['companyEntityId'])
+        ->where('workforce_entity_id', $f['entityId'])
+        ->value('privacy_deleted_at'))->toBeNull();
 });
