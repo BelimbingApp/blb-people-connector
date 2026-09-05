@@ -4,6 +4,7 @@ namespace App\Domains\PeopleConnector\Connector\Services;
 
 use App\Domains\PeopleConnector\Connector\Data\ExternalReference;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceProvenance;
+use App\Domains\PeopleConnector\Connector\Enums\CommandResolution;
 use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
 use App\Domains\PeopleConnector\Connector\Exceptions\InvalidReconciliationIssueException;
 use App\Domains\PeopleConnector\Connector\Models\ReconciliationIssue;
@@ -42,6 +43,46 @@ final class ReconciliationReviewService
                 $occurredAt,
                 new WorkforceProvenance('reconciliation.review', $reviewReference),
             );
+
+            return $this->issues->resolve($issueId, $occurredAt);
+        });
+    }
+
+    /**
+     * Record what an operator found out about a command the connector could not
+     * settle, and close the issue.
+     *
+     * Deliberately writes nothing but the finding. The acceptance for #146 asks
+     * that a resolution never triggers a retry by itself, and the reason is the
+     * same one behind #138: an unknown outcome may not be resent on a guess, and
+     * an operator clearing a queue is still a guess unless they checked. Any
+     * resend is a separate, deliberate act.
+     */
+    public function confirmCommandOutcome(
+        int $connectionId,
+        int $issueId,
+        CommandResolution $resolution,
+        string $reviewReference,
+        \DateTimeInterface $occurredAt,
+    ): ReconciliationIssue {
+        return DB::transaction(function () use ($connectionId, $issueId, $resolution, $reviewReference, $occurredAt): ReconciliationIssue {
+            $issue = $this->issues->requireOpenForConnection($connectionId, $issueId, lock: true);
+
+            if ($issue->kind !== UnknownOutcomeReporter::ISSUE_KIND) {
+                throw new InvalidReconciliationIssueException(
+                    'Only an unknown command outcome can be confirmed as delivered or not delivered.',
+                );
+            }
+
+            if (trim($reviewReference) === '') {
+                throw new InvalidReconciliationIssueException(
+                    'Confirming a command outcome requires a review reference so the decision is attributable.',
+                );
+            }
+
+            $issue->update([
+                'details' => array_merge((array) $issue->details, ['reason_code' => $resolution->value]),
+            ]);
 
             return $this->issues->resolve($issueId, $occurredAt);
         });
