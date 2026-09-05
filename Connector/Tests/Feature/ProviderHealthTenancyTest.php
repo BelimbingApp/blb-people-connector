@@ -63,6 +63,8 @@ test('cached provider health does not follow a worker across a tenant boundary',
 });
 
 test('the connections page shows each tenant only its own health evidence', function (): void {
+    $user = createAdminUser();
+    $this->actingAs($user);
     $provider = Mockery::mock(ProviderAdapter::class);
     $provider->shouldReceive('descriptor')
         ->andReturn(new ProviderDescriptor('shared.provider', 'Shared Provider', '0.1.0', '1.0.0'));
@@ -79,7 +81,7 @@ test('the connections page shows each tenant only its own health evidence', func
     app()->instance(ProviderRegistry::class, $registry);
     config()->set('people-connector.active_provider', 'shared.provider');
 
-    app(TenantContext::class)->set(1);
+    app(TenantContext::class)->set((int) $user->tenant_id);
 
     Livewire::test(Index::class)
         ->call('refreshHealth', 'shared.provider')
@@ -87,7 +89,7 @@ test('the connections page shows each tenant only its own health evidence', func
         ->assertSee('Last successful sync')
         ->assertDontSee('Tenant one connection is current.');
 
-    crossOctaneRequestBoundary(2);
+    crossOctaneRequestBoundary((int) $user->tenant_id + 1);
 
     // The adapter is never asked again, so anything but "unknown" here is
     // tenant one's cached evidence being shown to tenant two.
