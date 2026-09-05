@@ -14,7 +14,8 @@
             "version": "0.1.0",
             "description": "People Connector provider contract and adapter registry.",
             "requires-modules": {
-                "core/company": "*"
+                "core/company": "*",
+                "people/provider": "*"
             },
             "optional-modules": {},
             "publishes-events": [],
