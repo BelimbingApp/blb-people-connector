@@ -500,3 +500,197 @@ test('the actual register gives HR company scope, HOD department scope, and reje
         ->assertSee('Weather closure');
 
 });
+
+test('catalog selectCompany switches to an attributable company and refuses an unknown company', function (): void {
+    $this->withoutVite();
+    $fixture = trainingEventFixture();
+    $hr = User::factory()->create(['company_id' => $fixture['platformCompany']->id]);
+    trainingEventRole($hr, 'people_hr');
+
+    $secondCompany = trainingEventEntity($fixture['tenantId'], 'company');
+    $identity = trainingEventIdentity($fixture['tenantId'], $fixture['connection'], $secondCompany, 'company');
+    WorkforceCompanyProjection::query()->create([
+        'tenant_id' => $fixture['tenantId'],
+        'workforce_entity_id' => $secondCompany->id,
+        'source_identity_id' => $identity->id,
+        'name' => 'Second Training Company',
+        'active' => true,
+        'effective_at' => now(),
+        'observed_at' => now(),
+    ]);
+
+    Livewire::actingAs($hr)->test(CatalogIndex::class)
+        ->set('editingCourseId', (int) $fixture['course']->id)
+        ->set('courseForm', ['title' => 'Discard me'])
+        ->call('selectCompany', (int) $secondCompany->id)
+        ->assertSet('companyEntityId', (int) $secondCompany->id)
+        ->assertSet('editingCourseId', null)
+        ->assertSet('courseForm', []);
+
+    Livewire::actingAs($hr)->test(CatalogIndex::class)
+        ->call('selectCompany', PHP_INT_MAX)
+        ->assertStatus(404);
+});
+
+test('catalog editCourse loads the company course and refuses a user without manage capability', function (): void {
+    $fixture = trainingEventFixture();
+    $hr = User::factory()->create(['company_id' => $fixture['platformCompany']->id]);
+    $hod = User::factory()->create(['company_id' => $fixture['platformCompany']->id]);
+    trainingEventRole($hr, 'people_hr');
+    trainingEventRole($hod, 'people_hod');
+
+    Livewire::actingAs($hr)->test(CatalogIndex::class)
+        ->call('editCourse', (int) $fixture['course']->id)
+        ->assertSet('editingCourseId', (int) $fixture['course']->id)
+        ->assertSet('courseForm.code', 'forklift.induction')
+        ->assertSet('courseForm.title', 'Forklift induction');
+
+    expect(fn () => Livewire::actingAs($hod)->test(CatalogIndex::class)
+        ->call('editCourse', (int) $fixture['course']->id))->toThrow(AuthorizationDeniedException::class);
+});
+
+test('catalog cancelCourse discards local editing state without mutating the course', function (): void {
+    $fixture = trainingEventFixture();
+    $hr = User::factory()->create(['company_id' => $fixture['platformCompany']->id]);
+    trainingEventRole($hr, 'people_hr');
+
+    Livewire::actingAs($hr)->test(CatalogIndex::class)
+        ->call('editCourse', (int) $fixture['course']->id)
+        ->set('courseForm.title', 'Unsaved title')
+        ->call('cancelCourse')
+        ->assertSet('editingCourseId', null)
+        ->assertSet('courseForm', []);
+
+    expect($fixture['course']->refresh()->title)->toBe('Forklift induction');
+});
+
+test('event selectCompany switches to an attributable company and refuses an unknown company', function (): void {
+    $this->withoutVite();
+    $fixture = trainingEventFixture();
+    $hr = User::factory()->create(['company_id' => $fixture['platformCompany']->id]);
+    trainingEventRole($hr, 'people_hr');
+
+    $secondCompany = trainingEventEntity($fixture['tenantId'], 'company');
+    $identity = trainingEventIdentity($fixture['tenantId'], $fixture['connection'], $secondCompany, 'company');
+    WorkforceCompanyProjection::query()->create([
+        'tenant_id' => $fixture['tenantId'],
+        'workforce_entity_id' => $secondCompany->id,
+        'source_identity_id' => $identity->id,
+        'name' => 'Second Event Company',
+        'active' => true,
+        'effective_at' => now(),
+        'observed_at' => now(),
+    ]);
+
+    Livewire::actingAs($hr)->test(Index::class)
+        ->set('editingEventId', 99)
+        ->set('venue', 'Discard me')
+        ->call('selectCompany', (int) $secondCompany->id)
+        ->assertSet('companyEntityId', (int) $secondCompany->id)
+        ->assertSet('editingEventId', null)
+        ->assertSet('venue', '');
+
+    Livewire::actingAs($hr)->test(Index::class)
+        ->call('selectCompany', PHP_INT_MAX)
+        ->assertStatus(404);
+});
+
+test('event editEvent loads a scheduled event and refuses users without manage capability or a non-scheduled event', function (): void {
+    $this->withoutVite();
+    $fixture = trainingEventFixture();
+    $store = app(TrainingEventStore::class);
+    $event = $store->schedule((int) $fixture['company']->id, trainingEventDraft($fixture, ['venue' => 'Workshop A']));
+    $hr = User::factory()->create(['company_id' => $fixture['platformCompany']->id]);
+    $hod = User::factory()->create(['company_id' => $fixture['platformCompany']->id]);
+    trainingEventRole($hr, 'people_hr');
+    trainingEventRole($hod, 'people_hod');
+
+    Livewire::actingAs($hr)->test(Index::class)
+        ->call('editEvent', (int) $event->id)
+        ->assertSet('editingEventId', (int) $event->id)
+        ->assertSet('courseId', (int) $fixture['course']->id)
+        ->assertSet('venue', 'Workshop A');
+
+    expect(fn () => Livewire::actingAs($hod)->test(Index::class)
+        ->call('editEvent', (int) $event->id))->toThrow(AuthorizationDeniedException::class);
+
+    $this->travelTo(new DateTimeImmutable('2026-10-01T09:00:00+00:00'));
+    $store->start((int) $fixture['company']->id, (int) $event->id);
+    Livewire::actingAs($hr)->test(Index::class)
+        ->call('editEvent', (int) $event->id)
+        ->assertStatus(409);
+});
+
+test('event cancel validates the reason, cancels for HR, and refuses a user without manage capability', function (): void {
+    $fixture = trainingEventFixture();
+    $store = app(TrainingEventStore::class);
+    $event = $store->schedule((int) $fixture['company']->id, trainingEventDraft($fixture));
+    $deniedEvent = $store->schedule((int) $fixture['company']->id, trainingEventDraft($fixture));
+    $hr = User::factory()->create(['company_id' => $fixture['platformCompany']->id]);
+    $hod = User::factory()->create(['company_id' => $fixture['platformCompany']->id]);
+    trainingEventRole($hr, 'people_hr');
+    trainingEventRole($hod, 'people_hod');
+
+    Livewire::actingAs($hr)->test(Index::class)
+        ->call('cancel', (int) $event->id)
+        ->assertHasErrors('event');
+    expect($event->refresh()->status)->toBe(TrainingEventStatus::Scheduled);
+
+    Livewire::actingAs($hr)->test(Index::class)
+        ->set("reason.{$event->id}", 'Site closure')
+        ->call('cancel', (int) $event->id)
+        ->assertHasNoErrors()
+        ->assertSet("reason.{$event->id}", null);
+    expect($event->refresh()->status)->toBe(TrainingEventStatus::Cancelled)
+        ->and($event->cancellation_reason)->toBe('Site closure');
+
+    expect(fn () => Livewire::actingAs($hod)->test(Index::class)
+        ->set("reason.{$deniedEvent->id}", 'Not authorized')
+        ->call('cancel', (int) $deniedEvent->id))->toThrow(AuthorizationDeniedException::class);
+});
+
+test('event addComment validates the note, records it for HR, and refuses a user without manage capability', function (): void {
+    $fixture = trainingEventFixture();
+    $event = app(TrainingEventStore::class)->schedule((int) $fixture['company']->id, trainingEventDraft($fixture));
+    $hr = User::factory()->create(['company_id' => $fixture['platformCompany']->id]);
+    $hod = User::factory()->create(['company_id' => $fixture['platformCompany']->id]);
+    trainingEventRole($hr, 'people_hr');
+    trainingEventRole($hod, 'people_hod');
+
+    Livewire::actingAs($hr)->test(Index::class)
+        ->call('addComment', (int) $event->id)
+        ->assertHasErrors('event');
+    expect(TrainingEventAuditEvent::query()
+        ->forCompany($fixture['tenantId'], (int) $fixture['company']->id)
+        ->where('training_event_id', $event->id)->count())->toBe(1);
+
+    Livewire::actingAs($hr)->test(Index::class)
+        ->set("comment.{$event->id}", 'Coordinator confirmed the room')
+        ->call('addComment', (int) $event->id)
+        ->assertHasNoErrors()
+        ->assertSet("comment.{$event->id}", null);
+    expect(TrainingEventAuditEvent::query()
+        ->forCompany($fixture['tenantId'], (int) $fixture['company']->id)
+        ->where('training_event_id', $event->id)
+        ->where('event_type', 'commented')->where('comment', 'Coordinator confirmed the room')->exists())->toBeTrue();
+
+    expect(fn () => Livewire::actingAs($hod)->test(Index::class)
+        ->set("comment.{$event->id}", 'Not authorized')
+        ->call('addComment', (int) $event->id))->toThrow(AuthorizationDeniedException::class);
+});
+
+test('event cancelEdit discards local editing state without mutating the event', function (): void {
+    $fixture = trainingEventFixture();
+    $event = app(TrainingEventStore::class)->schedule((int) $fixture['company']->id, trainingEventDraft($fixture, ['venue' => 'Original venue']));
+    $hr = User::factory()->create(['company_id' => $fixture['platformCompany']->id]);
+    trainingEventRole($hr, 'people_hr');
+
+    Livewire::actingAs($hr)->test(Index::class)
+        ->call('editEvent', (int) $event->id)
+        ->set('venue', 'Unsaved venue')
+        ->call('cancelEdit')
+        ->assertSet('editingEventId', null)
+        ->assertSet('venue', '');
+
+    expect($event->refresh()->venue)->toBe('Original venue');
+});
