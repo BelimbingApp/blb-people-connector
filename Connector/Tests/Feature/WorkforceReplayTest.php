@@ -26,6 +26,7 @@ use App\Domains\PeopleConnector\Connector\Data\WorkforceEmployee;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceMerge;
 use App\Domains\PeopleConnector\Connector\Data\WorkforcePage;
 use App\Domains\PeopleConnector\Connector\Data\WorkforcePageRequest;
+use App\Domains\PeopleConnector\Connector\Data\WorkforceSyncReport;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceUpsert;
 use App\Domains\PeopleConnector\Connector\Enums\CapabilityDelivery;
 use App\Domains\PeopleConnector\Connector\Enums\PeopleCapability;
@@ -404,4 +405,47 @@ test('a merge older than the last observed fact is still queued rather than skip
     expect($report->mergesQueued)->toBe(1)
         ->and($report->superseded)->toBe(0)
         ->and(ReconciliationIssue::query()->forTenant($tenantId)->count())->toBe(1);
+});
+
+test('a clean replay does not report its feed as refused', function (): void {
+    [, $connectionId, $actor, $provider] = replayHistory('Replay Refusal Honesty Tenant');
+
+    $report = app(WorkforceSyncRunner::class)->replay($actor, $provider, $connectionId, fromVersion: 1);
+
+    // A replay never advances the checkpoint on purpose. That must not be read
+    // as "the provider refused everything", which is a different fact with a
+    // different remedy: refusal means conflicts and nothing effected.
+    expect($report->feedRefused())->toBeFalse()
+        ->and($report->conflicts)->toBe(0);
+});
+
+test('a replay that only skipped superseded facts is not reported as empty', function (): void {
+    // Built directly rather than through a fixture: the point is a pass whose
+    // every change was superseded, and a runner fixture that happens to apply
+    // one record would pass this for the wrong reason.
+    $report = new WorkforceSyncReport(
+        connectionId: 1,
+        stream: 'workforce',
+        pass: 'replay',
+        pages: 1,
+        companies: 0,
+        organizationUnits: 0,
+        positions: 0,
+        employees: 0,
+        deactivations: 0,
+        reactivations: 0,
+        mergesQueued: 0,
+        conflicts: 0,
+        checkpointVersion: 2,
+        asOf: replayAt('2026-09-06T08:00:00+00:00'),
+        checkpointAdvanced: false,
+        superseded: 1,
+    );
+
+    // The adapter did send this record. Skipping it because current state is
+    // already ahead is not the same as the feed carrying nothing, and an
+    // operator reading "empty" would go looking for a broken provider.
+    expect($report->seen())->toBe(1)
+        ->and($report->empty())->toBeFalse()
+        ->and($report->feedRefused())->toBeFalse();
 });

@@ -24,7 +24,12 @@ final readonly class WorkforceSyncReport
         public int $conflicts,
         public int $checkpointVersion,
         public \DateTimeImmutable $asOf,
-        /** False when the whole feed was refused: nothing changed and the pass must not be read as a success. */
+        /**
+         * Whether this pass moved the durable checkpoint. False for a refused
+         * feed, and false for every replay, which re-reads without claiming
+         * progress. It says nothing on its own about whether anything was
+         * wrong — read feedRefused() for that.
+         */
         public bool $checkpointAdvanced = true,
         /** Changes a replay read but did not apply because current state already reflects something later. */
         public int $superseded = 0,
@@ -40,10 +45,10 @@ final readonly class WorkforceSyncReport
         return $this->companies + $this->organizationUnits + $this->positions + $this->employees;
     }
 
-    /** Records the adapter sent, whether they were applied, deactivated, queued or refused. */
+    /** Records the adapter sent, whether they were applied, deactivated, queued, refused or skipped as superseded. */
     public function seen(): int
     {
-        return $this->applied() + $this->deactivations + $this->mergesQueued + $this->conflicts;
+        return $this->applied() + $this->deactivations + $this->mergesQueued + $this->conflicts + $this->superseded;
     }
 
     /** A completed pass that carried no records at all. */
@@ -52,9 +57,24 @@ final readonly class WorkforceSyncReport
         return $this->seen() === 0;
     }
 
-    /** The feed had records and every one of them was refused; the checkpoint did not move. */
+    /**
+     * The feed had records and every one of them was refused.
+     *
+     * Read from the counts rather than from checkpointAdvanced. Those two used
+     * to be the same thing, because the only pass that declined to advance was
+     * a refused one. A replay declines to advance every time and is usually
+     * perfectly healthy, so equating the two now reports a clean replay as a
+     * total refusal — the loudest possible signal for a pass that found nothing
+     * wrong.
+     */
     public function feedRefused(): bool
     {
-        return ! $this->checkpointAdvanced;
+        return $this->conflicts > 0 && $this->effected() === 0;
+    }
+
+    /** Records that changed state this pass: written, switched off, brought back, or queued for review. */
+    public function effected(): int
+    {
+        return $this->applied() + $this->deactivations + $this->reactivations + $this->mergesQueued;
     }
 }
