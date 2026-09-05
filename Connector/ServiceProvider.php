@@ -6,6 +6,8 @@ use App\Domains\People\Provider\Contracts\ResolvesWorkforceSubjects;
 use App\Domains\People\Provider\Data\ExternalReference as PeopleExternalReference;
 use App\Domains\PeopleConnector\Connector\Console\Commands\RetentionReportCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\SyncWorkforceCommand;
+use App\Domains\PeopleConnector\Connector\Contracts\AcceptsDelegatedCommands;
+use App\Domains\PeopleConnector\Connector\Services\DelegatedCommandPort;
 use App\Domains\PeopleConnector\Connector\Services\ProjectionWorkforceSubjectResolver;
 use App\Domains\PeopleConnector\Connector\Services\ProviderHealthStore;
 use App\Domains\PeopleConnector\Connector\Services\ProviderRegistry;
@@ -51,6 +53,9 @@ class ServiceProvider extends BaseServiceProvider
                 ? $app->make(ProjectionWorkforceSubjectResolver::class)
                 : $native,
         );
+        // Not a singleton: the port injects the scoped TenantContext, which
+        // Octane discards across the request boundary a singleton survives.
+        $this->app->bind(AcceptsDelegatedCommands::class, DelegatedCommandPort::class);
         $this->app->singleton(ProviderRegistry::class);
         $this->app->singleton(ProviderHealthStore::class);
 

@@ -39,6 +39,16 @@ return [
      * Nothing here deletes. RetentionPolicy reports what is past retention; the
      * purge that acts on it is a separate, separately approved step.
      */
+    /*
+     * Delegated authority for employee commands ([1010]). The secret signs and
+     * verifies short-lived, audience-bound tokens; there is no default, because
+     * a default signing key is a key everyone has.
+     */
+    'delegation' => [
+        'secret' => env('PEOPLE_CONNECTOR_DELEGATION_SECRET'),
+        'max_lifetime_seconds' => 300,
+    ],
+
     'retention' => [
         // Progress logs: how far a sync got is operationally useful for a
         // while, and of no interest a year later.

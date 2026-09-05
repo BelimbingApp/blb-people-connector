@@ -1,9 +1,12 @@
 <?php
 
 use App\Base\Tenancy\Contracts\TenantContext;
+use App\Domains\PeopleConnector\Connector\Contracts\AcceptsDelegatedCommands;
 use App\Domains\PeopleConnector\Connector\Data\DelegatedAuthority;
 use App\Domains\PeopleConnector\Connector\Exceptions\DelegatedAuthorityException;
+use App\Domains\PeopleConnector\Connector\Http\Controllers\DelegatedCommandController;
 use App\Domains\PeopleConnector\Connector\Services\DelegatedAuthoritySigner;
+use Illuminate\Http\Request;
 
 /*
  * Self-contained: every helper is prefixed delegation and lives here.
@@ -138,4 +141,106 @@ test('an authority whose lifetime exceeds the configured maximum is refused at s
     expect(fn () => $signer->sign(delegationAuthority([
         'expiresAt' => new DateTimeImmutable('2026-09-06T13:00:00+00:00'),
     ])))->toThrow(DelegatedAuthorityException::class);
+});
+
+/**
+ * Run one authority down both paths and report what each decided.
+ *
+ * The point of the boundary is that these two answers are always the same, so
+ * the fixture asks them the same question rather than two similar ones.
+ *
+ * @return array{inProcess: bool, http: bool}
+ */
+function delegationBothPaths(DelegatedAuthority $authority, string $audience, string $operation): array
+{
+    $signer = app(DelegatedAuthoritySigner::class);
+    $port = app(AcceptsDelegatedCommands::class);
+
+    $inProcess = true;
+    try {
+        $port->accept($authority, $operation);
+    } catch (DelegatedAuthorityException) {
+        $inProcess = false;
+    }
+
+    $request = Request::create('/delegated', 'POST');
+    $request->headers->set(DelegatedCommandController::AUTHORITY_HEADER, $signer->sign($authority));
+    $response = app(DelegatedCommandController::class)($request, $audience, $operation);
+
+    return ['inProcess' => $inProcess, 'http' => $response->getStatusCode() === 200];
+}
+
+test('an accepted authority is accepted identically in process and over http', function (): void {
+    delegationSecret();
+    app(TenantContext::class)->set(41);
+
+    $decisions = delegationBothPaths(delegationAuthority([
+        'issuedAt' => new DateTimeImmutable,
+        'expiresAt' => (new DateTimeImmutable)->modify('+2 minutes'),
+    ]), DELEGATION_AUDIENCE, 'employee.command.submit');
+
+    expect($decisions['inProcess'])->toBeTrue()
+        ->and($decisions['http'])->toBeTrue();
+});
+
+test('a wrong-tenant authority is refused identically in process and over http', function (): void {
+    delegationSecret();
+    app(TenantContext::class)->set(41);
+
+    // The denial fixture the acceptance asks for: one authority, both paths,
+    // same answer. A transport that decided this differently would be a way
+    // around the backend recheck, which is the whole thing being guarded.
+    $decisions = delegationBothPaths(delegationAuthority([
+        'tenantId' => 42,
+        'issuedAt' => new DateTimeImmutable,
+        'expiresAt' => (new DateTimeImmutable)->modify('+2 minutes'),
+    ]), DELEGATION_AUDIENCE, 'employee.command.submit');
+
+    expect($decisions['inProcess'])->toBeFalse()
+        ->and($decisions['http'])->toBeFalse();
+});
+
+test('a wrong-operation authority is refused identically in process and over http', function (): void {
+    delegationSecret();
+    app(TenantContext::class)->set(41);
+
+    $decisions = delegationBothPaths(delegationAuthority([
+        'issuedAt' => new DateTimeImmutable,
+        'expiresAt' => (new DateTimeImmutable)->modify('+2 minutes'),
+    ]), DELEGATION_AUDIENCE, 'employee.command.cancel');
+
+    expect($decisions['inProcess'])->toBeFalse()
+        ->and($decisions['http'])->toBeFalse();
+});
+
+test('the http path refuses a token this connector did not sign', function (): void {
+    delegationSecret();
+    app(TenantContext::class)->set(41);
+    $request = Request::create('/delegated', 'POST');
+    $request->headers->set(DelegatedCommandController::AUTHORITY_HEADER, 'forged.payload');
+
+    $response = app(DelegatedCommandController::class)($request, DELEGATION_AUDIENCE, 'employee.command.submit');
+
+    // Verification is the HTTP path's own job — an in-process caller never had
+    // a token to check — and it happens before the port is reached at all.
+    expect($response->getStatusCode())->toBe(403);
+});
+
+test('the http refusal names a reason code and never the refusal message', function (): void {
+    delegationSecret();
+    app(TenantContext::class)->set(41);
+    $signer = app(DelegatedAuthoritySigner::class);
+    $request = Request::create('/delegated', 'POST');
+    $request->headers->set(DelegatedCommandController::AUTHORITY_HEADER, $signer->sign(delegationAuthority([
+        'tenantId' => 42,
+        'issuedAt' => new DateTimeImmutable,
+        'expiresAt' => (new DateTimeImmutable)->modify('+2 minutes'),
+    ])));
+
+    $response = app(DelegatedCommandController::class)($request, DELEGATION_AUDIENCE, 'employee.command.submit');
+
+    // Refusal messages name tenants and operations. Reason codes, not prose:
+    // docs/contracts/diagnostic-privacy.md.
+    expect($response->getData(true))->toBe(['refused' => 'delegated_authority_refused'])
+        ->and($response->getContent())->not->toContain('42');
 });
