@@ -37,13 +37,15 @@
                             <x-ui.badge :variant="match ($issue->severity) { 'error' => 'danger', 'warning' => 'warning', default => 'secondary' }">
                                 {{ match ($issue->severity) { 'error' => __('Needs attention'), 'warning' => __('Review needed'), default => __('Information') } }}
                             </x-ui.badge>
-                            <span class="mt-1 block font-medium">{{ match ($issue->kind) { 'sync_merge_requested' => __('Merge review'), 'sync_conflict' => __('Synchronization conflict'), 'sync_feed_refused' => __('Synchronization refused'), 'sync_empty_bootstrap' => __('Empty initial synchronization'), default => __('Reconciliation issue') } }}</span>
-                            <span class="block text-xs text-muted">{{ match ($issue->details['reason_code'] ?? null) { 'review_required' => __('A human decision is required.'), 'projection_conflict' => __('The provider facts conflict with the current projection.'), 'record_not_found' => __('The provider record has no known identity.'), 'every_record_refused' => __('Every record in this synchronization was refused.'), 'no_records' => __('The provider reported no records.'), default => __('Review the recorded evidence.') } }}</span>
+                            <span class="mt-1 block font-medium">{{ match ($issue->kind) { 'sync_merge_requested' => __('Merge review'), 'sync_conflict' => __('Synchronization conflict'), 'sync_feed_refused' => __('Synchronization refused'), 'sync_empty_bootstrap' => __('Empty initial synchronization'), 'sync_unknown_outcome' => __('Unconfirmed command outcome'), default => __('Reconciliation issue') } }}</span>
+                            <span class="block text-xs text-muted">{{ match ($issue->details['reason_code'] ?? null) { 'review_required' => __('A human decision is required.'), 'projection_conflict' => __('The provider facts conflict with the current projection.'), 'record_not_found' => __('The provider record has no known identity.'), 'every_record_refused' => __('Every record in this synchronization was refused.'), 'no_records' => __('The provider reported no records.'), 'not_sent' => __('The command was never sent to the provider.'), 'answer_lost' => __('The command was sent but the provider answer was lost.'), 'provider_refused' => __('The provider refused the command.'), 'absent_at_provider' => __('The provider has no record of this command.'), default => __('Review the recorded evidence.') } }}</span>
                         </td>
                         <td class="px-table-cell-x py-table-cell-y align-top text-sm text-ink">
-                            <span class="font-medium">{{ $issue->resource_type ?? __('Connection') }}</span>
+                            <span class="font-medium">{{ $issue->resource_type ?? ($issue->kind === 'sync_unknown_outcome' ? __('Command') : __('Connection')) }}</span>
                             @if ($issue->external_id !== null)
                                 <span class="block break-all text-muted">{{ $issue->external_id }}</span>
+                            @elseif ($issue->kind === 'sync_unknown_outcome')
+                                <span class="block break-all text-muted">{{ $issue->issue_key }}</span>
                             @endif
                             @if (isset($issue->details['related_external_id']))
                                 <span class="mt-1 block break-all text-xs text-muted">
@@ -73,6 +75,29 @@
                                         {{ __('This legacy merge issue is missing its surviving external reference and cannot be applied.') }}
                                     </x-ui.alert>
                                 @endif
+                            @elseif ($issue->kind === 'sync_unknown_outcome')
+                                <x-ui.select
+                                    id="reconciliation-command-resolution-{{ $issue->id }}"
+                                    wire:model="commandResolutions.{{ $issue->id }}"
+                                    :label="__('Confirmed outcome')"
+                                    required
+                                    :error="$errors->first('commandResolutions.'.$issue->id)"
+                                >
+                                    <option value="">{{ __('Select what the provider did') }}</option>
+                                    <option value="confirmed_delivered">{{ __('Confirmed delivered') }}</option>
+                                    <option value="confirmed_not_delivered">{{ __('Confirmed not delivered') }}</option>
+                                </x-ui.select>
+                                <x-ui.input
+                                    id="reconciliation-command-review-reference-{{ $issue->id }}"
+                                    wire:model="reviewReferences.{{ $issue->id }}"
+                                    :label="__('Review reference')"
+                                    required
+                                    :error="$errors->first('reviewReferences.'.$issue->id)"
+                                />
+                                <p class="mt-1 text-xs text-muted">{{ __('Confirming records what the provider did. It does not resend the command.') }}</p>
+                                <x-ui.button type="button" size="sm" class="mt-2" wire:click="confirmUnknownOutcome({{ $issue->id }})" wire:loading.attr="disabled">
+                                    {{ __('Confirm command outcome') }}
+                                </x-ui.button>
                             @elseif ($issue->resource_type !== null && $issue->external_id !== null)
                                 <x-ui.input
                                     id="reconciliation-replacement-{{ $issue->id }}"
