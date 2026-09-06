@@ -1,8 +1,8 @@
 <?php
 
+use App\Domains\PeopleConnector\Connector\Http\Controllers\WorkforceWebhookController;
 use App\Domains\PeopleConnector\Connector\Livewire\Connections\Index;
 use App\Domains\PeopleConnector\Connector\Livewire\Reconciliation\Index as ReconciliationIndex;
-use App\Domains\PeopleConnector\Connector\Http\Controllers\WorkforceWebhookController;
 use Illuminate\Support\Facades\Route;
 
 Route::post('webhooks/people-connector/{connectionId}', WorkforceWebhookController::class)
