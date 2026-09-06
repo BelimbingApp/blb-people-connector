@@ -7,6 +7,7 @@ use App\Domains\PeopleConnector\Connector\Exceptions\ConnectorRecordNotFoundExce
 use App\Domains\PeopleConnector\Connector\Exceptions\WebhookRefusal;
 use App\Domains\PeopleConnector\Connector\Jobs\RunIncrementalWorkforceSync;
 use App\Domains\PeopleConnector\Connector\Models\ProviderConnection;
+use App\Domains\PeopleConnector\Connector\Models\WebhookDelivery;
 use App\Domains\PeopleConnector\Connector\Services\TenantConnectionLocator;
 use App\Domains\PeopleConnector\Connector\Services\WorkforceWebhookVerifier;
 use Illuminate\Http\JsonResponse;
@@ -53,7 +54,18 @@ final class WorkforceWebhookController
             $this->verifier->enqueueOnce(
                 $connectionId,
                 (string) $deliveryId,
-                fn () => RunIncrementalWorkforceSync::dispatch($tenantId, $connectionId),
+                function () use ($tenantId, $connectionId, $deliveryId): void {
+                    // The row is the operator's handle for a replay (#223); it
+                    // records the trigger, never the provider's bytes.
+                    $delivery = WebhookDelivery::query()->create([
+                        'tenant_id' => $tenantId,
+                        'connection_id' => $connectionId,
+                        'delivery_id' => (string) $deliveryId,
+                        'status' => WebhookDelivery::STATUS_ACCEPTED,
+                        'received_at' => now(),
+                    ]);
+                    RunIncrementalWorkforceSync::dispatch($tenantId, $connectionId, (int) $delivery->id);
+                },
             );
         } catch (ConnectorRecordNotFoundException|WebhookRefusal $refused) {
             $status = match ($refused instanceof WebhookRefusal ? $refused->reason : null) {
