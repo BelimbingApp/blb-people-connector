@@ -1,6 +1,7 @@
 <?php
 
 use App\Base\Tenancy\Contracts\TenantContext;
+use App\Core\Company\Models\Company;
 use App\Core\User\Models\User;
 use App\Domains\PeopleConnector\Connector\Data\ProviderScope;
 use App\Domains\PeopleConnector\Connector\Jobs\RunIncrementalWorkforceSync;
@@ -8,11 +9,14 @@ use App\Domains\PeopleConnector\Connector\Models\ProviderConnection;
 use App\Domains\PeopleConnector\Connector\Services\ProviderConnectionStore;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 
 afterEach(function (): void {
     app(TenantContext::class)->clear();
     config()->set('people-connector.webhook.enabled', false);
     config()->set('people-connector.webhook.secrets', []);
+    config()->set('people-connector.webhook.max_payload_bytes', 1048576);
+    config()->set('people-connector.webhook.delivery_id_ttl_seconds', 86400);
 });
 
 function webhookConnection(string $provider = 'test.webhook'): ProviderConnection
@@ -33,14 +37,22 @@ function webhookBody(string $payload = '{"event":"workforce.changed"}'): string
     return $payload;
 }
 
-function webhookServerHeaders(int $connectionId, string $body, int $timestamp, string $secret = 'webhook-test-secret'): array
-{
+function webhookServerHeaders(
+    int $connectionId,
+    string $body,
+    int $timestamp,
+    string $secret = 'webhook-test-secret',
+    ?string $deliveryId = null,
+): array {
+    $deliveryId ??= 'delivery-'.Str::uuid();
+
     return [
         'CONTENT_TYPE' => 'application/json',
         'HTTP_X_PEOPLE_CONNECTOR_TIMESTAMP' => (string) $timestamp,
+        'HTTP_X_PEOPLE_CONNECTOR_DELIVERY' => $deliveryId,
         'HTTP_X_PEOPLE_CONNECTOR_SIGNATURE' => hash_hmac(
             'sha256',
-            $connectionId."\n".$timestamp."\n".$body,
+            $connectionId."\n".$timestamp."\n".$deliveryId."\n".$body,
             $secret,
         ),
     ];
@@ -146,5 +158,64 @@ test('a connection from another tenant is refused', function (): void {
     );
 
     $response->assertForbidden()->assertJson(['refused' => 'unknown_connection']);
+    Bus::assertNothingDispatched();
+});
+
+test('a replayed delivery id is refused without enqueueing a second pass', function (): void {
+    $connection = webhookConnection();
+    enableWebhookFor($connection);
+    Bus::fake();
+    $body = webhookBody();
+    $headers = webhookServerHeaders((int) $connection->id, $body, time(), deliveryId: 'delivery-replay-1');
+
+    $this->call('POST', "/webhooks/people-connector/{$connection->id}", server: $headers, content: $body)
+        ->assertAccepted();
+    $this->call('POST', "/webhooks/people-connector/{$connection->id}", server: $headers, content: $body)
+        ->assertForbidden()
+        ->assertJson(['refused' => 'replayed_delivery']);
+
+    Bus::assertDispatchedTimes(RunIncrementalWorkforceSync::class, 1);
+});
+
+test('a payload above the configured limit is refused before dispatch', function (): void {
+    $connection = webhookConnection();
+    enableWebhookFor($connection);
+    config()->set('people-connector.webhook.max_payload_bytes', 32);
+    Bus::fake();
+    $body = str_repeat('x', 33);
+
+    $this->call(
+        'POST',
+        "/webhooks/people-connector/{$connection->id}",
+        server: webhookServerHeaders((int) $connection->id, $body, time()),
+        content: $body,
+    )->assertStatus(413)->assertJson(['refused' => 'payload_too_large']);
+
+    Bus::assertNothingDispatched();
+});
+
+test('a signature made with a sibling connection secret is refused', function (): void {
+    $connection = webhookConnection('test.webhook.target');
+    $company = Company::factory()->create(['tenant_id' => $connection->tenant_id]);
+    $sibling = app(ProviderConnectionStore::class)->configure(
+        ProviderScope::company((int) $company->id),
+        'test.webhook.sibling',
+    );
+    $sibling = app(ProviderConnectionStore::class)->activate((int) $sibling->id);
+    enableWebhookFor($connection, 'target-secret');
+    config()->set('people-connector.webhook.secrets', [
+        $sibling->id => 'sibling-secret',
+        $connection->id => 'target-secret',
+    ]);
+    Bus::fake();
+    $body = webhookBody();
+
+    $this->call(
+        'POST',
+        "/webhooks/people-connector/{$connection->id}",
+        server: webhookServerHeaders((int) $connection->id, $body, time(), 'sibling-secret'),
+        content: $body,
+    )->assertForbidden()->assertJson(['refused' => 'invalid_signature']);
+
     Bus::assertNothingDispatched();
 });
