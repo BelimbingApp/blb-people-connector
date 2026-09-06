@@ -38,6 +38,7 @@ use App\Domains\PeopleConnector\Connector\Exceptions\ConnectorRecordNotFoundExce
 use App\Domains\PeopleConnector\Connector\Exceptions\StaleWorkforceStateException;
 use App\Domains\PeopleConnector\Connector\Exceptions\WorkforceSyncException;
 use App\Domains\PeopleConnector\Connector\Models\ExternalIdentity;
+use App\Domains\PeopleConnector\Connector\Models\OperatorAudit;
 use App\Domains\PeopleConnector\Connector\Models\ReconciliationIssue;
 use App\Domains\PeopleConnector\Connector\Models\SyncCheckpoint;
 use App\Domains\PeopleConnector\Connector\Models\SyncCheckpointEvent;
@@ -62,6 +63,68 @@ afterEach(function (): void {
 });
 
 const SYNC_RUNNER_PROVIDER = 'test.sync';
+
+test('a refused sync pass audits counts and duration without workforce contents', function (): void {
+    [$tenantId, , $connectionId, $actor] = syncRunnerTenant('Sync Audit');
+    $at = syncRunnerAt('2026-09-06T12:00:00Z');
+    $provider = syncRunnerProvider(['first' => new WorkforcePage(
+        [], $at, resumeCursor: 'private-cursor', complete: true,
+        companies: [syncRunnerCompany('private-company', 'Private Company', $at), syncRunnerCompany('private-company', 'Contradictory Company', $at)],
+    )]);
+    $report = app(WorkforceSyncRunner::class)->bootstrap($actor, $provider, $connectionId);
+    $rows = OperatorAudit::query()->forTenant($tenantId)->get();
+    expect($rows)->toHaveCount(1);
+    $row = $rows->sole();
+    expect($row->connection_id)->toBe($connectionId)
+        ->and($row->operation->value)->toBe('sync.pass')
+        ->and($row->after_summary)->toMatchArray([
+            'stream' => WorkforceFreshnessPolicy::stream(), 'pass' => 'bootstrap',
+            'pages' => 1, 'upserts' => 1, 'deactivations' => 0,
+            'refusals' => $report->conflicts, 'completed' => true,
+        ])
+        ->and($report->conflicts)->toBe(1)
+        ->and($row->after_summary['duration_ms'])->toBeGreaterThanOrEqual(0)
+        ->and(array_keys($row->after_summary))->toBe([
+            'stream', 'pass', 'pages', 'upserts', 'deactivations', 'refusals', 'duration_ms', 'completed',
+        ])
+        ->and(json_encode($row->after_summary))->not->toContain('Private Company', 'private-company', 'Contradictory Company', 'private-cursor');
+});
+
+test('a failed sync pass records partial counts but another tenant cannot start an audit pass', function (): void {
+    [$tenantId, , $connectionId, $actor] = syncRunnerTenant('Sync Partial Audit');
+    $at = syncRunnerAt('2026-09-06T12:00:00Z');
+    $provider = syncRunnerProvider([
+        'first' => new WorkforcePage([], $at, companies: [syncRunnerCompany('audit-co', 'Private Company', $at)], nextPageCursor: 'next', complete: false),
+        'next' => new RuntimeException('private transport payload'),
+    ]);
+    expect(fn () => app(WorkforceSyncRunner::class)->bootstrap($actor, $provider, $connectionId))->toThrow(RuntimeException::class, 'private transport payload');
+    $row = OperatorAudit::query()->forTenant($tenantId)->sole();
+    expect($row->after_summary)->toMatchArray(['pages' => 1, 'upserts' => 1, 'completed' => false])
+        ->and(json_encode($row->after_summary))->not->toContain('private transport payload', 'Private Company');
+    [$otherTenant, , , $otherActor] = syncRunnerTenant('Sync Other Audit');
+    expect(fn () => app(WorkforceSyncRunner::class)->bootstrap($otherActor, $provider, $connectionId))
+        ->toThrow(ConnectorRecordNotFoundException::class);
+    expect(OperatorAudit::query()->forTenant($otherTenant)->count())->toBe(0)
+        ->and(OperatorAudit::query()->forTenant($tenantId)->count())->toBe(1);
+});
+
+test('bootstrap incremental and replay each produce exactly one sync audit row', function (): void {
+    [$tenantId, , $connectionId, $actor] = syncRunnerTenant('Every Pass Audit');
+    $at = syncRunnerAt('2026-09-06T12:00:00Z');
+    $provider = syncRunnerProvider([
+        'first' => new WorkforcePage([], $at, companies: [syncRunnerCompany('audit-co', 'Audit Company', $at)], resumeCursor: 'start', complete: true),
+    ], [
+        'first' => new WorkforceChangePage([], $at, resumeCursor: 'next', complete: true),
+    ]);
+    $runner = app(WorkforceSyncRunner::class);
+    $runner->bootstrap($actor, $provider, $connectionId);
+    $runner->incremental($actor, $provider, $connectionId);
+    $runner->replay($actor, $provider, $connectionId, 1);
+    $rows = OperatorAudit::query()->forTenant($tenantId)->orderBy('id')->get();
+    expect($rows->pluck('after_summary.pass')->all())->toBe(['bootstrap', 'incremental', 'replay'])
+        ->and($rows->pluck('after_summary.pages')->all())->toBe([1, 1, 1])
+        ->and($rows->pluck('after_summary.completed')->all())->toBe([true, true, true]);
+});
 
 function syncRunnerRef(WorkforceResourceType $type, string $id): ExternalReference
 {

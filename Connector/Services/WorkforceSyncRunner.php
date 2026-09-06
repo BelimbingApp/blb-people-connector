@@ -23,6 +23,7 @@ use App\Domains\PeopleConnector\Connector\Data\WorkforcePosition;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceProvenance;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceSyncReport;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceUpsert;
+use App\Domains\PeopleConnector\Connector\Enums\OperatorAuditOperation;
 use App\Domains\PeopleConnector\Connector\Enums\PeopleCapability;
 use App\Domains\PeopleConnector\Connector\Exceptions\CompanyMoveRefusedException;
 use App\Domains\PeopleConnector\Connector\Exceptions\ConnectorRecordNotFoundException;
@@ -81,6 +82,7 @@ final class WorkforceSyncRunner
         private WorkforceIdentityStore $identities,
         private SyncCheckpointStore $checkpoints,
         private ReconciliationIssueStore $issues,
+        private OperatorAuditLog $audit,
     ) {}
 
     public function bootstrap(Actor $actor, ProviderAdapter $provider, int $connectionId, ?int $limit = null): WorkforceSyncReport
@@ -89,52 +91,54 @@ final class WorkforceSyncRunner
         $stream = WorkforceFreshnessPolicy::stream();
         $provenance = $this->provenance('sync.bootstrap', $provider, $stream);
         $port = $this->ports->read($actor, $provider, PeopleCapability::EmployeeDirectory, BootstrapsWorkforce::class, $this->scopeOf($connection));
-        $tally = $this->emptyTally();
-        $pageCursor = null;
 
-        do {
-            $page = $port->bootstrap(new WorkforcePageRequest($pageCursor, $limit ?? self::pageLimit()));
-            $this->assertPageIntact($connectionId, 'bootstrap', $pageCursor, $page);
-            $tally['pages']++;
+        return $this->auditPass($actor, $connectionId, $stream, 'bootstrap', function (array &$tally) use ($connectionId, $stream, $provenance, $port, $limit): WorkforceSyncReport {
+            $pageCursor = null;
 
-            foreach ([$page->companies, $page->organizationUnits, $page->positions, $page->employees] as $records) {
-                foreach ($records as $record) {
-                    $this->applyRecord($connectionId, $record, $provenance, $tally);
+            do {
+                $page = $port->bootstrap(new WorkforcePageRequest($pageCursor, $limit ?? self::pageLimit()));
+                $this->assertPageIntact($connectionId, 'bootstrap', $pageCursor, $page);
+                $tally['pages']++;
+
+                foreach ([$page->companies, $page->organizationUnits, $page->positions, $page->employees] as $records) {
+                    foreach ($records as $record) {
+                        $this->applyRecord($connectionId, $record, $provenance, $tally);
+                    }
                 }
+
+                $pageCursor = $this->nextCursor($page, $pageCursor);
+            } while (! $page->complete);
+
+            if ($this->seen($tally) === 0) {
+                // A provider that says "done" with nothing in it is either empty or
+                // broken. Either way a human should see it, because every feature
+                // reading these projections would otherwise see a clean, fresh, and
+                // entirely vacant workforce.
+                $this->issues->report(
+                    $connectionId,
+                    self::ISSUE_KEY_EMPTY_BOOTSTRAP,
+                    self::ISSUE_KIND_EMPTY_BOOTSTRAP,
+                    new ReconciliationIssueDetails(reasonCode: 'no_records', expectedCount: null, observedCount: 0),
+                    severity: 'warning',
+                    seenAt: $page->asOf,
+                );
             }
 
-            $pageCursor = $this->nextCursor($page, $pageCursor);
-        } while (! $page->complete);
+            $currentVersion = (int) ($this->checkpoints->current($connectionId, $stream)?->version ?? 0);
 
-        if ($this->seen($tally) === 0) {
-            // A provider that says "done" with nothing in it is either empty or
-            // broken. Either way a human should see it, because every feature
-            // reading these projections would otherwise see a clean, fresh, and
-            // entirely vacant workforce.
-            $this->issues->report(
+            if ($this->feedRefused($connectionId, $tally, $page->asOf)) {
+                return $this->report($connectionId, $stream, 'bootstrap', $tally, $currentVersion, $page->asOf, checkpointAdvanced: false);
+            }
+
+            $checkpoint = $this->checkpoints->advanceCompletedPage(
                 $connectionId,
-                self::ISSUE_KEY_EMPTY_BOOTSTRAP,
-                self::ISSUE_KIND_EMPTY_BOOTSTRAP,
-                new ReconciliationIssueDetails(reasonCode: 'no_records', expectedCount: null, observedCount: 0),
-                severity: 'warning',
-                seenAt: $page->asOf,
+                $stream,
+                new WorkforceChangePage([], $page->asOf, resumeCursor: $page->resumeCursor, complete: true),
+                $currentVersion,
             );
-        }
 
-        $currentVersion = (int) ($this->checkpoints->current($connectionId, $stream)?->version ?? 0);
-
-        if ($this->feedRefused($connectionId, $tally, $page->asOf)) {
-            return $this->report($connectionId, $stream, 'bootstrap', $tally, $currentVersion, $page->asOf, checkpointAdvanced: false);
-        }
-
-        $checkpoint = $this->checkpoints->advanceCompletedPage(
-            $connectionId,
-            $stream,
-            new WorkforceChangePage([], $page->asOf, resumeCursor: $page->resumeCursor, complete: true),
-            $currentVersion,
-        );
-
-        return $this->report($connectionId, $stream, 'bootstrap', $tally, (int) $checkpoint->version, $page->asOf);
+            return $this->report($connectionId, $stream, 'bootstrap', $tally, (int) $checkpoint->version, $page->asOf);
+        });
     }
 
     public function incremental(Actor $actor, ProviderAdapter $provider, int $connectionId, ?int $limit = null): WorkforceSyncReport
@@ -145,46 +149,48 @@ final class WorkforceSyncRunner
             ?? throw new WorkforceSyncException('Incremental synchronisation needs a completed bootstrap checkpoint to resume from; run the bootstrap pass first.');
         $provenance = $this->provenance('sync.incremental', $provider, $stream);
         $port = $this->ports->read($actor, $provider, PeopleCapability::EmployeeDirectory, ReadsWorkforceChanges::class, $this->scopeOf($connection));
-        $tally = $this->emptyTally();
-        $pageCursor = null;
 
-        do {
-            $page = $port->changes(new WorkforceChangeRequest($checkpoint->resume_cursor, $pageCursor, $limit ?? self::pageLimit()));
-            $this->assertPageIntact($connectionId, 'incremental', $pageCursor, $page);
-            $tally['pages']++;
+        return $this->auditPass($actor, $connectionId, $stream, 'incremental', function (array &$tally) use ($connectionId, $stream, $provenance, $port, $limit, $checkpoint): WorkforceSyncReport {
+            $pageCursor = null;
 
-            foreach ($page->changes as $change) {
-                match (true) {
-                    $change instanceof WorkforceUpsert => $this->applyRecord($connectionId, $change->record, $provenance, $tally),
-                    $change instanceof WorkforceDeactivation => $this->applyDeactivation($connectionId, $change, $provenance, $tally),
-                    $change instanceof WorkforceMerge => $this->queueMerge($connectionId, $change, $tally),
-                };
+            do {
+                $page = $port->changes(new WorkforceChangeRequest($checkpoint->resume_cursor, $pageCursor, $limit ?? self::pageLimit()));
+                $this->assertPageIntact($connectionId, 'incremental', $pageCursor, $page);
+                $tally['pages']++;
+
+                foreach ($page->changes as $change) {
+                    match (true) {
+                        $change instanceof WorkforceUpsert => $this->applyRecord($connectionId, $change->record, $provenance, $tally),
+                        $change instanceof WorkforceDeactivation => $this->applyDeactivation($connectionId, $change, $provenance, $tally),
+                        $change instanceof WorkforceMerge => $this->queueMerge($connectionId, $change, $tally),
+                    };
+                }
+
+                $pageCursor = $this->nextCursor($page, $pageCursor);
+            } while (! $page->complete);
+
+            if ($this->feedRefused($connectionId, $tally, $page->asOf)) {
+                $attempts = $this->checkpoints->recordFailedAttempt($connectionId, $stream);
+
+                // Retrying a page the provider and the connector disagree about is
+                // not going to change either of their minds. Past the limit the
+                // retry is noise, so the page is parked for a human and the stream
+                // is allowed to carry on: one stuck page must not stop every later
+                // change from ever arriving.
+                if ($attempts < self::deadLetterAttempts()) {
+                    return $this->report($connectionId, $stream, 'incremental', $tally, (int) $checkpoint->version, $page->asOf, checkpointAdvanced: false);
+                }
+
+                $this->parkDeadLetter($connectionId, $page, $tally);
+                $parked = $this->checkpoints->advanceCompletedPage($connectionId, $stream, $page, (int) $checkpoint->version);
+
+                return $this->report($connectionId, $stream, 'incremental', $tally, (int) $parked->version, $page->asOf);
             }
 
-            $pageCursor = $this->nextCursor($page, $pageCursor);
-        } while (! $page->complete);
+            $advanced = $this->checkpoints->advanceCompletedPage($connectionId, $stream, $page, (int) $checkpoint->version);
 
-        if ($this->feedRefused($connectionId, $tally, $page->asOf)) {
-            $attempts = $this->checkpoints->recordFailedAttempt($connectionId, $stream);
-
-            // Retrying a page the provider and the connector disagree about is
-            // not going to change either of their minds. Past the limit the
-            // retry is noise, so the page is parked for a human and the stream
-            // is allowed to carry on: one stuck page must not stop every later
-            // change from ever arriving.
-            if ($attempts < self::deadLetterAttempts()) {
-                return $this->report($connectionId, $stream, 'incremental', $tally, (int) $checkpoint->version, $page->asOf, checkpointAdvanced: false);
-            }
-
-            $this->parkDeadLetter($connectionId, $page, $tally);
-            $parked = $this->checkpoints->advanceCompletedPage($connectionId, $stream, $page, (int) $checkpoint->version);
-
-            return $this->report($connectionId, $stream, 'incremental', $tally, (int) $parked->version, $page->asOf);
-        }
-
-        $advanced = $this->checkpoints->advanceCompletedPage($connectionId, $stream, $page, (int) $checkpoint->version);
-
-        return $this->report($connectionId, $stream, 'incremental', $tally, (int) $advanced->version, $page->asOf);
+            return $this->report($connectionId, $stream, 'incremental', $tally, (int) $advanced->version, $page->asOf);
+        });
     }
 
     /**
@@ -217,32 +223,34 @@ final class WorkforceSyncRunner
         $currentVersion = (int) ($this->checkpoints->current($connectionId, $stream)?->version ?? 0);
         $provenance = $this->provenance('sync.replay', $provider, $stream);
         $port = $this->ports->read($actor, $provider, PeopleCapability::EmployeeDirectory, ReadsWorkforceChanges::class, $this->scopeOf($connection));
-        $tally = $this->emptyTally();
-        $pageCursor = null;
 
-        do {
-            $page = $port->changes(new WorkforceChangeRequest($resumeCursor, $pageCursor, $limit ?? self::pageLimit()));
-            $this->assertPageIntact($connectionId, 'replay', $pageCursor, $page);
-            $tally['pages']++;
+        return $this->auditPass($actor, $connectionId, $stream, 'replay', function (array &$tally) use ($connectionId, $stream, $provenance, $port, $limit, $resumeCursor, $currentVersion): WorkforceSyncReport {
+            $pageCursor = null;
 
-            foreach ($page->changes as $change) {
-                if ($this->isSuperseded($connectionId, $change)) {
-                    $tally['superseded']++;
+            do {
+                $page = $port->changes(new WorkforceChangeRequest($resumeCursor, $pageCursor, $limit ?? self::pageLimit()));
+                $this->assertPageIntact($connectionId, 'replay', $pageCursor, $page);
+                $tally['pages']++;
 
-                    continue;
+                foreach ($page->changes as $change) {
+                    if ($this->isSuperseded($connectionId, $change)) {
+                        $tally['superseded']++;
+
+                        continue;
+                    }
+
+                    match (true) {
+                        $change instanceof WorkforceUpsert => $this->applyRecord($connectionId, $change->record, $provenance, $tally),
+                        $change instanceof WorkforceDeactivation => $this->applyDeactivation($connectionId, $change, $provenance, $tally),
+                        $change instanceof WorkforceMerge => $this->queueMerge($connectionId, $change, $tally),
+                    };
                 }
 
-                match (true) {
-                    $change instanceof WorkforceUpsert => $this->applyRecord($connectionId, $change->record, $provenance, $tally),
-                    $change instanceof WorkforceDeactivation => $this->applyDeactivation($connectionId, $change, $provenance, $tally),
-                    $change instanceof WorkforceMerge => $this->queueMerge($connectionId, $change, $tally),
-                };
-            }
+                $pageCursor = $this->nextCursor($page, $pageCursor);
+            } while (! $page->complete);
 
-            $pageCursor = $this->nextCursor($page, $pageCursor);
-        } while (! $page->complete);
-
-        return $this->report($connectionId, $stream, 'replay', $tally, $currentVersion, $page->asOf, checkpointAdvanced: false);
+            return $this->report($connectionId, $stream, 'replay', $tally, $currentVersion, $page->asOf, checkpointAdvanced: false);
+        });
     }
 
     /**
@@ -608,7 +616,41 @@ final class WorkforceSyncRunner
             + $tally['deactivations'] + $tally['reactivations'] + $tally['mergesQueued'];
     }
 
-    /** @param  array<string, int>  $tally */
+    /** @param \Closure(array<string, int>&): WorkforceSyncReport $run */
+    private function auditPass(Actor $actor, int $connectionId, string $stream, string $pass, \Closure $run): WorkforceSyncReport
+    {
+        $started = hrtime(true);
+        $tally = $this->emptyTally();
+        $completed = false;
+
+        try {
+            $report = $run($tally);
+            $completed = true;
+
+            return $report;
+        } finally {
+            $this->audit->record(
+                $actor,
+                OperatorAuditOperation::SyncPass,
+                $connectionId,
+                null,
+                null,
+                [],
+                [
+                    'stream' => $stream,
+                    'pass' => $pass,
+                    'pages' => $tally['pages'],
+                    'upserts' => $tally['companies'] + $tally['organizationUnits'] + $tally['positions'] + $tally['employees'],
+                    'deactivations' => $tally['deactivations'],
+                    'refusals' => $tally['conflicts'],
+                    'duration_ms' => (int) ((hrtime(true) - $started) / 1_000_000),
+                    'completed' => $completed,
+                ],
+            );
+        }
+    }
+
+    /** @param array<string, int> $tally */
     private function report(int $connectionId, string $stream, string $pass, array $tally, int $version, \DateTimeImmutable $asOf, bool $checkpointAdvanced = true): WorkforceSyncReport
     {
         return new WorkforceSyncReport(
