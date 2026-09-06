@@ -34,4 +34,6 @@ reported red rather than guessed healthy.
 This command does not repair, retry, resolve, or delete anything.
 
 To re-send one failed webhook delivery by id, see
-[webhook-replay.md](webhook-replay.md).
+[webhook-replay.md](webhook-replay.md). To ping each adapter and report
+capability drift against the evidence register, see
+[connector-health-check.md](connector-health-check.md).
