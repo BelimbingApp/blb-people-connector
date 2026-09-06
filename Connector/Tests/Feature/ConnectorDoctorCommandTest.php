@@ -132,6 +132,7 @@ test('connector doctor records every run and lists only this tenants latest snap
             ->where('tenant_id', $tenantId)
             ->pluck('check')
             ->countBy()
+            ->sortKeys()
             ->all())
         ->toBe([
             'adapter_conformance' => 2,
@@ -151,6 +152,7 @@ test('connector doctor records every run and lists only this tenants latest snap
 });
 
 test('connector snapshot retention removes only this tenants rows older than thirty days', function (): void {
+    $this->travelTo('2026-09-06 12:00:00');
     [$tenantId, , $operator] = doctorTenant('Doctor Snapshot Retention Tenant');
     [$otherTenantId] = doctorTenant('Other Snapshot Retention Tenant');
     app(TenantContext::class)->set($tenantId);
