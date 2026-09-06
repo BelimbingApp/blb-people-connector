@@ -6,6 +6,7 @@ use App\Base\Authz\DTO\AuthorizationDecision;
 use App\Base\Authz\DTO\ResourceContext;
 use App\Base\Authz\Enums\AuthorizationReasonCode;
 use App\Base\Tenancy\Contracts\TenantContext;
+use App\Core\User\Models\User;
 use App\Domains\PeopleConnector\Connector\Contracts\ProviderAdapter;
 use App\Domains\PeopleConnector\Connector\Data\CapabilitySet;
 use App\Domains\PeopleConnector\Connector\Data\ExternalReference;
@@ -23,6 +24,7 @@ use App\Domains\PeopleConnector\Connector\Services\ProviderHealthStore;
 use App\Domains\PeopleConnector\Connector\Services\ProviderRegistry;
 use App\Domains\PeopleConnector\Connector\Services\ReconciliationIssueStore;
 use App\Domains\PeopleConnector\Connector\Services\WorkforceIdentityStore;
+use App\Domains\PeopleConnector\Connector\Testing\CompanyIsolationContract;
 use Illuminate\Support\Collection;
 use Livewire\Livewire;
 
@@ -174,3 +176,37 @@ it('refuses invalid decision input without resolving or changing the identity', 
     ['applyMerge', 'reviewReferences', 'not a reference'],
     ['remapIdentity', 'replacementExternalIds', ''],
 ]);
+
+it('refuses reconciliation actions for an actor outside the current tenant', function (string $action) {
+    [$component, $issue, $authorization, $connection, $oldIdentity] = operatorReconciliationFixture($action);
+    $tenantId = app(TenantContext::class)->currentTenantId();
+    $oldIdentityId = $oldIdentity->workforce_entity_id;
+    [$otherTenant] = createTenantWithCompany(['name' => 'Other reconciliation tenant']);
+    app(TenantContext::class)->set((int) $otherTenant->id);
+    $component->call($action, (int) $issue->id)->assertNotFound();
+    app(TenantContext::class)->set((int) $tenantId);
+    expect($issue->refresh()->status)->toBe(ReconciliationIssue::STATUS_OPEN)
+        ->and(app(WorkforceIdentityStore::class)->resolve((int) $connection->id, new ExternalReference('operator.test', WorkforceResourceType::Employee, 'OP-OLD'))->id)->toBe($oldIdentityId);
+})->with(['resolveIssue', 'applyMerge', 'remapIdentity']);
+
+it('refuses the reconciliation page on a sibling company connection', function () {
+    $isolation = CompanyIsolationContract::twoCompaniesInOneTenant();
+    app(TenantContext::class)->set((int) $isolation->tenantId);
+    operatorActionAuthorization();
+    $connections = app(ProviderConnectionStore::class);
+    $connection = $connections->activate((int) $connections->configure(ProviderScope::company((int) $isolation->alphaCompany->id), 'operator.test')->id);
+    $issue = app(ReconciliationIssueStore::class)->report(
+        (int) $connection->id,
+        'operator:review',
+        'sync_conflict',
+        new ReconciliationIssueDetails(reasonCode: 'review_required', relatedExternalId: 'OP-SURVIVOR'),
+        WorkforceResourceType::Employee->value,
+        'OP-OLD',
+        seenAt: now()->subHour(),
+    );
+    $betaUser = User::factory()->create(['company_id' => $isolation->betaCompany->id]);
+
+    Livewire::actingAs($betaUser)->test(Reconciliation::class, ['connectionId' => (int) $connection->id])->assertForbidden();
+
+    expect($issue->refresh()->status)->toBe(ReconciliationIssue::STATUS_OPEN);
+});
