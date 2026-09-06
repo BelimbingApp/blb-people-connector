@@ -21,3 +21,6 @@ to attribute stale webhook jobs to a tenant; an opaque queue backend is
 reported red rather than guessed healthy.
 
 This command does not repair, retry, resolve, or delete anything.
+
+To re-send one failed webhook delivery by id, see
+[webhook-replay.md](webhook-replay.md).

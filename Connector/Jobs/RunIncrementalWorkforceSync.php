@@ -5,6 +5,7 @@ namespace App\Domains\PeopleConnector\Connector\Jobs;
 use App\Base\Tenancy\Contracts\TenantContext;
 use App\Domains\PeopleConnector\Connector\Exceptions\WorkforceSyncException;
 use App\Domains\PeopleConnector\Connector\Models\ProviderConnection;
+use App\Domains\PeopleConnector\Connector\Models\WebhookDelivery;
 use App\Domains\PeopleConnector\Connector\Services\ProviderRegistry;
 use App\Domains\PeopleConnector\Connector\Services\SchedulerPrincipal;
 use App\Domains\PeopleConnector\Connector\Services\TenantConnectionLocator;
@@ -14,13 +15,16 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
+use Throwable;
 
 /**
  * Runs the ordinary incremental pass after a verified provider callback.
  *
  * Only stable tenant and connection identities cross the queue boundary. The
  * provider payload is intentionally absent: the callback is a trigger, never
- * a second projection-write path.
+ * a second projection-write path. When the trigger was a recorded webhook
+ * delivery (#223) the job reports the pass's fate back to that row so an
+ * operator can replay a failed one by id.
  */
 final class RunIncrementalWorkforceSync implements ShouldQueue
 {
@@ -34,6 +38,7 @@ final class RunIncrementalWorkforceSync implements ShouldQueue
     public function __construct(
         public readonly int $tenantId,
         public readonly int $connectionId,
+        public readonly ?int $deliveryId = null,
     ) {
         $this->onQueue(self::QUEUE);
     }
@@ -61,8 +66,22 @@ final class RunIncrementalWorkforceSync implements ShouldQueue
                 $provider,
                 $this->connectionId,
             );
+            $this->delivery()?->markDelivered();
+        } catch (Throwable $failure) {
+            $this->delivery()?->markFailed($failure);
+
+            throw $failure;
         } finally {
             $tenants->clear();
         }
+    }
+
+    private function delivery(): ?WebhookDelivery
+    {
+        if ($this->deliveryId === null) {
+            return null;
+        }
+
+        return WebhookDelivery::query()->forTenant($this->tenantId)->find($this->deliveryId);
     }
 }

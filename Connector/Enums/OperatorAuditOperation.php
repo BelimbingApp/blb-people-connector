@@ -12,6 +12,7 @@ enum OperatorAuditOperation: string
     case RetentionPurged = 'retention.purged';
     case SubjectHistoryExported = 'subject.history_exported';
     case SubjectHistoryImported = 'subject.history_imported';
+    case WebhookReplayed = 'webhook.replayed';
 
     public function label(): string
     {
@@ -23,6 +24,7 @@ enum OperatorAuditOperation: string
             self::RetentionPurged => 'Retention purge executed',
             self::SubjectHistoryExported => 'Workforce subject history exported',
             self::SubjectHistoryImported => 'Workforce subject history imported',
+            self::WebhookReplayed => 'Webhook delivery replayed',
         };
     }
 }

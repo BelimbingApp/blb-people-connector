@@ -79,6 +79,11 @@ return [
         // while, and of no interest a year later.
         'people_connector_connector_sync_checkpoint_events' => ['days' => 365, 'column' => 'created_at'],
 
+        // Webhook deliveries (#223): the trigger ledger an operator replays a
+        // failed delivery from. A year-old delivery is not worth re-sending;
+        // the replay itself is on the operator audit, which is kept.
+        'people_connector_connector_webhook_deliveries' => ['days' => 365, 'column' => 'received_at'],
+
         // Reconciliation issues age out from when they were resolved, so an
         // issue still open is never past retention however old it is.
         'people_connector_connector_reconciliation_issues' => ['days' => 365, 'column' => 'resolved_at'],

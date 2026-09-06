@@ -6,6 +6,7 @@ use App\Core\User\Models\User;
 use App\Domains\PeopleConnector\Connector\Data\ProviderScope;
 use App\Domains\PeopleConnector\Connector\Jobs\RunIncrementalWorkforceSync;
 use App\Domains\PeopleConnector\Connector\Models\ProviderConnection;
+use App\Domains\PeopleConnector\Connector\Models\WebhookDelivery;
 use App\Domains\PeopleConnector\Connector\Services\ProviderConnectionStore;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\DB;
@@ -81,14 +82,24 @@ test('a valid webhook queues one incremental pass without reading the payload as
     $response = $this->call(
         'POST',
         "/webhooks/people-connector/{$connection->id}",
-        server: webhookServerHeaders((int) $connection->id, $body, time()),
+        server: webhookServerHeaders((int) $connection->id, $body, time(), deliveryId: 'delivery-ledger-1'),
         content: $body,
     );
 
     $response->assertAccepted()->assertJson(['queued' => true]);
-    Bus::assertDispatched(RunIncrementalWorkforceSync::class, function (RunIncrementalWorkforceSync $job) use ($connection): bool {
+
+    // The delivery ledger (#223) records the trigger, so an operator can
+    // replay it by id later; the job carries the row id, not the payload.
+    $delivery = WebhookDelivery::query()->forTenant((int) $connection->tenant_id)->sole();
+    expect($delivery->connection_id)->toBe((int) $connection->id)
+        ->and($delivery->delivery_id)->toBe('delivery-ledger-1')
+        ->and($delivery->status)->toBe(WebhookDelivery::STATUS_ACCEPTED)
+        ->and($delivery->replayed_from_id)->toBeNull()
+        ->and(json_encode($delivery->getAttributes()))->not->toContain('payload-only');
+    Bus::assertDispatched(RunIncrementalWorkforceSync::class, function (RunIncrementalWorkforceSync $job) use ($connection, $delivery): bool {
         return $job->tenantId === (int) $connection->tenant_id
-            && $job->connectionId === (int) $connection->id;
+            && $job->connectionId === (int) $connection->id
+            && $job->deliveryId === (int) $delivery->id;
     });
     expect(DB::table('people_connector_connector_workforce_entities')->count())->toBe($before);
 });
