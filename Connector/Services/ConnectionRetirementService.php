@@ -7,6 +7,7 @@ use App\Base\Authz\DTO\Actor;
 use App\Base\Tenancy\Contracts\TenantContext;
 use App\Domains\PeopleConnector\Connector\Data\ConnectionRetirementReport;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceProvenance;
+use App\Domains\PeopleConnector\Connector\Enums\OperatorAuditOperation;
 use App\Domains\PeopleConnector\Connector\Exceptions\ConnectionRetirementException;
 use App\Domains\PeopleConnector\Connector\Exceptions\ProviderAuthorizationException;
 use App\Domains\PeopleConnector\Connector\Models\ProviderConnection;
@@ -35,6 +36,7 @@ final class ConnectionRetirementService
         private readonly TenantContext $tenantContext,
         private readonly AuthorizationService $authorization,
         private readonly TenantConnectionLocator $connections,
+        private readonly OperatorAuditLog $audit,
     ) {}
 
     public function retire(
@@ -72,7 +74,7 @@ final class ConnectionRetirementService
             ? \DateTimeImmutable::createFromInterface(now())
             : \DateTimeImmutable::createFromInterface($occurredAt);
 
-        return DB::transaction(function () use ($connectionId, $tenantId, $provenance, $retiredAt): ConnectionRetirementReport {
+        return DB::transaction(function () use ($actor, $connectionId, $tenantId, $provenance, $retiredAt): ConnectionRetirementReport {
             $connection = ProviderConnection::query()
                 ->forTenant($tenantId)
                 ->whereKey($connectionId)
@@ -100,12 +102,25 @@ final class ConnectionRetirementService
                 );
             }
 
+            $before = ['status' => $connection->status, 'provider_id' => $connection->provider_id, 'scope_key' => $connection->scope_key];
+
             $connection->fill([
                 'status' => ProviderConnection::STATUS_RETIRED,
                 'deactivated_at' => $retiredAt,
             ])->save();
 
             app(SchedulerPrincipalGrants::class)->revoke($connection);
+
+            $this->audit->record(
+                $actor,
+                OperatorAuditOperation::ConnectionRetired,
+                $connectionId,
+                null,
+                $provenance->reviewReference,
+                $before,
+                ['status' => ProviderConnection::STATUS_RETIRED, 'retired_at' => $retiredAt->format(DATE_ATOM), 'scheduler_grants_revoked' => true],
+                $retiredAt,
+            );
 
             return new ConnectionRetirementReport(
                 connectionId: $connectionId,

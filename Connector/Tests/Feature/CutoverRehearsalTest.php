@@ -126,7 +126,7 @@ function cutoverFixture(string $name): array
 
 function cutoverMapAll(array $f): void
 {
-    app(ProviderReplacementService::class)->remap($f['oldId'], $f['newId'], [
+    app(ProviderReplacementService::class)->remap($f['actor'], $f['oldId'], $f['newId'], [
         new ProviderIdentityMapping(
             cutoverRef(CUTOVER_OLD_PROVIDER, WorkforceResourceType::Employee, 'CUT-EMP-1'),
             cutoverRef(CUTOVER_NEW_PROVIDER, WorkforceResourceType::Employee, 'NEW-EMP-1'),
@@ -216,21 +216,22 @@ test('a rehearsal with nothing outstanding reports the cutover as clear', functi
         ->and($report->blocked())->toBeFalse();
 });
 
-test('a rehearsal writes nothing', function (): void {
+test('a rehearsal writes nothing but its own audit row', function (): void {
     $f = cutoverFixture('Cutover Dry Run Tenant');
     cutoverAuthz(true);
     $writes = [];
     DB::listen(function ($query) use (&$writes): void {
-        if (preg_match('/^\s*(insert into|update|delete from)\s/i', $query->sql) === 1) {
-            $writes[] = $query->sql;
+        if (preg_match('/^\s*(insert into|update|delete from)\s+"?([a-z0-9_]+)"?/i', $query->sql, $m) === 1) {
+            $writes[] = strtolower($m[2]);
         }
     });
 
     app(CutoverRehearsalService::class)->rehearse($f['actor'], $f['oldId'], $f['newId']);
 
     // The word rehearsal is the promise. A dry run that touched anything would
-    // be the one thing an operator ran it to avoid.
-    expect($writes)->toBe([]);
+    // be the one thing an operator ran it to avoid. The one row it does write
+    // is the record that the read happened (#199), never workforce state.
+    expect($writes)->toBe(['people_connector_connector_operator_audits']);
 });
 
 test('a rehearsal without the operator capability is refused', function (): void {
