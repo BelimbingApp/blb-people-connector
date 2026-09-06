@@ -97,5 +97,6 @@ return [
         // What a destructive run was authorized to remove is durable evidence,
         // so purge audit rows are themselves never purged.
         'people_connector_connector_retention_purge_audits' => ['days' => null],
+        'people_connector_connector_operator_audits' => ['days' => null],
     ],
 ];

@@ -8,6 +8,7 @@ use App\Base\Tenancy\Contracts\TenantContext;
 use App\Domains\PeopleConnector\Connector\Data\RetentionPurgeResult;
 use App\Domains\PeopleConnector\Connector\Data\RetentionReport;
 use App\Domains\PeopleConnector\Connector\Data\RetentionTableReport;
+use App\Domains\PeopleConnector\Connector\Enums\OperatorAuditOperation;
 use App\Domains\PeopleConnector\Connector\Exceptions\RetentionPolicyException;
 use Illuminate\Database\Query\Builder;
 use Illuminate\Support\Facades\DB;
@@ -22,6 +23,7 @@ final class RetentionPurger
         private readonly TenantContext $tenantContext,
         private readonly AuthorizationService $authorization,
         private readonly RetentionPolicy $retention,
+        private readonly OperatorAuditLog $audit,
     ) {}
 
     public function purge(
@@ -92,6 +94,17 @@ final class RetentionPurger
                 ],
                 array_values($report->tables),
             ));
+
+            $this->audit->record(
+                $actor,
+                OperatorAuditOperation::RetentionPurged,
+                null,
+                null,
+                $runId,
+                ['expected' => array_map(fn (RetentionTableReport $table): int => $table->expired, array_values($report->tables)), 'tables' => array_map(fn (RetentionTableReport $table): string => $table->table, array_values($report->tables))],
+                ['deleted' => array_values($deleted), 'total_deleted' => array_sum($deleted)],
+                $executedAt,
+            );
 
             return new RetentionPurgeResult($runId, $tenantId, $executedAt, $deleted);
         });

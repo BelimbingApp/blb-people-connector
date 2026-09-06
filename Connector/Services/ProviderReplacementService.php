@@ -2,9 +2,14 @@
 
 namespace App\Domains\PeopleConnector\Connector\Services;
 
+use App\Base\Authz\Contracts\AuthorizationService;
+use App\Base\Authz\DTO\Actor;
+use App\Base\Tenancy\Contracts\TenantContext;
 use App\Domains\PeopleConnector\Connector\Data\ProviderIdentityMapping;
 use App\Domains\PeopleConnector\Connector\Data\ProviderReplacementReport;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceProvenance;
+use App\Domains\PeopleConnector\Connector\Enums\OperatorAuditOperation;
+use App\Domains\PeopleConnector\Connector\Exceptions\ProviderAuthorizationException;
 use App\Domains\PeopleConnector\Connector\Exceptions\ProviderReplacementException;
 use Illuminate\Support\Facades\DB;
 
@@ -24,7 +29,12 @@ use Illuminate\Support\Facades\DB;
  */
 final class ProviderReplacementService
 {
+    public const REMAP_CAPABILITY = 'people-connector.identity.manage';
+
     public function __construct(
+        private readonly TenantContext $tenantContext,
+        private readonly AuthorizationService $authorization,
+        private readonly OperatorAuditLog $audit,
         private readonly TenantConnectionLocator $connections,
         private readonly WorkforceIdentityStore $identities,
     ) {}
@@ -35,12 +45,26 @@ final class ProviderReplacementService
      * @param  list<ProviderIdentityMapping>  $mappings
      */
     public function remap(
+        Actor $actor,
         int $fromConnectionId,
         int $toConnectionId,
         array $mappings,
         string $reviewReference,
         ?\DateTimeInterface $occurredAt = null,
     ): ProviderReplacementReport {
+        $tenantId = $this->tenantContext->requireTenantId();
+        $this->authorization->authorize($actor, self::REMAP_CAPABILITY);
+
+        // Plan 0001: mapping changes require scoped authority and audit. The
+        // actor is the scope; the row written below is the audit.
+        if ($actor->validate() !== null || $actor->tenantId !== $tenantId) {
+            throw new ProviderAuthorizationException(
+                providerId: 'connector',
+                operation: 'replace_provider',
+                message: 'A provider replacement requires an actor inside its tenant.',
+            );
+        }
+
         $reviewReference = trim($reviewReference);
 
         if ($reviewReference === '') {
@@ -82,7 +106,7 @@ final class ProviderReplacementService
         // One transaction for the whole mapping. A half-applied replacement
         // would leave an operator with part of a migration and no way to tell
         // which part, which is worse than not having started.
-        $remapped = DB::transaction(function () use ($fromConnectionId, $toConnectionId, $mappings, $provenance, $at): int {
+        $remapped = DB::transaction(function () use ($actor, $from, $to, $fromConnectionId, $toConnectionId, $mappings, $provenance, $reviewReference, $at): int {
             foreach ($mappings as $mapping) {
                 $this->identities->remapToConnection(
                     $fromConnectionId,
@@ -93,6 +117,19 @@ final class ProviderReplacementService
                     $provenance,
                 );
             }
+
+            // External ids are identifiers the operator already reviewed, not
+            // contents; the audit names them so a remap can be traced later.
+            $this->audit->record(
+                $actor,
+                OperatorAuditOperation::IdentitiesRemapped,
+                $fromConnectionId,
+                $toConnectionId,
+                $reviewReference,
+                ['provider_id' => $from->provider_id, 'scope_key' => $from->scope_key, 'external_ids' => array_map(fn (ProviderIdentityMapping $mapping): string => $mapping->from->externalId, $mappings)],
+                ['provider_id' => $to->provider_id, 'remapped' => count($mappings), 'external_ids' => array_map(fn (ProviderIdentityMapping $mapping): string => $mapping->to->externalId, $mappings)],
+                $at,
+            );
 
             return count($mappings);
         });

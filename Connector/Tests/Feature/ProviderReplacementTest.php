@@ -1,5 +1,11 @@
 <?php
 
+use App\Base\Authz\Contracts\AuthorizationService;
+use App\Base\Authz\DTO\Actor;
+use App\Base\Authz\DTO\AuthorizationDecision;
+use App\Base\Authz\DTO\ResourceContext;
+use App\Base\Authz\Enums\AuthorizationReasonCode;
+use App\Base\Authz\Enums\PrincipalType;
 use App\Base\Tenancy\Contracts\TenantContext;
 use App\Core\Company\Models\Company;
 use App\Domains\PeopleConnector\Connector\Data\ExternalReference;
@@ -10,12 +16,14 @@ use App\Domains\PeopleConnector\Connector\Data\WorkforceEmployee;
 use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
 use App\Domains\PeopleConnector\Connector\Exceptions\ConnectorRecordNotFoundException;
 use App\Domains\PeopleConnector\Connector\Exceptions\ExternalIdentityCollisionException;
+use App\Domains\PeopleConnector\Connector\Exceptions\ProviderAuthorizationException;
 use App\Domains\PeopleConnector\Connector\Exceptions\ProviderReplacementException;
 use App\Domains\PeopleConnector\Connector\Models\ExternalIdentity;
 use App\Domains\PeopleConnector\Connector\Services\ProviderConnectionStore;
 use App\Domains\PeopleConnector\Connector\Services\ProviderReplacementService;
 use App\Domains\PeopleConnector\Connector\Services\WorkforceIdentityStore;
 use App\Domains\PeopleConnector\Connector\Services\WorkforceProjectionStore;
+use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 
 /*
@@ -31,6 +39,37 @@ afterEach(function (): void {
 const REPLACEMENT_OLD_PROVIDER = 'test.replaced';
 
 const REPLACEMENT_NEW_PROVIDER = 'test.replacement';
+
+function replacementAuthz(bool $allow): void
+{
+    app()->instance(AuthorizationService::class, new class($allow) implements AuthorizationService
+    {
+        public function __construct(private bool $allow) {}
+
+        public function can(Actor $actor, string $capability, ?ResourceContext $resource = null, array $context = []): AuthorizationDecision
+        {
+            return $this->allow
+                ? AuthorizationDecision::allow()
+                : AuthorizationDecision::deny(AuthorizationReasonCode::DENIED_MISSING_CAPABILITY);
+        }
+
+        public function authorize(Actor $actor, string $capability, ?ResourceContext $resource = null, array $context = []): void
+        {
+            if (! $this->allow) {
+                throw new ProviderAuthorizationException(
+                    providerId: 'connector',
+                    operation: 'replace_provider',
+                    message: 'The actor lacks the connector identity management capability.',
+                );
+            }
+        }
+
+        public function filterAllowed(Actor $actor, string $capability, iterable $resources, array $context = []): Collection
+        {
+            return $this->allow ? collect($resources) : collect();
+        }
+    });
+}
 
 function replacementRef(string $providerId, WorkforceResourceType $type, string $id): ExternalReference
 {
@@ -90,12 +129,15 @@ function replacementFixture(string $name): array
     $new = $store->configure($scope, REPLACEMENT_NEW_PROVIDER);
     $newConnectionId = (int) $store->activate((int) $new->id)->id;
 
+    replacementAuthz(true);
+
     return [
         'tenantId' => $tenantId,
         'companyId' => (int) $company->id,
         'oldConnectionId' => $oldConnectionId,
         'newConnectionId' => $newConnectionId,
         'entityIds' => $entityIds,
+        'actor' => new Actor(PrincipalType::USER, 7001, (int) $company->id, tenantId: $tenantId),
     ];
 }
 
@@ -120,6 +162,7 @@ test('a reviewed replacement rebinds each identity to the new connection and kee
     $f = replacementFixture('Replacement Happy Tenant');
 
     $report = app(ProviderReplacementService::class)->remap(
+        $f['actor'],
         $f['oldConnectionId'],
         $f['newConnectionId'],
         [replacementMapping('OLD-EMP-1', 'NEW-EMP-1'), replacementMapping('OLD-EMP-2', 'NEW-EMP-2')],
@@ -141,6 +184,7 @@ test('a replacement without a review reference is refused', function (): void {
     $f = replacementFixture('Replacement Unapproved Tenant');
 
     expect(fn () => app(ProviderReplacementService::class)->remap(
+        $f['actor'],
         $f['oldConnectionId'],
         $f['newConnectionId'],
         [replacementMapping('OLD-EMP-1', 'NEW-EMP-1')],
@@ -157,6 +201,7 @@ test('a replacement onto a connection in another tenant is refused', function ()
     app(TenantContext::class)->set($f['tenantId']);
 
     expect(fn () => app(ProviderReplacementService::class)->remap(
+        $f['actor'],
         $f['oldConnectionId'],
         $other['newConnectionId'],
         [replacementMapping('OLD-EMP-1', 'NEW-EMP-1')],
@@ -171,6 +216,7 @@ test('a mapping that sends one identity to two references is refused', function 
     $f = replacementFixture('Replacement One To Many Tenant');
 
     expect(fn () => app(ProviderReplacementService::class)->remap(
+        $f['actor'],
         $f['oldConnectionId'],
         $f['newConnectionId'],
         [replacementMapping('OLD-EMP-1', 'NEW-EMP-1'), replacementMapping('OLD-EMP-1', 'NEW-EMP-2')],
@@ -185,6 +231,7 @@ test('a mapping that sends two identities to the same reference is refused', fun
     $f = replacementFixture('Replacement Many To One Tenant');
 
     expect(fn () => app(ProviderReplacementService::class)->remap(
+        $f['actor'],
         $f['oldConnectionId'],
         $f['newConnectionId'],
         [replacementMapping('OLD-EMP-1', 'NEW-EMP-1'), replacementMapping('OLD-EMP-2', 'NEW-EMP-1')],
@@ -199,6 +246,7 @@ test('an unknown source identity refuses the whole replacement and applies none 
     $f = replacementFixture('Replacement Atomicity Tenant');
 
     expect(fn () => app(ProviderReplacementService::class)->remap(
+        $f['actor'],
         $f['oldConnectionId'],
         $f['newConnectionId'],
         [replacementMapping('OLD-EMP-1', 'NEW-EMP-1'), replacementMapping('OLD-NOBODY', 'NEW-EMP-2')],
@@ -216,6 +264,7 @@ test('each remap writes an audit row naming both references', function (): void 
     $f = replacementFixture('Replacement Audit Tenant');
 
     app(ProviderReplacementService::class)->remap(
+        $f['actor'],
         $f['oldConnectionId'],
         $f['newConnectionId'],
         [replacementMapping('OLD-EMP-1', 'NEW-EMP-1')],
@@ -246,6 +295,7 @@ test('a replacement writes to no table the connector does not own', function ():
     });
 
     app(ProviderReplacementService::class)->remap(
+        $f['actor'],
         $f['oldConnectionId'],
         $f['newConnectionId'],
         [replacementMapping('OLD-EMP-1', 'NEW-EMP-1')],
@@ -267,6 +317,7 @@ test('an identity already handed over cannot be handed over a second time', func
     $f = replacementFixture('Replacement Twice Tenant');
     $replacements = app(ProviderReplacementService::class);
     $replacements->remap(
+        $f['actor'],
         $f['oldConnectionId'],
         $f['newConnectionId'],
         [replacementMapping('OLD-EMP-1', 'NEW-EMP-1')],
@@ -277,6 +328,7 @@ test('an identity already handed over cannot be handed over a second time', func
     // again must not quietly rebind it somewhere else; the replacement already
     // happened and a second destination is a different decision.
     expect(fn () => $replacements->remap(
+        $f['actor'],
         $f['oldConnectionId'],
         $f['newConnectionId'],
         [replacementMapping('OLD-EMP-1', 'NEW-EMP-9')],
@@ -300,6 +352,7 @@ test('a handover onto a connection in another company scope is refused', functio
     // company's connection is live alongside ours — and handing our entities to
     // it would attach them to the wrong company while reporting success.
     expect(fn () => app(ProviderReplacementService::class)->remap(
+        $f['actor'],
         $f['oldConnectionId'],
         $siblingConnectionId,
         [replacementMapping('OLD-EMP-1', 'NEW-EMP-1')],
@@ -309,4 +362,32 @@ test('a handover onto a connection in another company scope is refused', functio
     expect(replacementIdentity($f['tenantId'], $f['oldConnectionId'], 'OLD-EMP-1')?->state)
         ->toBe(ExternalIdentity::STATE_ACTIVE)
         ->and(replacementIdentity($f['tenantId'], $siblingConnectionId, 'NEW-EMP-1'))->toBeNull();
+});
+
+test('a replacement without the identity management capability is refused', function (): void {
+    $f = replacementFixture('Replacement Capability Tenant');
+    replacementAuthz(false);
+
+    expect(fn () => app(ProviderReplacementService::class)->remap(
+        $f['actor'],
+        $f['oldConnectionId'],
+        $f['newConnectionId'],
+        [replacementMapping('OLD-EMP-1', 'NEW-EMP-1')],
+        'replacement-2026-09-06',
+    ))->toThrow(ProviderAuthorizationException::class);
+
+    expect(replacementIdentity($f['tenantId'], $f['oldConnectionId'], 'OLD-EMP-1')?->state)->not->toBe(ExternalIdentity::STATE_REMAPPED);
+});
+
+test('a replacement by an actor from another tenant is refused', function (): void {
+    $f = replacementFixture('Replacement Actor Tenant');
+    $elsewhere = new Actor(PrincipalType::USER, 7002, $f['companyId'], tenantId: $f['tenantId'] + 1000);
+
+    expect(fn () => app(ProviderReplacementService::class)->remap(
+        $elsewhere,
+        $f['oldConnectionId'],
+        $f['newConnectionId'],
+        [replacementMapping('OLD-EMP-1', 'NEW-EMP-1')],
+        'replacement-2026-09-06',
+    ))->toThrow(ProviderAuthorizationException::class);
 });

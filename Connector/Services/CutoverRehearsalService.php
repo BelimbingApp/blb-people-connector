@@ -6,6 +6,7 @@ use App\Base\Authz\Contracts\AuthorizationService;
 use App\Base\Authz\DTO\Actor;
 use App\Base\Tenancy\Contracts\TenantContext;
 use App\Domains\PeopleConnector\Connector\Data\CutoverRehearsalReport;
+use App\Domains\PeopleConnector\Connector\Enums\OperatorAuditOperation;
 use App\Domains\PeopleConnector\Connector\Exceptions\ProviderAuthorizationException;
 use App\Domains\PeopleConnector\Connector\Models\ExternalIdentity;
 use App\Domains\PeopleConnector\Connector\Models\ReconciliationIssue;
@@ -27,6 +28,7 @@ final class CutoverRehearsalService
         private readonly AuthorizationService $authorization,
         private readonly TenantConnectionLocator $connections,
         private readonly WorkforceFreshnessPolicy $freshness,
+        private readonly OperatorAuditLog $audit,
     ) {}
 
     public function rehearse(Actor $actor, int $fromConnectionId, int $toConnectionId): CutoverRehearsalReport
@@ -47,7 +49,7 @@ final class CutoverRehearsalService
 
         $freshness = $this->freshness->for($toConnectionId);
 
-        return new CutoverRehearsalReport(
+        $report = new CutoverRehearsalReport(
             fromConnectionId: $fromConnectionId,
             toConnectionId: $toConnectionId,
             unmappedIdentities: $this->unmappedIdentities($tenantId, $fromConnectionId, $toConnectionId),
@@ -55,6 +57,21 @@ final class CutoverRehearsalService
             targetStaleReason: $freshness->staleReason,
             openIssues: $this->openIssues($tenantId, $fromConnectionId, $toConnectionId),
         );
+
+        // A rehearsal is a read of one tenant's sensitive workforce state; the
+        // read itself is what plan 0001 asks to record. This row is the only
+        // thing a rehearsal writes.
+        $this->audit->record(
+            $actor,
+            OperatorAuditOperation::CutoverRehearsed,
+            $fromConnectionId,
+            $toConnectionId,
+            null,
+            ['unmapped_identities' => $report->unmappedIdentities, 'target_stale' => $report->targetStale, 'open_issues' => $report->openIssues],
+            ['blocked' => $report->blocked(), 'blockers' => $report->blockers()],
+        );
+
+        return $report;
     }
 
     /**
