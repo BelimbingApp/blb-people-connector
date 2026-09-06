@@ -1,6 +1,7 @@
 <?php
 
 use App\Base\Tenancy\Contracts\TenantContext;
+use App\Core\User\Models\User;
 use App\Domains\PeopleConnector\Connector\Data\ProviderScope;
 use App\Domains\PeopleConnector\Connector\Jobs\RunIncrementalWorkforceSync;
 use App\Domains\PeopleConnector\Connector\Models\ProviderConnection;
@@ -132,8 +133,8 @@ test('a connection from another tenant is refused', function (): void {
     $connection = webhookConnection();
     enableWebhookFor($connection);
     [, $otherCompany] = createTenantWithCompany(['name' => 'Other Webhook Tenant']);
-    $otherTenantId = (int) $otherCompany->tenant_id;
-    app(TenantContext::class)->set($otherTenantId);
+    $otherUser = User::factory()->create(['company_id' => $otherCompany->id]);
+    $this->actingAs($otherUser);
     Bus::fake();
     $body = webhookBody();
 

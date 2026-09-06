@@ -27,8 +27,13 @@ final class WorkforceWebhookController
         }
 
         try {
+            $connection = $this->connections->getForWebhook($connectionId);
+
+            if ($this->tenants->currentTenantId() === null) {
+                $this->tenants->set((int) $connection->tenant_id);
+            }
+
             $tenantId = $this->tenants->requireTenantId();
-            $connection = $this->connections->get($connectionId);
 
             if ($connection->status !== ProviderConnection::STATUS_ACTIVE) {
                 throw new WebhookRefusal('unknown_connection', 'The provider connection was not found.');
