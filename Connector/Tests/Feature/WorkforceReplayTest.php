@@ -32,6 +32,8 @@ use App\Domains\PeopleConnector\Connector\Enums\CapabilityDelivery;
 use App\Domains\PeopleConnector\Connector\Enums\PeopleCapability;
 use App\Domains\PeopleConnector\Connector\Enums\ProviderHealthState;
 use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
+use App\Domains\PeopleConnector\Connector\Exceptions\ConnectorRecordNotFoundException;
+use App\Domains\PeopleConnector\Connector\Exceptions\UnsupportedProviderOperation;
 use App\Domains\PeopleConnector\Connector\Exceptions\WorkforceSyncException;
 use App\Domains\PeopleConnector\Connector\Models\ExternalIdentity;
 use App\Domains\PeopleConnector\Connector\Models\ReconciliationIssue;
@@ -40,6 +42,7 @@ use App\Domains\PeopleConnector\Connector\Models\WorkforceEmployeeProjection;
 use App\Domains\PeopleConnector\Connector\Services\ProviderConnectionStore;
 use App\Domains\PeopleConnector\Connector\Services\WorkforceFreshnessPolicy;
 use App\Domains\PeopleConnector\Connector\Services\WorkforceSyncRunner;
+use Illuminate\Auth\Access\AuthorizationException;
 use Illuminate\Support\Collection;
 
 /*
@@ -115,6 +118,8 @@ function replayProvider(array $bootstrapPages, array $changePages): ProviderAdap
     {
         public object $source;
 
+        public bool $declaresDirectory = true;
+
         public function __construct(array $bootstrapPages, array $changePages)
         {
             $this->source = new class($bootstrapPages, $changePages) implements BootstrapsWorkforce, ReadsWorkforceChanges
@@ -150,6 +155,10 @@ function replayProvider(array $bootstrapPages, array $changePages): ProviderAdap
 
         public function capabilities(): CapabilitySet
         {
+            if (! $this->declaresDirectory) {
+                return new CapabilitySet([]);
+            }
+
             return new CapabilitySet([
                 new CapabilityDeclaration(PeopleCapability::EmployeeDirectory, [
                     new CapabilityChannel(CapabilityDelivery::Synchronous, BootstrapsWorkforce::class),
@@ -448,4 +457,47 @@ test('a replay that only skipped superseded facts is not reported as empty', fun
     expect($report->seen())->toBe(1)
         ->and($report->empty())->toBeFalse()
         ->and($report->feedRefused())->toBeFalse();
+});
+
+test('replay refuses a foreign tenant connection before reading its feed', function (): void {
+    [$tenantId, $connectionId, $actor, $provider] = replayHistory('Replay Owner');
+    $before = replayCheckpoint($tenantId, $connectionId)->getAttributes();
+    $calls = $provider->source->calls;
+    [$foreignTenant] = createTenantWithCompany(['name' => 'Replay Foreign']);
+    app(TenantContext::class)->set((int) $foreignTenant->id);
+
+    expect(fn () => app(WorkforceSyncRunner::class)->replay($actor, $provider, $connectionId, 1))
+        ->toThrow(ConnectorRecordNotFoundException::class);
+
+    expect($provider->source->calls)->toBe($calls)
+        ->and(replayCheckpoint($tenantId, $connectionId)->getAttributes())->toBe($before);
+});
+
+test('replay refuses a provider without the directory capability before reading its feed', function (): void {
+    [$tenantId, $connectionId, $actor, $provider] = replayHistory('Replay Capability');
+    $before = replayCheckpoint($tenantId, $connectionId)->getAttributes();
+    $calls = $provider->source->calls;
+    $provider->declaresDirectory = false;
+
+    expect(fn () => app(WorkforceSyncRunner::class)->replay($actor, $provider, $connectionId, 1))
+        ->toThrow(UnsupportedProviderOperation::class);
+
+    expect($provider->source->calls)->toBe($calls)
+        ->and(replayCheckpoint($tenantId, $connectionId)->getAttributes())->toBe($before);
+});
+
+test('replay refuses an actor denied provider read permission without reading its feed', function (): void {
+    [$tenantId, $connectionId, $actor, $provider] = replayHistory('Replay Actor Denial');
+    $before = replayCheckpoint($tenantId, $connectionId)->getAttributes();
+    $calls = $provider->source->calls;
+    $denial = new AuthorizationException('Provider read denied.');
+    $authorization = Mockery::mock(AuthorizationService::class);
+    $authorization->shouldReceive('authorize')->andThrow($denial);
+    app()->instance(AuthorizationService::class, $authorization);
+
+    expect(fn () => app(WorkforceSyncRunner::class)->replay($actor, $provider, $connectionId, 1))
+        ->toThrow($denial);
+
+    expect($provider->source->calls)->toBe($calls)
+        ->and(replayCheckpoint($tenantId, $connectionId)->getAttributes())->toBe($before);
 });

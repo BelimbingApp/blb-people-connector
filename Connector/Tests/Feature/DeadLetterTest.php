@@ -28,6 +28,7 @@ use App\Domains\PeopleConnector\Connector\Enums\CapabilityDelivery;
 use App\Domains\PeopleConnector\Connector\Enums\PeopleCapability;
 use App\Domains\PeopleConnector\Connector\Enums\ProviderHealthState;
 use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
+use App\Domains\PeopleConnector\Connector\Exceptions\ConnectorRecordNotFoundException;
 use App\Domains\PeopleConnector\Connector\Exceptions\InvalidReconciliationIssueException;
 use App\Domains\PeopleConnector\Connector\Models\ReconciliationIssue;
 use App\Domains\PeopleConnector\Connector\Models\SyncCheckpoint;
@@ -375,4 +376,20 @@ test('parking a page closes the feed-refused issue it had been raising', functio
         ->where('kind', WorkforceSyncRunner::ISSUE_KIND_FEED_REFUSED)
         ->where('status', ReconciliationIssue::STATUS_OPEN)->count())->toBe(0)
         ->and(deadLetterIssues($f['tenantId'])->where('status', ReconciliationIssue::STATUS_OPEN))->toHaveCount(1);
+});
+
+test('dead letter requeue refuses a foreign tenant without closing its issue or clearing attempts', function (): void {
+    $f = deadLetterRefusingFeed('Dead Letter Owner');
+    config()->set('people-connector.sync.dead_letter_attempts', 1);
+    app(WorkforceSyncRunner::class)->incremental($f['actor'], $f['provider'], $f['connectionId']);
+    $parked = deadLetterIssues($f['tenantId'])->firstOrFail();
+    $before = deadLetterCheckpoint($f['tenantId'], $f['connectionId'])->getAttributes();
+    [$foreignTenant] = createTenantWithCompany(['name' => 'Dead Letter Foreign']);
+    app(TenantContext::class)->set((int) $foreignTenant->id);
+
+    expect(fn () => app(DeadLetterService::class)->requeue($f['connectionId'], (int) $parked->id, 'review-foreign'))
+        ->toThrow(ConnectorRecordNotFoundException::class);
+
+    expect($parked->refresh()->status)->toBe(ReconciliationIssue::STATUS_OPEN)
+        ->and(deadLetterCheckpoint($f['tenantId'], $f['connectionId'])->getAttributes())->toBe($before);
 });
