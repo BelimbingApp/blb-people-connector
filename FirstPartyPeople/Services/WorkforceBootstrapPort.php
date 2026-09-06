@@ -9,6 +9,7 @@ use App\Domains\PeopleConnector\Connector\Contracts\BootstrapsWorkforce;
 use App\Domains\PeopleConnector\Connector\Data\WorkforcePage;
 use App\Domains\PeopleConnector\Connector\Data\WorkforcePageRequest;
 use App\Domains\PeopleConnector\Connector\Exceptions\ProviderValidationException;
+use App\Domains\PeopleConnector\Connector\Support\WorkforcePageChecksum;
 use App\Domains\PeopleConnector\FirstPartyPeople\Exceptions\ForeignProviderReferenceException;
 use App\Domains\PeopleConnector\FirstPartyPeople\FirstPartyPeopleAdapter;
 
@@ -34,7 +35,7 @@ final readonly class WorkforceBootstrapPort implements BootstrapsWorkforce
                 limit: $request->limit,
             ));
 
-            return new WorkforcePage(
+            $translated = new WorkforcePage(
                 employees: array_map($this->translator->employee(...), $page->employees),
                 asOf: $page->asOf,
                 nextPageCursor: $page->nextPageCursor,
@@ -42,6 +43,18 @@ final readonly class WorkforceBootstrapPort implements BootstrapsWorkforce
                 complete: $page->complete,
                 companies: array_map($this->translator->company(...), $page->companies),
                 organizationUnits: array_map($this->translator->organizationUnit(...), $page->organizationUnits),
+            );
+
+            return new WorkforcePage(
+                employees: $translated->employees,
+                asOf: $translated->asOf,
+                nextPageCursor: $translated->nextPageCursor,
+                resumeCursor: $translated->resumeCursor,
+                complete: $translated->complete,
+                companies: $translated->companies,
+                organizationUnits: $translated->organizationUnits,
+                positions: $translated->positions,
+                checksum: WorkforcePageChecksum::of($translated),
             );
         } catch (BlbDataContractException $exception) {
             throw new ProviderValidationException(
