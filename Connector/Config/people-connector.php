@@ -28,6 +28,17 @@ return [
     ],
 
     /*
+     * Command reconciliation ([1009-c]). A provider absence after an unknown
+     * transport outcome is retryable, but it is not permission to retry
+     * forever. The final decision parks the idempotency key in the operator
+     * reconciliation queue instead of sending another blind attempt.
+     */
+    'command_reconciliation' => [
+        'max_attempts' => 3,
+        'backoff_seconds' => 60,
+    ],
+
+    /*
      * Retention per connector-owned table ([1012]). `days` is the period rows
      * are kept for, measured from `column`; null is indefinite and needs no
      * column, because "we keep this forever" reads no clock.
