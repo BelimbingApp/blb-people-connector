@@ -12,6 +12,7 @@ final readonly class ProviderConnectionMetadata
         public ?string $endpointOrigin = null,
         public ?int $integrationAccountId = null,
         public ?int $integrationConnectionId = null,
+        public ?WebhookDeliveryPolicy $deliveryPolicy = null,
     ) {
         if ($endpointOrigin !== null) {
             $parts = parse_url($endpointOrigin);
@@ -43,7 +44,7 @@ final readonly class ProviderConnectionMetadata
         }
     }
 
-    /** @return array<string, int|string> */
+    /** @return array<string, int|string|array{max_attempts: int, backoff_seconds: list<int>}> */
     public function toArray(): array
     {
         return array_filter([
@@ -51,6 +52,7 @@ final readonly class ProviderConnectionMetadata
             'endpoint_origin' => $this->endpointOrigin,
             'integration_account_id' => $this->integrationAccountId,
             'integration_connection_id' => $this->integrationConnectionId,
-        ], static fn (int|string|null $value): bool => $value !== null);
+            'webhook_delivery_policy' => $this->deliveryPolicy?->toArray(),
+        ], static fn (int|string|array|null $value): bool => $value !== null);
     }
 }

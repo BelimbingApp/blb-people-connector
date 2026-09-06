@@ -50,6 +50,10 @@ return [
         'delivery_id_ttl_seconds' => (int) env('PEOPLE_CONNECTOR_WEBHOOK_DELIVERY_TTL_SECONDS', 86400),
         'max_payload_bytes' => (int) env('PEOPLE_CONNECTOR_WEBHOOK_MAX_PAYLOAD_BYTES', 1048576),
         'secrets' => json_decode((string) env('PEOPLE_CONNECTOR_WEBHOOK_SECRETS', '{}'), true) ?: [],
+        'delivery_policy' => [
+            'max_attempts' => 3,
+            'backoff_seconds' => [60, 300],
+        ],
     ],
 
     /*
