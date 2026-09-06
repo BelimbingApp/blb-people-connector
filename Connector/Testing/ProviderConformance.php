@@ -18,6 +18,7 @@ final class ProviderConformance
         ProviderAdapter $provider,
         int $supportedContractMajor = 1,
         int $maximumBootstrapPages = 100,
+        ?callable $resolvePort = null,
     ): array {
         $violations = [];
         $descriptor = $provider->descriptor();
@@ -39,7 +40,9 @@ final class ProviderConformance
             return $violations;
         }
 
-        $conformanceAuthorization = ProviderPortAuthorization::forConformance($descriptor->id);
+        $conformanceAuthorization = $resolvePort === null
+            ? ProviderPortAuthorization::forConformance($descriptor->id)
+            : null;
 
         foreach ($provider->capabilities()->all() as $declaration) {
             foreach ($declaration->portContracts() as $contract) {
@@ -48,7 +51,9 @@ final class ProviderConformance
                 }
 
                 try {
-                    $port = $provider->resolvePort($contract, $conformanceAuthorization);
+                    $port = $resolvePort === null
+                        ? $provider->resolvePort($contract, $conformanceAuthorization)
+                        : $resolvePort($declaration->capability, $contract);
                 } catch (\Throwable) {
                     $violations[] = "port_resolution_failed:{$contract}";
 
