@@ -39,16 +39,28 @@ final class WorkforceWebhookController
                 throw new WebhookRefusal('unknown_connection', 'The provider connection was not found.');
             }
 
+            $body = $request->getContent();
+            $deliveryId = $request->header(WorkforceWebhookVerifier::DELIVERY_HEADER);
+
             $this->verifier->verify(
                 $connectionId,
-                $request->getContent(),
+                $body,
                 $request->header(WorkforceWebhookVerifier::TIMESTAMP_HEADER),
+                $deliveryId,
                 $request->header(WorkforceWebhookVerifier::SIGNATURE_HEADER),
             );
 
-            RunIncrementalWorkforceSync::dispatch($tenantId, $connectionId);
+            $this->verifier->enqueueOnce(
+                $connectionId,
+                (string) $deliveryId,
+                fn () => RunIncrementalWorkforceSync::dispatch($tenantId, $connectionId),
+            );
         } catch (ConnectorRecordNotFoundException|WebhookRefusal $refused) {
-            $status = $refused instanceof WebhookRefusal && $refused->reason === 'unconfigured' ? 503 : 403;
+            $status = match ($refused instanceof WebhookRefusal ? $refused->reason : null) {
+                'unconfigured' => 503,
+                'payload_too_large' => 413,
+                default => 403,
+            };
 
             return new JsonResponse(['refused' => $refused instanceof WebhookRefusal ? $refused->reason : 'unknown_connection'], $status);
         }
