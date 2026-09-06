@@ -93,5 +93,9 @@ return [
         // connection, so it lives and dies with the connection rather than
         // ageing out on a clock of its own.
         'people_connector_connector_provider_credentials' => ['days' => null],
+
+        // What a destructive run was authorized to remove is durable evidence,
+        // so purge audit rows are themselves never purged.
+        'people_connector_connector_retention_purge_audits' => ['days' => null],
     ],
 ];
