@@ -91,6 +91,10 @@ return [
         // the replay itself is on the operator audit, which is kept.
         'people_connector_connector_webhook_deliveries' => ['days' => 365, 'column' => 'received_at'],
 
+        // Scheduled operator health is deliberately short-lived. It is trend
+        // context, not an audit log; durable operator actions live elsewhere.
+        'people_connector_connector_doctor_snapshots' => ['days' => 30, 'column' => 'measured_at'],
+
         // Reconciliation issues age out from when they were resolved, so an
         // issue still open is never past retention however old it is.
         'people_connector_connector_reconciliation_issues' => ['days' => 365, 'column' => 'resolved_at'],

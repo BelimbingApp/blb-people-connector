@@ -6,6 +6,17 @@ Run all tenant-scoped connector health checks as a named operator:
 php artisan connector:doctor --tenant=7 --as=42
 ```
 
+Persist the same four tenant-scoped checks for scheduled operational history:
+
+```bash
+php artisan connector:doctor --tenant=7 --as=42 --record
+php artisan connector:doctor --tenant=7 --as=42 --history=7
+```
+
+History shows the latest snapshot per check inside the requested window. The
+existing `people-connector:retention-purge` command removes snapshots older
+than 30 days; another tenant's snapshots are never read or purged.
+
 The table reports adapter conformance for every configured provider, queued
 webhook-triggered syncs older than one hour, open reconciliation drift, and
 active identity mappings that no longer join to a compatible current entity

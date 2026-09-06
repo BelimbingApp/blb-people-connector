@@ -15,6 +15,8 @@ final class ConnectorDoctorCommand extends Command
     protected $signature = 'connector:doctor
                             {--tenant= : Tenant to inspect; defaults to the current tenant context}
                             {--as= : Id of the operator this inspection runs as}
+                            {--record : Persist this run as a tenant-scoped health snapshot}
+                            {--history= : List the latest recorded snapshot per check within this many days}
                             {--json : Emit machine-readable result JSON}';
 
     protected $description = 'Run the tenant-scoped connector operator health checks';
@@ -35,8 +37,32 @@ final class ConnectorDoctorCommand extends Command
             $tenants->set((int) $tenantId);
         }
 
+        $historyDays = $this->option('history');
+        if ($this->option('record') && $historyDays !== null) {
+            $this->error('--record and --history cannot be used together.');
+
+            return self::FAILURE;
+        }
+        if ($historyDays !== null && (! ctype_digit((string) $historyDays) || (int) $historyDays < 1)) {
+            $this->error('--history must be a positive number of days.');
+
+            return self::FAILURE;
+        }
+
         try {
-            $report = $doctor->inspect(Actor::forUser($operator));
+            $actor = Actor::forUser($operator);
+            if ($historyDays !== null) {
+                $checks = $doctor->history($actor, (int) $historyDays);
+                if ($this->option('json')) {
+                    $this->line(json_encode(['checks' => $checks], JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
+                } else {
+                    $this->table(['check', 'status', 'count', 'measured at'], $checks);
+                }
+
+                return self::SUCCESS;
+            }
+
+            $report = $this->option('record') ? $doctor->record($actor) : $doctor->inspect($actor);
         } catch (AuthorizationDeniedException|ProviderAuthorizationException $refusal) {
             $this->error($refusal->getMessage());
 
