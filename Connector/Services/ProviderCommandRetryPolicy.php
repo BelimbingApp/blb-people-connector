@@ -34,6 +34,10 @@ final readonly class ProviderCommandRetryPolicy
         }
 
         if (! $outcome->mayRetry()) {
+            if ($outcome->requiresReconciliation()) {
+                return $this->park($connectionId, $outcome, $attempt);
+            }
+
             return new CommandRetryDecision(false, $attempt, 0);
         }
 
@@ -41,11 +45,16 @@ final readonly class ProviderCommandRetryPolicy
             return new CommandRetryDecision(true, $attempt + 1, $backoffSeconds);
         }
 
-        $issue = $this->unknownOutcomes->record(
+        return $this->park(
             $connectionId,
             CommandOutcome::unknown($outcome->idempotencyKey),
+            $attempt,
         );
+    }
 
+    private function park(int $connectionId, CommandOutcome $outcome, int $attempt): CommandRetryDecision
+    {
+        $issue = $this->unknownOutcomes->record($connectionId, $outcome);
         if ($issue === null) {
             throw new \LogicException('An exhausted command retry must create an operator reconciliation issue.');
         }
