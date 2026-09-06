@@ -250,3 +250,40 @@ test('the http refusal names a reason code and never the refusal message', funct
     expect($response->getData(true))->toBe(['refused' => DelegatedAuthorityRefusal::WrongTenant->value])
         ->and($response->getContent())->not->toContain('42');
 });
+
+test('the in-process port enforces tenant and expiry for every command type', function (string $operation): void {
+    delegationSecret();
+    app(TenantContext::class)->set(41);
+    $port = app(AcceptsDelegatedCommands::class);
+    $now = new DateTimeImmutable;
+
+    $accepted = $port->accept(delegationAuthority([
+        'operation' => $operation,
+        'issuedAt' => $now->modify('-1 minute'),
+        'expiresAt' => $now->modify('+1 minute'),
+    ]), $operation);
+    expect($accepted->operation)->toBe($operation);
+
+    try {
+        $port->accept(delegationAuthority([
+            'operation' => $operation,
+            'issuedAt' => $now->modify('-10 minutes'),
+            'expiresAt' => $now->modify('-5 minutes'),
+        ]), $operation);
+        test()->fail("An expired {$operation} authority was accepted in process.");
+    } catch (DelegatedAuthorityException $refused) {
+        expect($refused->refusal)->toBe(DelegatedAuthorityRefusal::Expired);
+    }
+
+    try {
+        $port->accept(delegationAuthority([
+            'operation' => $operation,
+            'tenantId' => 42,
+            'issuedAt' => $now->modify('-1 minute'),
+            'expiresAt' => $now->modify('+1 minute'),
+        ]), $operation);
+        test()->fail("A wrong-tenant {$operation} authority was accepted in process.");
+    } catch (DelegatedAuthorityException $refused) {
+        expect($refused->refusal)->toBe(DelegatedAuthorityRefusal::WrongTenant);
+    }
+})->with(['employee.command.submit', 'employee.command.cancel']);
