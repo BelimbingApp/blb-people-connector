@@ -14,9 +14,11 @@ use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
 use App\Domains\PeopleConnector\Connector\Exceptions\ProviderAuthorizationException;
 use App\Domains\PeopleConnector\Connector\Exceptions\RetentionPolicyException;
 use App\Domains\PeopleConnector\Connector\Models\DomainModels;
+use App\Domains\PeopleConnector\Connector\Models\RetentionPurgeAudit;
 use App\Domains\PeopleConnector\Connector\Services\ProviderConnectionStore;
 use App\Domains\PeopleConnector\Connector\Services\ReconciliationIssueStore;
 use App\Domains\PeopleConnector\Connector\Services\RetentionPolicy;
+use App\Domains\PeopleConnector\Connector\Services\RetentionPurger;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
@@ -305,4 +307,91 @@ test('the shipped retention policy already covers every connector-owned table', 
     )));
 
     expect(array_diff($owned, array_keys($report->tables)))->toBe([]);
+});
+
+test('the purge deletes exactly the reported tenant rows and audits every policy table', function (): void {
+    $mine = retentionTenant('Retention Purge Tenant');
+    retentionTenant('Retention Purge Other Tenant');
+    app(TenantContext::class)->set($mine['tenantId']);
+    retentionAuthz(true);
+    retentionConfigureComplete([RETENTION_ISSUES_TABLE => ['days' => 365, 'column' => 'first_seen_at']]);
+    $reviewedAt = new DateTimeImmutable('2026-09-06T12:00:00+00:00');
+    $report = app(RetentionPolicy::class)->review($mine['actor'], $reviewedAt);
+
+    $purge = app(RetentionPurger::class)->purge($mine['actor'], $report, $reviewedAt);
+
+    expect($purge->deletedFor(RETENTION_ISSUES_TABLE))->toBe(1)
+        ->and(DB::table(RETENTION_ISSUES_TABLE)->where('tenant_id', $mine['tenantId'])->pluck('external_id')->all())
+        ->toBe(['NEW'])
+        ->and(DB::table(RETENTION_ISSUES_TABLE)->where('tenant_id', '!=', $mine['tenantId'])->count())->toBe(2)
+        ->and(RetentionPurgeAudit::query()->forTenant($mine['tenantId'])->where('run_id', $purge->runId)->count())
+        ->toBe(count($report->tables));
+
+    $audit = RetentionPurgeAudit::query()
+        ->forTenant($mine['tenantId'])
+        ->where('run_id', $purge->runId)
+        ->where('table_name', RETENTION_ISSUES_TABLE)
+        ->sole();
+
+    expect($audit->operator_user_id)->toBe($mine['actor']->id)
+        ->and($audit->expected_count)->toBe(1)
+        ->and($audit->deleted_count)->toBe(1)
+        ->and($audit->report_reviewed_at->equalTo($reviewedAt))->toBeTrue();
+});
+
+test('the purge refuses the whole run when live counts differ from the report', function (): void {
+    $f = retentionTenant('Retention Drift Tenant');
+    retentionAuthz(true);
+    retentionConfigureComplete([RETENTION_ISSUES_TABLE => ['days' => 365, 'column' => 'first_seen_at']]);
+    $reviewedAt = new DateTimeImmutable('2026-09-06T12:00:00+00:00');
+    $report = app(RetentionPolicy::class)->review($f['actor'], $reviewedAt);
+
+    app(ReconciliationIssueStore::class)->report(
+        $f['connectionId'],
+        'sync:employee:DRIFT',
+        'sync_conflict',
+        new ReconciliationIssueDetails(reasonCode: 'review_required'),
+        WorkforceResourceType::Employee->value,
+        'DRIFT',
+        seenAt: new DateTimeImmutable('2020-02-01T00:00:00+00:00'),
+    );
+
+    expect(fn () => app(RetentionPurger::class)->purge($f['actor'], $report, $reviewedAt))
+        ->toThrow(RetentionPolicyException::class, 're-run the retention report');
+
+    expect(DB::table(RETENTION_ISSUES_TABLE)->where('tenant_id', $f['tenantId'])->count())->toBe(3)
+        ->and(RetentionPurgeAudit::query()->forTenant($f['tenantId'])->count())->toBe(0);
+});
+
+test('the purge requires its separate operator capability', function (): void {
+    $f = retentionTenant('Retention Purge Denied Tenant');
+    retentionAuthz(true);
+    retentionConfigureComplete([RETENTION_ISSUES_TABLE => ['days' => 365, 'column' => 'first_seen_at']]);
+    $reviewedAt = new DateTimeImmutable('2026-09-06T12:00:00+00:00');
+    $report = app(RetentionPolicy::class)->review($f['actor'], $reviewedAt);
+    retentionAuthz(false);
+
+    expect(fn () => app(RetentionPurger::class)->purge($f['actor'], $report, $reviewedAt))
+        ->toThrow(ProviderAuthorizationException::class);
+
+    expect(DB::table(RETENTION_ISSUES_TABLE)->where('tenant_id', $f['tenantId'])->count())->toBe(2)
+        ->and(RetentionPurgeAudit::query()->forTenant($f['tenantId'])->count())->toBe(0);
+});
+
+test('the purge command shows the report before executing it as the named operator', function (): void {
+    $f = retentionTenant('Retention Purge Command Tenant');
+    retentionAuthz(true);
+    retentionConfigureComplete([RETENTION_ISSUES_TABLE => ['days' => 365, 'column' => 'first_seen_at']]);
+    $operator = User::factory()->create(['company_id' => $f['actor']->companyId]);
+
+    $this->artisan('people-connector:retention-purge', [
+        '--tenant' => $f['tenantId'],
+        '--as' => $operator->id,
+        '--yes' => true,
+    ])
+        ->expectsOutputToContain('Rows eligible for purge: 1.')
+        ->expectsOutputToContain('deleted 1 rows')
+        ->assertExitCode(0);
+
+    expect(DB::table(RETENTION_ISSUES_TABLE)->where('tenant_id', $f['tenantId'])->count())->toBe(1);
 });
