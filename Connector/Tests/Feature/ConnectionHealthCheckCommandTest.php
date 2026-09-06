@@ -6,7 +6,13 @@ use App\Base\Authz\DTO\AuthorizationDecision;
 use App\Base\Authz\DTO\ResourceContext;
 use App\Base\Tenancy\Contracts\TenantContext;
 use App\Core\User\Models\User;
+use App\Domains\PeopleConnector\Connector\Contracts\ProviderAdapter;
+use App\Domains\PeopleConnector\Connector\Data\CapabilitySet;
+use App\Domains\PeopleConnector\Connector\Data\ProviderDescriptor;
+use App\Domains\PeopleConnector\Connector\Data\ProviderHealth;
 use App\Domains\PeopleConnector\Connector\Data\ProviderScope;
+use App\Domains\PeopleConnector\Connector\Enums\ProviderHealthState;
+use App\Domains\PeopleConnector\Connector\Models\ProviderConnection;
 use App\Domains\PeopleConnector\Connector\Services\ProviderConnectionStore;
 use App\Domains\PeopleConnector\Connector\Services\ProviderRegistry;
 use App\Domains\PeopleConnector\FirstPartyPeople\FirstPartyPeopleAdapter;
@@ -68,6 +74,33 @@ function healthCheckTenant(string $name, string $provider = FirstPartyPeopleAdap
     $connection = $store->activate((int) $store->configure(ProviderScope::company((int) $company->id), $provider)->id);
 
     return ['tenantId' => (int) $tenant->id, 'operator' => User::factory()->create(['company_id' => $company->id]), 'connection' => (int) $connection->id];
+}
+
+/** A registered adapter that declares nothing and answers its health port as scripted. */
+function healthCheckAdapter(string $id, Closure $health): void
+{
+    if (app(ProviderRegistry::class)->find($id) !== null) {
+        return;
+    }
+    app(ProviderRegistry::class)->register(new class($id, $health) implements ProviderAdapter
+    {
+        public function __construct(private string $id, private Closure $health) {}
+
+        public function descriptor(): ProviderDescriptor
+        {
+            return new ProviderDescriptor($this->id, 'Health check test provider', '0.1.0', '1.0.0');
+        }
+
+        public function capabilities(): CapabilitySet
+        {
+            return new CapabilitySet([]);
+        }
+
+        public function health(): ProviderHealth
+        {
+            return ($this->health)();
+        }
+    });
 }
 
 function healthCheckRun(array $tenant, array $extra = []): int
@@ -157,4 +190,54 @@ test('the shipped register verifies exactly what the first-party adapter declare
         ->and($report['connections'][0]['unsupported_declared'])->toBe([])
         ->and($report['connections'][0]['withdrawn'])->toBe([])
         ->and(json_decode(file_get_contents($report['register']), true)['providers']['hr2000.sbg']['verified'])->toBe([]);
+});
+
+test('a health port that throws reads as unavailable, blocks, and its message reaches no output', function (): void {
+    healthCheckRegister(['test.throwing' => []]);
+    healthCheckAdapter('test.throwing', fn () => throw new RuntimeException('token=SECRET-IN-MESSAGE https://vendor.example/health?key=abc'));
+    $t = healthCheckTenant('Health Check Tenant', 'test.throwing');
+
+    expect(healthCheckRun($t))->toBe(1);
+    $output = Artisan::output();
+    expect($output)->toContain('unavailable', 'is unavailable')
+        ->and($output)->not->toContain('SECRET-IN-MESSAGE', 'vendor.example');
+
+    expect(healthCheckRun($t, ['--json' => true]))->toBe(1);
+    $report = json_decode(trim(Artisan::output()), true, flags: JSON_THROW_ON_ERROR);
+    expect($report['connections'][0]['health'])->toBe('unavailable')
+        ->and(json_encode($report))->not->toContain('SECRET-IN-MESSAGE');
+});
+
+test('an adapter answering unavailable blocks; degraded and unknown do not', function (): void {
+    healthCheckRegister(['test.unavailable' => [], 'test.degraded' => [], 'test.unknown' => []]);
+    healthCheckAdapter('test.unavailable', fn () => new ProviderHealth(ProviderHealthState::Unavailable, new DateTimeImmutable, message: 'down: token=SECRET'));
+    healthCheckAdapter('test.degraded', fn () => new ProviderHealth(ProviderHealthState::Degraded, new DateTimeImmutable));
+    healthCheckAdapter('test.unknown', fn () => new ProviderHealth(ProviderHealthState::Unknown, null));
+
+    foreach (['test.unavailable' => 1, 'test.degraded' => 0, 'test.unknown' => 0] as $provider => $exit) {
+        $t = healthCheckTenant('Health Tenant '.$provider, $provider);
+        expect(healthCheckRun($t))->toBe($exit, $provider)
+            ->and(Artisan::output())->not->toContain('SECRET');
+    }
+});
+
+test('a retired connection is not pinged and cannot block', function (): void {
+    healthCheckRegister(['test.throwing' => [], FirstPartyPeopleAdapter::ID => ['company_directory', 'organization_directory', 'employee_directory']]);
+    healthCheckAdapter('test.throwing', fn () => throw new RuntimeException('down'));
+    $t = healthCheckTenant('Health Check Tenant');
+    $retired = healthCheckTenant('Health Check Tenant', 'test.throwing');
+    ProviderConnection::query()->whereKey($retired['connection'])->update(['status' => ProviderConnection::STATUS_RETIRED, 'active_scope_key' => null]);
+
+    expect(healthCheckRun($t, ['--json' => true]))->toBe(0);
+    $report = json_decode(trim(Artisan::output()), true, flags: JSON_THROW_ON_ERROR);
+    expect(array_column($report['connections'], 'connection'))->toBe([$t['connection']]);
+});
+
+test('an unreadable register refuses the check rather than reading as no evidence', function (): void {
+    config()->set('people-connector.capability_register', sys_get_temp_dir().'/capability-register-missing-'.uniqid().'.json');
+    $t = healthCheckTenant('Health Check Tenant');
+
+    expect(healthCheckRun($t))->toBe(1)
+        ->and(Artisan::output())->toContain('cannot be read')
+        ->and(Artisan::output())->not->toContain('declares unverified');
 });
