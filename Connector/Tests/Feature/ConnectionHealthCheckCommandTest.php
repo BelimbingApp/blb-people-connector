@@ -65,7 +65,7 @@ function healthCheckRegister(array $verified): string
     return $path;
 }
 
-/** @return array{tenantId: int, operator: User, connection: int} */
+/** @return array{tenantId: int, companyId: int, operator: User, connection: int} */
 function healthCheckTenant(string $name, string $provider = FirstPartyPeopleAdapter::ID): array
 {
     [$tenant, $company] = createTenantWithCompany(['name' => $name]);
@@ -73,7 +73,7 @@ function healthCheckTenant(string $name, string $provider = FirstPartyPeopleAdap
     $store = app(ProviderConnectionStore::class);
     $connection = $store->activate((int) $store->configure(ProviderScope::company((int) $company->id), $provider)->id);
 
-    return ['tenantId' => (int) $tenant->id, 'operator' => User::factory()->create(['company_id' => $company->id]), 'connection' => (int) $connection->id];
+    return ['tenantId' => (int) $tenant->id, 'companyId' => (int) $company->id, 'operator' => User::factory()->create(['company_id' => $company->id]), 'connection' => (int) $connection->id];
 }
 
 /** A registered adapter that declares nothing and answers its health port as scripted. */
@@ -225,8 +225,9 @@ test('a retired connection is not pinged and cannot block', function (): void {
     healthCheckRegister(['test.throwing' => [], FirstPartyPeopleAdapter::ID => ['company_directory', 'organization_directory', 'employee_directory']]);
     healthCheckAdapter('test.throwing', fn () => throw new RuntimeException('down'));
     $t = healthCheckTenant('Health Check Tenant');
-    $retired = healthCheckTenant('Health Check Tenant', 'test.throwing');
-    ProviderConnection::query()->whereKey($retired['connection'])->update(['status' => ProviderConnection::STATUS_RETIRED, 'active_scope_key' => null]);
+    // Same tenant, same company: only the status keeps it out of the check.
+    $retired = app(ProviderConnectionStore::class)->configure(ProviderScope::company($t['companyId']), 'test.throwing');
+    ProviderConnection::query()->whereKey($retired->id)->update(['status' => ProviderConnection::STATUS_RETIRED, 'active_scope_key' => null]);
 
     expect(healthCheckRun($t, ['--json' => true]))->toBe(0);
     $report = json_decode(trim(Artisan::output()), true, flags: JSON_THROW_ON_ERROR);
