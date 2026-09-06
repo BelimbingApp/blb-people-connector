@@ -2,7 +2,7 @@
 
 namespace App\Domains\PeopleConnector\Connector\Enums;
 
-/** The operator actions on a connection that leave an audit row (#199). */
+/** Privileged connector operator actions that leave an audit row (#199). */
 enum OperatorAuditOperation: string
 {
     case SyncPass = 'sync.pass';
@@ -10,6 +10,7 @@ enum OperatorAuditOperation: string
     case IdentitiesRemapped = 'provider.identities_remapped';
     case CutoverRehearsed = 'cutover.rehearsed';
     case RetentionPurged = 'retention.purged';
+    case SubjectHistoryExported = 'subject.history_exported';
 
     public function label(): string
     {
@@ -19,6 +20,7 @@ enum OperatorAuditOperation: string
             self::IdentitiesRemapped => 'Identities remapped to a replacement connection',
             self::CutoverRehearsed => 'Cutover rehearsed',
             self::RetentionPurged => 'Retention purge executed',
+            self::SubjectHistoryExported => 'Workforce subject history exported',
         };
     }
 }
