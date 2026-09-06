@@ -25,7 +25,7 @@ use App\Domains\PeopleConnector\Connector\Models\WorkforceSnapshot;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
-/** Build a protected, non-importable DataShare package for one data subject. */
+/** Build a protected DataShare package for one data subject. */
 final class WorkforceSubjectExporter
 {
     public const EXPORT_CAPABILITY = 'people-connector.identity.export';
@@ -110,7 +110,7 @@ final class WorkforceSubjectExporter
             'format' => 'belimbing-data-share/people-connector-subject/v1',
             'package_id' => $packageId,
             'purpose' => 'data-subject-access-request',
-            'import_policy' => 'none',
+            'import_policy' => 'identity-history',
             'created_at' => now()->utc()->format(DATE_ATOM),
             'tenant_id' => $tenantId,
             'subject' => [

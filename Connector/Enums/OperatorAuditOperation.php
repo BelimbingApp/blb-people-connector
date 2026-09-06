@@ -11,6 +11,7 @@ enum OperatorAuditOperation: string
     case CutoverRehearsed = 'cutover.rehearsed';
     case RetentionPurged = 'retention.purged';
     case SubjectHistoryExported = 'subject.history_exported';
+    case SubjectHistoryImported = 'subject.history_imported';
 
     public function label(): string
     {
@@ -21,6 +22,7 @@ enum OperatorAuditOperation: string
             self::CutoverRehearsed => 'Cutover rehearsed',
             self::RetentionPurged => 'Retention purge executed',
             self::SubjectHistoryExported => 'Workforce subject history exported',
+            self::SubjectHistoryImported => 'Workforce subject history imported',
         };
     }
 }
