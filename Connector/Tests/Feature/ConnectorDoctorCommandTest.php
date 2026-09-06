@@ -101,3 +101,73 @@ test('connector doctor checks configured adapters that have no active connection
             'adapter_not_active:test.inactive-doctor',
         );
 });
+
+test('connector doctor records every run and lists only this tenants latest snapshot per check', function (): void {
+    [$tenantId, $companyId, $operator] = doctorTenant('Doctor History Tenant');
+    [$otherTenantId] = doctorTenant('Other Doctor History Tenant');
+
+    app(TenantContext::class)->set($tenantId);
+    app(ProviderRegistry::class)->register(app(FirstPartyPeopleAdapter::class));
+    $connections = app(ProviderConnectionStore::class);
+    $connection = $connections->configure(ProviderScope::company($companyId), FirstPartyPeopleAdapter::ID);
+    $connections->activate((int) $connection->id);
+
+    $this->travelTo('2026-09-06 10:00:00');
+    expect(Artisan::call('connector:doctor', ['--tenant' => $tenantId, '--as' => $operator->id, '--record' => true]))->toBe(0);
+
+    queueDoctorWebhook($tenantId, 3601);
+    $this->travelTo('2026-09-06 11:00:00');
+    expect(Artisan::call('connector:doctor', ['--tenant' => $tenantId, '--as' => $operator->id, '--record' => true]))->toBe(1);
+
+    DB::table('people_connector_connector_doctor_snapshots')->insert([
+        'tenant_id' => $otherTenantId,
+        'check' => 'foreign_only',
+        'status' => 'red',
+        'count' => 99,
+        'measured_at' => now(),
+    ]);
+
+    expect(DB::table('people_connector_connector_doctor_snapshots')->where('tenant_id', $tenantId)->count())->toBe(8)
+        ->and(DB::table('people_connector_connector_doctor_snapshots')
+            ->where('tenant_id', $tenantId)
+            ->pluck('check')
+            ->countBy()
+            ->sortKeys()
+            ->all())
+        ->toBe([
+            'adapter_conformance' => 2,
+            'identity_mappings' => 2,
+            'reconciliation_drift' => 2,
+            'webhook_deliveries' => 2,
+        ]);
+
+    expect(Artisan::call('connector:doctor', ['--tenant' => $tenantId, '--as' => $operator->id, '--history' => 1]))->toBe(0)
+        ->and(Artisan::output())->toContain('webhook_deliveries', 'red', '1')
+        ->not->toContain('foreign_only', '99');
+
+    expect(Artisan::call('connector:doctor', ['--tenant' => $tenantId, '--as' => $operator->id, '--history' => 1, '--json' => true]))->toBe(0);
+    $history = collect(json_decode(trim(Artisan::output()), true, flags: JSON_THROW_ON_ERROR)['checks']);
+    expect($history)->toHaveCount(4)
+        ->and($history->pluck('check')->unique())->toHaveCount(4);
+});
+
+test('connector snapshot retention removes only this tenants rows older than thirty days', function (): void {
+    $this->travelTo('2026-09-06 12:00:00');
+    [$tenantId, , $operator] = doctorTenant('Doctor Snapshot Retention Tenant');
+    [$otherTenantId] = doctorTenant('Other Snapshot Retention Tenant');
+    app(TenantContext::class)->set($tenantId);
+
+    DB::table('people_connector_connector_doctor_snapshots')->insert([
+        ['tenant_id' => $tenantId, 'check' => 'old', 'status' => 'green', 'count' => 0, 'measured_at' => now()->subDays(31)],
+        ['tenant_id' => $tenantId, 'check' => 'current', 'status' => 'green', 'count' => 0, 'measured_at' => now()->subDays(30)],
+        ['tenant_id' => $otherTenantId, 'check' => 'foreign_old', 'status' => 'green', 'count' => 0, 'measured_at' => now()->subDays(31)],
+    ]);
+
+    expect(Artisan::call('people-connector:retention-purge', [
+        '--tenant' => $tenantId,
+        '--as' => $operator->id,
+        '--yes' => true,
+    ]))->toBe(0)
+        ->and(DB::table('people_connector_connector_doctor_snapshots')->pluck('check')->sort()->values()->all())
+        ->toBe(['current', 'foreign_old']);
+});
