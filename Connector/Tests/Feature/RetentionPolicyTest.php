@@ -35,22 +35,23 @@ afterEach(function (): void {
     app(TenantContext::class)->clear();
 });
 
-function retentionAuthz(bool $allow): void
+/** @param list<string> $deniedCapabilities */
+function retentionAuthz(bool $allow, array $deniedCapabilities = []): void
 {
-    app()->instance(AuthorizationService::class, new class($allow) implements AuthorizationService
+    app()->instance(AuthorizationService::class, new class($allow, $deniedCapabilities) implements AuthorizationService
     {
-        public function __construct(private bool $allow) {}
+        public function __construct(private bool $allow, private array $deniedCapabilities) {}
 
         public function can(Actor $actor, string $capability, ?ResourceContext $resource = null, array $context = []): AuthorizationDecision
         {
-            return $this->allow
+            return $this->allow && ! in_array($capability, $this->deniedCapabilities, true)
                 ? AuthorizationDecision::allow()
                 : AuthorizationDecision::deny(AuthorizationReasonCode::DENIED_MISSING_CAPABILITY);
         }
 
         public function authorize(Actor $actor, string $capability, ?ResourceContext $resource = null, array $context = []): void
         {
-            if (! $this->allow) {
+            if (! $this->allow || in_array($capability, $this->deniedCapabilities, true)) {
                 throw new ProviderAuthorizationException(
                     providerId: 'connector',
                     operation: 'review_retention',
@@ -369,13 +370,28 @@ test('the purge requires its separate operator capability', function (): void {
     retentionConfigureComplete([RETENTION_ISSUES_TABLE => ['days' => 365, 'column' => 'first_seen_at']]);
     $reviewedAt = new DateTimeImmutable('2026-09-06T12:00:00+00:00');
     $report = app(RetentionPolicy::class)->review($f['actor'], $reviewedAt);
-    retentionAuthz(false);
+    retentionAuthz(true, [RetentionPurger::PURGE_CAPABILITY]);
 
     expect(fn () => app(RetentionPurger::class)->purge($f['actor'], $report, $reviewedAt))
         ->toThrow(ProviderAuthorizationException::class);
 
     expect(DB::table(RETENTION_ISSUES_TABLE)->where('tenant_id', $f['tenantId'])->count())->toBe(2)
         ->and(RetentionPurgeAudit::query()->forTenant($f['tenantId'])->count())->toBe(0);
+});
+
+test('the purge refuses a report from another tenant even when its counts match', function (): void {
+    $foreign = retentionTenant('Retention Foreign Report Tenant');
+    retentionAuthz(true);
+    retentionConfigureComplete([RETENTION_ISSUES_TABLE => ['days' => 365, 'column' => 'first_seen_at']]);
+    $reviewedAt = new DateTimeImmutable('2026-09-06T12:00:00+00:00');
+    $foreignReport = app(RetentionPolicy::class)->review($foreign['actor'], $reviewedAt);
+    $mine = retentionTenant('Retention Current Purge Tenant');
+
+    expect(fn () => app(RetentionPurger::class)->purge($mine['actor'], $foreignReport, $reviewedAt))
+        ->toThrow(RetentionPolicyException::class, 'current tenant');
+
+    expect(DB::table(RETENTION_ISSUES_TABLE)->where('tenant_id', $mine['tenantId'])->count())->toBe(2)
+        ->and(RetentionPurgeAudit::query()->forTenant($mine['tenantId'])->count())->toBe(0);
 });
 
 test('the purge command shows the report before executing it as the named operator', function (): void {
