@@ -325,6 +325,24 @@ test('an operator reads a connection audit listing, and a connection of another 
         ->toThrow(ViewException::class, 'not found in the current tenant');
 });
 
+test('the audit stream filter includes only the selected connection and stream', function (): void {
+    $a = operatorAuditFixture('Stream Audit Tenant');
+    $writer = app(OperatorAuditLog::class);
+    $matching = $writer->record($a['actor'], OperatorAuditOperation::SyncPass, $a['oldId'], null, null, [], ['stream' => 'workforce']);
+    $otherStream = $writer->record($a['actor'], OperatorAuditOperation::SyncPass, $a['oldId'], null, null, [], ['stream' => 'other']);
+    $writer->record($a['actor'], OperatorAuditOperation::SyncPass, $a['newId'], null, null, [], ['stream' => 'workforce']);
+    $user = User::factory()->create(['company_id' => $a['companyId']]);
+
+    Livewire::actingAs($user)->test(AuditIndex::class, ['connectionId' => $a['oldId']])
+        ->assertViewHas('rows', fn ($rows) => $rows->modelKeys() === [$otherStream->id, $matching->id])
+        ->set('stream', 'workforce')
+        ->assertViewHas('rows', fn ($rows) => $rows->modelKeys() === [$matching->id])
+        ->set('stream', 'missing')
+        ->assertViewHas('rows', fn ($rows) => $rows->isEmpty())
+        ->set('stream', '')
+        ->assertViewHas('rows', fn ($rows) => $rows->modelKeys() === [$otherStream->id, $matching->id]);
+});
+
 test('the audit listing is refused without the connection capability', function (): void {
     $a = operatorAuditFixture('Audit Listing Denied Tenant');
     $user = User::factory()->create(['company_id' => $a['companyId']]);

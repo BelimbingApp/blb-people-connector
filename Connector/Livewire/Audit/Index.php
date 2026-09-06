@@ -24,6 +24,8 @@ final class Index extends Component
 {
     public int $connectionId;
 
+    public string $stream = '';
+
     public function mount(int $connectionId): void
     {
         $this->connectionId = $connectionId;
@@ -41,6 +43,7 @@ final class Index extends Component
                 $query->where('connection_id', $connection->id)
                     ->orWhere('related_connection_id', $connection->id);
             })
+            ->when($this->stream !== '', fn ($query) => $query->where('after_summary->stream', $this->stream))
             ->orderByDesc('occurred_at')
             ->orderByDesc('id')
             ->limit(200)

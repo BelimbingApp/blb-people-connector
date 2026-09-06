@@ -4,9 +4,12 @@
         :subtitle="__('Operator actions recorded for connection :id (:provider, :scope), newest first.', ['id' => $connection->id, 'provider' => $connection->provider_id, 'scope' => $connection->scope_key])"
     />
 
+    <x-ui.input id="audit-stream" :label="__('Stream')" wire:model.live.debounce.300ms="stream"
+        :placeholder="__('All streams')" :help="__('Enter an exact stream name, or leave empty to show all activity.')" />
+
     @if ($rows->isEmpty())
         <x-ui.alert variant="info">
-            {{ __('No operator action has been recorded for this connection.') }}
+            {{ $stream === '' ? __('No operator action has been recorded for this connection.') : __('No activity matches this stream.') }}
         </x-ui.alert>
     @else
         <x-ui.table>
