@@ -41,9 +41,10 @@ it('keeps a distinct permission per capability and direction', function (): void
         }
     }
 
-    // Normalising the key must not collapse two capabilities into one gate:
-    // company-directory and company_directory would be the same permission if
-    // the separator were simply dropped.
+    // Normalising the key must not collapse two capabilities into one gate.
+    // No pair of the twelve cases collides today even with the separator
+    // deleted, so this case does not fail for that reason now — it is here so
+    // that a thirteenth case which would collide cannot be added quietly.
     expect($permissions)->toHaveCount(count(PeopleCapability::cases()) * 2)
         ->and(array_unique($permissions))->toHaveCount(count($permissions));
 });
