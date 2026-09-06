@@ -51,6 +51,21 @@ test('a settled delivered outcome never enters the retry budget', function (): v
         ->and($decision->isParked())->toBeFalse();
 });
 
+test('an unknown outcome is parked immediately instead of disappearing', function (): void {
+    [, $connectionId] = retryPolicyConnection();
+
+    $decision = app(ProviderCommandRetryPolicy::class)->decide(
+        $connectionId,
+        CommandOutcome::unknown('idem-1009-unknown'),
+        1,
+    );
+
+    expect($decision->retry)->toBeFalse()
+        ->and($decision->isParked())->toBeTrue()
+        ->and($decision->issue?->issue_key)->toBe('idem-1009-unknown')
+        ->and($decision->issue?->kind)->toBe('sync_unknown_outcome');
+});
+
 test('a retry attempt must be positive', function (): void {
     [, $connectionId] = retryPolicyConnection();
 
