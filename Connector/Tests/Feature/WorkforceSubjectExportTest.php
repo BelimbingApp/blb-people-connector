@@ -181,7 +181,7 @@ test('an operator exports only one workforce subject and redacts credential refe
 
     expect($package['format'])->toBe('belimbing-data-share/people-connector-subject/v1')
         ->and($package['subject']['workforce_entity_id'])->toBe($subject['entityId'])
-        ->and($package['import_policy'])->toBe('none')
+        ->and($package['import_policy'])->toBe('identity-history')
         ->and($encoded)->toContain($subject['externalId'])
         ->and($encoded)->not->toContain('SIBLING-IN-TENANT')
         ->and($encoded)->not->toContain('vault://subject-secret')

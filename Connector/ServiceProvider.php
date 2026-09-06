@@ -9,6 +9,7 @@ use App\Domains\PeopleConnector\Connector\Console\Commands\RetentionPurgeCommand
 use App\Domains\PeopleConnector\Connector\Console\Commands\RetentionReportCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\SyncWorkforceCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\WorkforceSubjectExportCommand;
+use App\Domains\PeopleConnector\Connector\Console\Commands\WorkforceSubjectImportCommand;
 use App\Domains\PeopleConnector\Connector\Contracts\AcceptsDelegatedCommands;
 use App\Domains\PeopleConnector\Connector\Services\DelegatedCommandPort;
 use App\Domains\PeopleConnector\Connector\Services\ProjectionWorkforceSubjectResolver;
@@ -69,6 +70,7 @@ class ServiceProvider extends BaseServiceProvider
                 RetentionReportCommand::class,
                 SyncWorkforceCommand::class,
                 WorkforceSubjectExportCommand::class,
+                WorkforceSubjectImportCommand::class,
             ]);
         }
     }

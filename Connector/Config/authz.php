@@ -24,6 +24,7 @@ return [
         'people-connector.connection.manage',
         'people-connector.identity.manage',
         'people-connector.identity.export',
+        'people-connector.identity.import',
         'people-connector.retention.review',
         'people-connector.retention.purge',
         'people-connector.support.break-glass',
