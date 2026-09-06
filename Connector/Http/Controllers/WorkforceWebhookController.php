@@ -9,6 +9,7 @@ use App\Domains\PeopleConnector\Connector\Jobs\RunIncrementalWorkforceSync;
 use App\Domains\PeopleConnector\Connector\Models\ProviderConnection;
 use App\Domains\PeopleConnector\Connector\Models\WebhookDelivery;
 use App\Domains\PeopleConnector\Connector\Services\TenantConnectionLocator;
+use App\Domains\PeopleConnector\Connector\Services\WebhookReceiptLedger;
 use App\Domains\PeopleConnector\Connector\Services\WorkforceWebhookVerifier;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -19,6 +20,7 @@ final class WorkforceWebhookController
         private readonly TenantContext $tenants,
         private readonly TenantConnectionLocator $connections,
         private readonly WorkforceWebhookVerifier $verifier,
+        private readonly WebhookReceiptLedger $receipts,
     ) {}
 
     public function __invoke(Request $request, int $connectionId): JsonResponse
@@ -51,8 +53,12 @@ final class WorkforceWebhookController
                 $request->header(WorkforceWebhookVerifier::SIGNATURE_HEADER),
             );
 
-            $this->verifier->enqueueOnce(
-                $connectionId,
+            // Idempotency ledger (#227): a delivery id this tenant already
+            // accepted from this provider is acknowledged and skipped, never
+            // run twice. The ledger row is the reservation.
+            $accepted = $this->receipts->acceptOnce(
+                $tenantId,
+                $connection,
                 (string) $deliveryId,
                 function () use ($tenantId, $connectionId, $deliveryId): void {
                     // The row is the operator's handle for a replay (#223); it
@@ -67,6 +73,10 @@ final class WorkforceWebhookController
                     RunIncrementalWorkforceSync::dispatch($tenantId, $connectionId, (int) $delivery->id);
                 },
             );
+
+            if (! $accepted) {
+                return new JsonResponse(['acknowledged' => true, 'skipped' => 'duplicate_delivery'], 200);
+            }
         } catch (ConnectorRecordNotFoundException|WebhookRefusal $refused) {
             $status = match ($refused instanceof WebhookRefusal ? $refused->reason : null) {
                 'unconfigured' => 503,

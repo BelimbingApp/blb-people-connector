@@ -7,9 +7,10 @@ php artisan connector:doctor --tenant=7 --as=42
 ```
 
 The table reports adapter conformance for every configured provider, queued
-webhook-triggered syncs older than one hour, open reconciliation drift, and
+webhook-triggered syncs older than one hour, open reconciliation drift,
 active identity mappings that no longer join to a compatible current entity
-and connection. A provider without an active connection is red because its
+and connection, plus an informational `webhook_duplicates` row: inbound
+deliveries acknowledged as duplicates in the last seven days (#227), never red. A provider without an active connection is red because its
 ports cannot be exercised. Any red row makes the command exit non-zero. Use
 `--json` for automation.
 

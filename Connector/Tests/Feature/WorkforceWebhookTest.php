@@ -7,7 +7,9 @@ use App\Domains\PeopleConnector\Connector\Data\ProviderScope;
 use App\Domains\PeopleConnector\Connector\Jobs\RunIncrementalWorkforceSync;
 use App\Domains\PeopleConnector\Connector\Models\ProviderConnection;
 use App\Domains\PeopleConnector\Connector\Models\WebhookDelivery;
+use App\Domains\PeopleConnector\Connector\Models\WebhookReceipt;
 use App\Domains\PeopleConnector\Connector\Services\ProviderConnectionStore;
+use App\Domains\PeopleConnector\Connector\Services\WebhookReceiptLedger;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
@@ -17,7 +19,6 @@ afterEach(function (): void {
     config()->set('people-connector.webhook.enabled', false);
     config()->set('people-connector.webhook.secrets', []);
     config()->set('people-connector.webhook.max_payload_bytes', 1048576);
-    config()->set('people-connector.webhook.delivery_id_ttl_seconds', 86400);
 });
 
 function webhookConnection(string $provider = 'test.webhook'): ProviderConnection
@@ -172,19 +173,68 @@ test('a connection from another tenant is refused', function (): void {
     Bus::assertNothingDispatched();
 });
 
-test('a replayed delivery id is refused without enqueueing a second pass', function (): void {
+test('a replayed delivery id is acknowledged and skipped: one pass, one delivery, one receipt counting the duplicate', function (): void {
     $connection = webhookConnection();
     enableWebhookFor($connection);
     Bus::fake();
     $body = webhookBody();
     $headers = webhookServerHeaders((int) $connection->id, $body, time(), deliveryId: 'delivery-replay-1');
+    $tenantId = (int) $connection->tenant_id;
 
     $this->call('POST', "/webhooks/people-connector/{$connection->id}", server: $headers, content: $body)
-        ->assertAccepted();
+        ->assertAccepted()->assertJson(['queued' => true]);
     $this->call('POST', "/webhooks/people-connector/{$connection->id}", server: $headers, content: $body)
-        ->assertForbidden()
-        ->assertJson(['refused' => 'replayed_delivery']);
+        ->assertOk()->assertJson(['acknowledged' => true, 'skipped' => 'duplicate_delivery']);
+    $this->call('POST', "/webhooks/people-connector/{$connection->id}", server: $headers, content: $body)
+        ->assertOk();
 
+    Bus::assertDispatchedTimes(RunIncrementalWorkforceSync::class, 1);
+    expect(WebhookDelivery::query()->forTenant($tenantId)->count())->toBe(1);
+    $receipt = WebhookReceipt::query()->forTenant($tenantId)->sole();
+    expect($receipt->delivery_id)->toBe('delivery-replay-1')
+        ->and($receipt->provider_id)->toBe('test.webhook')
+        ->and($receipt->connection_id)->toBe((int) $connection->id)
+        ->and($receipt->duplicate_count)->toBe(2)
+        ->and($receipt->last_duplicate_at)->not->toBeNull();
+});
+
+test('the same delivery id sent to another tenant is that tenant\'s own first delivery, not a duplicate', function (): void {
+    $alpha = webhookConnection();
+    $beta = webhookConnection('test.webhook');
+    enableWebhookFor($alpha);
+    enableWebhookFor($beta);
+    Bus::fake();
+    $body = webhookBody();
+
+    foreach ([$alpha, $beta] as $connection) {
+        app(TenantContext::class)->clear();
+        $headers = webhookServerHeaders((int) $connection->id, $body, time(), deliveryId: 'delivery-shared-1');
+        $this->call('POST', "/webhooks/people-connector/{$connection->id}", server: $headers, content: $body)
+            ->assertAccepted()->assertJson(['queued' => true]);
+    }
+
+    Bus::assertDispatchedTimes(RunIncrementalWorkforceSync::class, 2);
+    expect(WebhookReceipt::query()->forTenant((int) $alpha->tenant_id)->where('delivery_id', 'delivery-shared-1')->sole()->duplicate_count)->toBe(0)
+        ->and(WebhookReceipt::query()->forTenant((int) $beta->tenant_id)->where('delivery_id', 'delivery-shared-1')->sole()->duplicate_count)->toBe(0);
+});
+
+test('a delivery whose enqueue fails releases its receipt so the provider retry is processed', function (): void {
+    $connection = webhookConnection();
+    enableWebhookFor($connection);
+    Bus::fake();
+    $body = webhookBody();
+    $headers = webhookServerHeaders((int) $connection->id, $body, time(), deliveryId: 'delivery-retry-1');
+
+    // First arrival: the connection is retired between verification and
+    // enqueue is not reachable from outside, so the failure is simulated at
+    // the ledger: a receipt whose work throws must not survive.
+    $ledger = app(WebhookReceiptLedger::class);
+    expect(fn () => $ledger->acceptOnce((int) $connection->tenant_id, $connection, 'delivery-retry-1', fn () => throw new RuntimeException('queue down')))
+        ->toThrow(RuntimeException::class);
+    expect(WebhookReceipt::query()->forTenant((int) $connection->tenant_id)->count())->toBe(0);
+
+    $this->call('POST', "/webhooks/people-connector/{$connection->id}", server: $headers, content: $body)
+        ->assertAccepted()->assertJson(['queued' => true]);
     Bus::assertDispatchedTimes(RunIncrementalWorkforceSync::class, 1);
 });
 

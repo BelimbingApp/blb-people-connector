@@ -27,6 +27,7 @@ final class ConnectorDoctor
         private readonly ProviderRegistry $registry,
         private readonly ProviderPortResolver $ports,
         private readonly SchedulerPrincipal $principals,
+        private readonly WebhookReceiptLedger $receipts,
     ) {}
 
     public function inspect(Actor $actor): ConnectorDoctorReport
@@ -47,6 +48,9 @@ final class ConnectorDoctor
             $this->row('webhook_deliveries', $stale, $staleDetail),
             $this->row('reconciliation_drift', $drift, "{$drift} open"),
             $this->row('identity_mappings', $unresolved, "{$unresolved} unresolved"),
+            // Informational (#227): a duplicate acknowledged is a retry that did
+            // no harm, so the row never turns the doctor red.
+            ['check' => 'webhook_duplicates', 'status' => 'green', 'detail' => $this->receipts->duplicatesSkipped($tenantId).' skipped in 7 days'],
         ]);
     }
 

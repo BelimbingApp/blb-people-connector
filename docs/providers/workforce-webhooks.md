@@ -24,12 +24,17 @@ Use the exact `X-People-Connector-Delivery` value as `{deliveryId}`. The header
 is covered by the signature and must not be regenerated after signing.
 
 The timestamp must be within `PEOPLE_CONNECTOR_WEBHOOK_TOLERANCE_SECONDS` of
-the connector clock (default: 300 seconds). The connector remembers each
-accepted delivery id for `PEOPLE_CONNECTOR_WEBHOOK_DELIVERY_TTL_SECONDS`
-(default: 86,400 seconds); this value must be at least the timestamp tolerance.
-Reusing an accepted delivery id for the same connection is refused. Payloads
-larger than `PEOPLE_CONNECTOR_WEBHOOK_MAX_PAYLOAD_BYTES` (default: 1,048,576
-bytes) are also refused before dispatch.
+the connector clock (default: 300 seconds). Payloads larger than
+`PEOPLE_CONNECTOR_WEBHOOK_MAX_PAYLOAD_BYTES` (default: 1,048,576 bytes) are
+refused before dispatch.
+
+Each accepted delivery id is recorded in an idempotency ledger keyed by
+tenant, provider and delivery id, kept for seven days. A second arrival of
+the same signed delivery within that window is acknowledged with `200`
+(`{"acknowledged": true, "skipped": "duplicate_delivery"}`) and not run
+again; the count of such duplicates is the `webhook_duplicates` row of
+`connector:doctor`. The same delivery id sent to another tenant's connection
+is that tenant's own first delivery.
 
 A valid request returns `202` and queues the ordinary incremental workforce
 pass for that connection. The job receives only the tenant and connection ids;
