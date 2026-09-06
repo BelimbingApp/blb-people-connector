@@ -5,6 +5,7 @@ use App\Base\Authz\DTO\Actor;
 use App\Base\Authz\DTO\AuthorizationDecision;
 use App\Base\Authz\DTO\ResourceContext;
 use App\Base\Tenancy\Contracts\TenantContext;
+use App\Core\Company\Models\Company;
 use App\Core\User\Models\User;
 use App\Domains\PeopleConnector\Connector\Data\ExternalReference;
 use App\Domains\PeopleConnector\Connector\Data\ProviderScope;
@@ -71,6 +72,19 @@ test('identity audit trail exits non-zero for an external id outside the operato
     ]))->toBe(1)
         ->and(Artisan::output())->toContain('was not found in the current tenant')
         ->not->toContain('Foreign Only Audit Tenant');
+});
+
+test('identity audit trail refuses an operator from another company of the same tenant', function (): void {
+    $target = identityAuditFixture('Shared Audit Tenant', 'SHARED-ID', withHistory: false);
+    $otherCompany = Company::factory()->create(['tenant_id' => $target['tenantId']]);
+    $outsider = User::factory()->create(['company_id' => $otherCompany->id]);
+
+    expect(Artisan::call('connector:identity:audit-trail', [
+        'external-id' => 'SHARED-ID',
+        '--tenant' => $target['tenantId'],
+        '--as' => $outsider->id,
+    ]))->toBe(1)
+        ->and(Artisan::output())->toContain('must belong to the identity tenant and company');
 });
 
 /** @return array{tenantId: int, operator: User} */
