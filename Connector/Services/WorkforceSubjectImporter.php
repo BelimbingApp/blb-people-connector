@@ -55,18 +55,30 @@ final class WorkforceSubjectImporter
         if (! is_array($entitySource) || ! is_int($sourceEntityId = $entitySource['id'] ?? null) || ($package['subject']['workforce_entity_id'] ?? null) !== $sourceEntityId) {
             throw new WorkforceSubjectImportException('The subject manifest does not identify its one exported entity.');
         }
+        $sourceConnections = [];
         foreach ($identities as $identity) {
             if (! is_array($identity)
+                || ! is_int($identity['id'] ?? null)
+                || ! is_int($identity['connection_id'] ?? null)
                 || ($identity['provider_id'] ?? null) !== $connection->provider_id
                 || ($identity['workforce_entity_id'] ?? null) !== $sourceEntityId
                 || ($identity['resource_type'] ?? null) !== ($entitySource['resource_type'] ?? null)
                 || ! is_string($identity['external_id'] ?? null)) {
                 throw new WorkforceSubjectImportException('Every exported identity must belong to the subject and match the target provider.');
             }
+            $sourceConnections[$identity['id']] = $identity['connection_id'];
+        }
+        if (count($sourceConnections) !== count($identities)) {
+            throw new WorkforceSubjectImportException('The subject package repeats an identity id.');
         }
         foreach ($snapshots as $snapshot) {
-            if (! is_array($snapshot) || ($snapshot['workforce_entity_id'] ?? null) !== $sourceEntityId) {
-                throw new WorkforceSubjectImportException('Every exported history row must belong to the subject.');
+            $sourceIdentity = is_array($snapshot) ? ($snapshot['external_identity_id'] ?? null) : null;
+            $sourceConnection = is_array($snapshot) ? ($snapshot['connection_id'] ?? null) : null;
+            if (! is_array($snapshot)
+                || ($snapshot['workforce_entity_id'] ?? null) !== $sourceEntityId
+                || ($snapshot['resource_type'] ?? null) !== ($entitySource['resource_type'] ?? null)
+                || ($sourceIdentity === null ? ! in_array($sourceConnection, $sourceConnections, true) : ($sourceConnections[$sourceIdentity] ?? null) !== $sourceConnection)) {
+                throw new WorkforceSubjectImportException('Every exported history row must belong to a represented subject identity and connection.');
             }
         }
 

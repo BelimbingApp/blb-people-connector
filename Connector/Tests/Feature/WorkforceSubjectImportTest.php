@@ -78,7 +78,14 @@ test('an operator imports one exported identity history into the current tenant 
 
     $target = subjectImportTenant('Import Target', 'test.subject-import');
     $incoming = app(DataSharePrivateStorage::class)->incomingPath($export->packageId);
-    Storage::disk('local')->put($incoming, Storage::disk('local')->get($export->path));
+    $contents = Storage::disk('local')->get($export->path);
+    $tampered = json_decode($contents, true, flags: JSON_THROW_ON_ERROR);
+    $tampered['tables'][(new WorkforceSnapshot)->getTable()][0]['connection_id'] += 10_000;
+    Storage::disk('local')->put($incoming, json_encode($tampered, JSON_THROW_ON_ERROR));
+    expect(fn () => app(WorkforceSubjectImporter::class)->import($target['actor'], $target['connection'], $export->packageId))
+        ->toThrow(WorkforceSubjectImportException::class, 'represented subject identity and connection');
+    expect(WorkforceEntity::query()->forTenant($target['tenant'])->count())->toBe(0);
+    Storage::disk('local')->put($incoming, $contents);
     $operator = User::factory()->create(['company_id' => $target['company']]);
     expect(Artisan::call('connector:identity-import', [
         'package' => $export->packageId,
