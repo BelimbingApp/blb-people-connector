@@ -11,11 +11,9 @@ return new class extends Migration
     use IncubatingSchema;
     use RegistersTables;
 
-    private string $table = 'people_connector_connector_retention_purge_audits';
-
     public function up(): void
     {
-        Schema::create($this->table, function (Blueprint $table): void {
+        Schema::create('people_connector_connector_retention_purge_audits', function (Blueprint $table): void {
             $table->id();
             $table->unsignedBigInteger('tenant_id');
             $table->uuid('run_id');
@@ -35,12 +33,12 @@ return new class extends Migration
                 ->references('id')->on('tenants')->restrictOnDelete();
         });
 
-        $this->registerTable($this->table);
+        $this->registerTable('people_connector_connector_retention_purge_audits');
     }
 
     public function down(): void
     {
-        $this->unregisterTable($this->table);
-        Schema::dropIfExists($this->table);
+        $this->unregisterTable('people_connector_connector_retention_purge_audits');
+        Schema::dropIfExists('people_connector_connector_retention_purge_audits');
     }
 };
