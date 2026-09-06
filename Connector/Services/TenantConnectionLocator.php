@@ -30,4 +30,26 @@ final class TenantConnectionLocator
         return $query->first()
             ?? throw new ConnectorRecordNotFoundException('The provider connection was not found in the current tenant.');
     }
+
+    /**
+     * Resolve a connection for an inbound provider callback.
+     *
+     * Guest webhook requests have no authenticated user for the web tenant
+     * middleware to resolve. A connection id is the callback's tenant anchor;
+     * once a tenant is already present, retain the normal scoped lookup so a
+     * request cannot cross that boundary.
+     */
+    public function getForWebhook(int $connectionId): ProviderConnection
+    {
+        $tenantId = $this->tenantContext->currentTenantId();
+
+        if ($tenantId !== null) {
+            return $this->get($connectionId);
+        }
+
+        return ProviderConnection::query()
+            ->whereKey($connectionId)
+            ->first()
+            ?? throw new ConnectorRecordNotFoundException('The provider connection was not found.');
+    }
 }

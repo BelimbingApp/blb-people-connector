@@ -1,8 +1,13 @@
 <?php
 
+use App\Domains\PeopleConnector\Connector\Http\Controllers\WorkforceWebhookController;
 use App\Domains\PeopleConnector\Connector\Livewire\Connections\Index;
 use App\Domains\PeopleConnector\Connector\Livewire\Reconciliation\Index as ReconciliationIndex;
 use Illuminate\Support\Facades\Route;
+
+Route::post('webhooks/people-connector/{connectionId}', WorkforceWebhookController::class)
+    ->whereNumber('connectionId')
+    ->name('people-connector.webhook');
 
 Route::middleware(['auth'])->group(function (): void {
     Route::get('admin/integration/people-connections', Index::class)

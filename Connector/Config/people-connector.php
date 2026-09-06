@@ -39,6 +39,18 @@ return [
     ],
 
     /*
+     * Provider webhook trigger ([1009-g]). Disabled by default: a deployment
+     * must opt in and provide a secret per connection. The JSON environment
+     * value keeps raw secrets out of source control while allowing immutable
+     * config caching.
+     */
+    'webhook' => [
+        'enabled' => env('PEOPLE_CONNECTOR_WEBHOOK_ENABLED', false),
+        'timestamp_tolerance_seconds' => (int) env('PEOPLE_CONNECTOR_WEBHOOK_TOLERANCE_SECONDS', 300),
+        'secrets' => json_decode((string) env('PEOPLE_CONNECTOR_WEBHOOK_SECRETS', '{}'), true) ?: [],
+    ],
+
+    /*
      * Retention per connector-owned table ([1012]). `days` is the period rows
      * are kept for, measured from `column`; null is indefinite and needs no
      * column, because "we keep this forever" reads no clock.
