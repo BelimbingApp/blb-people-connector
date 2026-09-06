@@ -74,6 +74,13 @@ return [
         'max_lifetime_seconds' => 300,
     ],
 
+    /*
+     * Machine-readable capability evidence register (#209): which
+     * PeopleCapability values each provider has deployment evidence for.
+     * connector:health:check reports adapter declarations that drift from it.
+     */
+    'capability_register' => env('PEOPLE_CONNECTOR_CAPABILITY_REGISTER', __DIR__.'/../../docs/providers/capability-register.json'),
+
     'retention' => [
         // Progress logs: how far a sync got is operationally useful for a
         // while, and of no interest a year later.
