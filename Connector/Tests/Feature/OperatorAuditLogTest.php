@@ -252,10 +252,34 @@ test('the writer refuses contents: nested structures, objects and long strings',
 
     expect(operatorAuditRows($f['tenantId']))->toHaveCount(0);
 })->with([
-    'a nested array' => [['inner' => ['deep' => 1]], 'must be a scalar'],
+    'a keyed map' => [['inner' => ['deep' => 1]], 'keyed map'],
+    'a list holding a list' => [[[1, 2]], 'must be a scalar'],
     'an object' => [new stdClass, 'must be a scalar'],
     'a long string' => [str_repeat('x', 191), 'longer than a summary'],
 ]);
+
+test('the writer refuses a keyed sub-array: its keys were never checked and would be discarded', function (array $value): void {
+    $f = operatorAuditFixture('Audit Nested Key Tenant');
+
+    expect(fn () => app(OperatorAuditLog::class)->record(
+        $f['actor'], OperatorAuditOperation::ConnectionRetired, $f['oldId'], null, 'ref', [], ['meta' => $value],
+    ))->toThrow(OperatorAuditException::class, 'keyed map');
+
+    expect(operatorAuditRows($f['tenantId']))->toHaveCount(0);
+})->with([
+    'a credential under a nested key' => [['token' => 'sk_live_51H8xQpAbCdEfGhIjKlMnOpQr']],
+    'a harmless-looking nested key' => [['note' => 'x']],
+]);
+
+test('a list of reviewed identifiers is still accepted', function (): void {
+    $f = operatorAuditFixture('Audit List Tenant');
+
+    $row = app(OperatorAuditLog::class)->record(
+        $f['actor'], OperatorAuditOperation::ConnectionRetired, $f['oldId'], null, 'ref', [], ['reviewed_external_ids' => ['AUD-EMP-1', 'AUD-EMP-2']],
+    );
+
+    expect($row->after_summary['reviewed_external_ids'])->toBe(['AUD-EMP-1', 'AUD-EMP-2']);
+});
 
 test('the writer refuses an actor from another tenant', function (): void {
     $f = operatorAuditFixture('Audit Actor Tenant');

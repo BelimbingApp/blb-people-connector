@@ -20,7 +20,12 @@ use App\Domains\PeopleConnector\Connector\Models\OperatorAudit;
  */
 final class OperatorAuditLog
 {
-    /** Keys whose presence means the caller is about to log something it must not. */
+    /**
+     * Keys whose presence means the caller is about to log something it must
+     * not. Matched as a substring on purpose: `tokenizer_version` and
+     * `broken_count` are refused too, and a harmless key renamed costs less
+     * than a secret stored under a harmless-looking one.
+     */
     private const REFUSED_KEY = '/(secret|token|password|credential|payload|api[_-]?key|authorization|cookie|private[_-]?key)/i';
 
     private const MAX_STRING = 190;
@@ -84,8 +89,16 @@ final class OperatorAuditLog
                 throw new OperatorAuditException("The {$side} summary names [{$key}]; credentials, tokens and payloads never enter the operator audit.");
             }
 
+            // A sub-array is a list of scalars or nothing. A keyed map one level
+            // down would carry keys the denylist never saw and array_values()
+            // would then discard, storing a credential under the one label that
+            // showed what it was (review on #201).
+            if (is_array($value) && ! array_is_list($value)) {
+                throw new OperatorAuditException("The {$side} summary value for [{$key}] is a keyed map; summaries hold scalars or lists of scalars, never structures.");
+            }
+
             $clean[$key] = is_array($value)
-                ? array_values(array_map(fn (mixed $item): mixed => $this->scalar($side, $key, $item), $value))
+                ? array_map(fn (mixed $item): mixed => $this->scalar($side, $key, $item), $value)
                 : $this->scalar($side, $key, $value);
         }
 
