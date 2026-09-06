@@ -16,7 +16,7 @@ use App\Domains\PeopleConnector\Connector\Models\WebhookDelivery;
 use Illuminate\Support\Facades\DB;
 
 /**
- * Re-sends one failed webhook delivery for the acting operator's tenant (#223).
+ * Re-sends one failed or dead-lettered delivery for the operator tenant (#223).
  *
  * The queue retries a failing pass on its own; this is for the case after a
  * fix, when an operator wants that specific delivery run again and wants the
@@ -53,8 +53,8 @@ final class WebhookDeliveryReplayer
         $original = WebhookDelivery::query()->forTenant($tenantId)->find($deliveryId)
             ?? throw new ConnectorRecordNotFoundException('The webhook delivery was not found in the current tenant.');
 
-        if ($original->status !== WebhookDelivery::STATUS_FAILED) {
-            throw new WebhookRefusal('not_replayable', "Webhook delivery {$original->id} is {$original->status}; only a failed delivery can be replayed.");
+        if (! in_array($original->status, [WebhookDelivery::STATUS_FAILED, WebhookDelivery::STATUS_DEAD_LETTERED], true)) {
+            throw new WebhookRefusal('not_replayable', "Webhook delivery {$original->id} is {$original->status}; only a failed or dead-lettered delivery can be replayed.");
         }
 
         $connection = $this->connections->get((int) $original->connection_id);
@@ -91,7 +91,8 @@ final class WebhookDeliveryReplayer
                 ['delivery' => $replay->id, 'status' => $replay->status, 'queue' => RunIncrementalWorkforceSync::QUEUE],
             );
 
-            RunIncrementalWorkforceSync::dispatch($plan->tenantId, $plan->connectionId, (int) $replay->id);
+            $connection = $this->connections->get($plan->connectionId);
+            dispatch(RunIncrementalWorkforceSync::forDelivery($connection, (int) $replay->id));
 
             return $replay;
         });

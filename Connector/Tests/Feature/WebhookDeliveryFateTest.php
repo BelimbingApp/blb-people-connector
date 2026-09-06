@@ -109,8 +109,11 @@ test('a job never marks another tenant\'s delivery row, even by id', function ()
 
 test('a job without a recorded delivery touches no ledger row', function (): void {
     $f = fateFixture();
+    $job = new RunIncrementalWorkforceSync($f['tenantId'], (int) $f['connection']->id);
 
-    app()->call([new RunIncrementalWorkforceSync($f['tenantId'], (int) $f['connection']->id), 'handle']);
+    app()->call([$job, 'handle']);
 
-    expect($f['delivery']->fresh()->status)->toBe(WebhookDelivery::STATUS_ACCEPTED);
+    expect($f['delivery']->fresh()->status)->toBe(WebhookDelivery::STATUS_ACCEPTED)
+        ->and($job->tries)->toBe(1)
+        ->and($job->backoff())->toBe([]);
 });

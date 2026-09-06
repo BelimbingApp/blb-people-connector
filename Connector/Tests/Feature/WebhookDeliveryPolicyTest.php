@@ -70,6 +70,21 @@ function policyDelivery(array $fixture, string $providerDeliveryId): WebhookDeli
     ]);
 }
 
+test('a connection without an override stores the safe delivery policy', function (): void {
+    [$tenant, $company] = createTenantWithCompany(['name' => 'Default Delivery Policy Tenant']);
+    app(TenantContext::class)->set((int) $tenant->id);
+
+    $connection = app(ProviderConnectionStore::class)->configure(
+        ProviderScope::company((int) $company->id),
+        'test.default-delivery-policy',
+    );
+
+    expect($connection->public_metadata['webhook_delivery_policy'])->toBe([
+        'max_attempts' => 3,
+        'backoff_seconds' => [60, 300],
+    ]);
+});
+
 test('a connection delivery policy dead letters the final failed attempt instead of retrying forever', function (): void {
     $fixture = deliveryPolicyTenant('Delivery Policy Tenant', new WebhookDeliveryPolicy(2, [17]));
     $delivery = policyDelivery($fixture, 'policy-attempts');
@@ -91,8 +106,9 @@ test('a connection delivery policy dead letters the final failed attempt instead
     app()->call([$final, 'handle']);
 
     $final->assertFailedWith(WorkforceSyncException::class);
-    expect($delivery->fresh()->status)->toBe(WebhookDelivery::STATUS_DEAD_LETTERED)
-        ->and($delivery->attempts)->toBe(2)
+    $deadLetter = $delivery->fresh();
+    expect($deadLetter->status)->toBe(WebhookDelivery::STATUS_DEAD_LETTERED)
+        ->and($deadLetter->attempts)->toBe(2)
         ->and($fixture['connection']->public_metadata['webhook_delivery_policy'])->toBe([
             'max_attempts' => 2,
             'backoff_seconds' => [17],

@@ -11,6 +11,7 @@ use App\Domains\PeopleConnector\Connector\Console\Commands\IdentityAuditTrailCom
 use App\Domains\PeopleConnector\Connector\Console\Commands\RetentionPurgeCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\RetentionReportCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\SyncWorkforceCommand;
+use App\Domains\PeopleConnector\Connector\Console\Commands\WebhookDeadLettersCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\WebhookReplayCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\WorkforceSubjectExportCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\WorkforceSubjectImportCommand;
@@ -76,6 +77,7 @@ class ServiceProvider extends BaseServiceProvider
                 RetentionPurgeCommand::class,
                 RetentionReportCommand::class,
                 SyncWorkforceCommand::class,
+                WebhookDeadLettersCommand::class,
                 WebhookReplayCommand::class,
                 WorkforceSubjectExportCommand::class,
                 WorkforceSubjectImportCommand::class,

@@ -8,10 +8,11 @@ use Throwable;
 /**
  * A verified provider callback and the fate of the sync pass it triggered.
  *
- * `accepted` means the pass is queued, `delivered` that it completed, and
- * `failed` that its last attempt threw (kept as a reason code and the
- * exception class, never the message). Only a failed delivery can be
- * replayed (WebhookDeliveryReplayer); the replay is a new row whose
+ * `accepted` means the pass is queued, `delivered` that it completed,
+ * `failed` that its latest retryable attempt threw, and `dead_lettered` that
+ * the connection's retry budget ended. Failures keep a reason code and the
+ * exception class, never the message. Failed and dead-lettered deliveries can
+ * be replayed (WebhookDeliveryReplayer); the replay is a new row whose
  * `replayed_from_id` names this one.
  */
 final class WebhookDelivery extends TenantOwnedModel
@@ -21,6 +22,8 @@ final class WebhookDelivery extends TenantOwnedModel
     public const STATUS_DELIVERED = 'delivered';
 
     public const STATUS_FAILED = 'failed';
+
+    public const STATUS_DEAD_LETTERED = 'dead_lettered';
 
     protected $table = 'people_connector_connector_webhook_deliveries';
 
@@ -35,10 +38,10 @@ final class WebhookDelivery extends TenantOwnedModel
         ])->save();
     }
 
-    public function markFailed(Throwable $failure): void
+    public function markFailed(Throwable $failure, bool $deadLettered = false): void
     {
         $this->forceFill([
-            'status' => self::STATUS_FAILED,
+            'status' => $deadLettered ? self::STATUS_DEAD_LETTERED : self::STATUS_FAILED,
             'attempts' => ((int) $this->attempts) + 1,
             'failure_reason' => WebhookDeliveryFailure::for($failure),
             'failure_class' => mb_substr($failure::class, 0, 191),
