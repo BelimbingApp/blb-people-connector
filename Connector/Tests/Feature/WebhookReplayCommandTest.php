@@ -8,6 +8,8 @@ use App\Base\Tenancy\Contracts\TenantContext;
 use App\Core\User\Models\User;
 use App\Domains\PeopleConnector\Connector\Data\ProviderScope;
 use App\Domains\PeopleConnector\Connector\Enums\OperatorAuditOperation;
+use App\Domains\PeopleConnector\Connector\Enums\WebhookDeliveryFailure;
+use App\Domains\PeopleConnector\Connector\Exceptions\CorruptWorkforcePageException;
 use App\Domains\PeopleConnector\Connector\Jobs\RunIncrementalWorkforceSync;
 use App\Domains\PeopleConnector\Connector\Models\OperatorAudit;
 use App\Domains\PeopleConnector\Connector\Models\ProviderConnection;
@@ -58,7 +60,9 @@ function webhookReplayDelivery(array $tenant, string $status = WebhookDelivery::
     return WebhookDelivery::query()->create([
         'tenant_id' => $tenant['tenantId'], 'connection_id' => $tenant['connection']->id,
         'delivery_id' => 'delivery-'.$status.'-'.$tenant['tenantId'], 'status' => $status,
-        'attempts' => 3, 'last_error' => $status === WebhookDelivery::STATUS_FAILED ? 'WorkforceSyncException: page 2 corrupt' : null,
+        'attempts' => 3,
+        'failure_reason' => $status === WebhookDelivery::STATUS_FAILED ? WebhookDeliveryFailure::PageCorrupt : null,
+        'failure_class' => $status === WebhookDelivery::STATUS_FAILED ? CorruptWorkforcePageException::class : null,
         'received_at' => now()->subHour(),
     ]);
 }
@@ -94,8 +98,8 @@ test('replaying a failed delivery dispatches exactly one new pass and records th
         ->and($audit->connection_id)->toBe((int) $tenant['connection']->id)
         ->and($audit->before_summary['delivery'] ?? null)->toBe($failed->id)
         ->and($audit->before_summary['provider_delivery_id'] ?? null)->toBe($failed->delivery_id)
-        ->and($audit->before_summary)->not->toHaveKey('last_error')
-        ->and(json_encode($audit->before_summary).json_encode($audit->after_summary))->not->toContain('page 2 corrupt')
+        ->and($audit->before_summary['failure_reason'] ?? null)->toBe('page_corrupt')
+        ->and($audit->before_summary)->not->toHaveKey('failure_class')
         ->and($audit->after_summary['delivery'] ?? null)->toBe($replay->id);
 });
 
@@ -129,7 +133,7 @@ test('a dry run prints what would be sent and sends and records nothing', functi
     $failed = webhookReplayDelivery($tenant);
 
     expect(webhookReplayCall($tenant, $failed, ['--dry-run' => true]))->toBe(0)
-        ->and(Artisan::output())->toContain('Dry run', (string) $failed->id, $failed->delivery_id, 'page 2 corrupt', (string) $tenant['connection']->id, RunIncrementalWorkforceSync::class, RunIncrementalWorkforceSync::QUEUE)
+        ->and(Artisan::output())->toContain('Dry run', (string) $failed->id, $failed->delivery_id, 'page_corrupt', CorruptWorkforcePageException::class, (string) $tenant['connection']->id, RunIncrementalWorkforceSync::class, RunIncrementalWorkforceSync::QUEUE)
         ->and(WebhookDelivery::query()->count())->toBe(1)
         ->and(OperatorAudit::query()->count())->toBe(0);
 

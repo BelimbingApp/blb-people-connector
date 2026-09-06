@@ -11,7 +11,8 @@ use Illuminate\Support\Facades\Schema;
  * it arrived for, the provider's delivery id, and what became of the sync
  * pass it triggered. A replay is a new row pointing at the one it re-sent.
  * The provider payload is never stored: the callback is a trigger, not a
- * second projection-write path.
+ * second projection-write path. A failure is a reason code and an exception
+ * class, never the message (docs/contracts/diagnostic-privacy.md).
  */
 return new class extends Migration
 {
@@ -27,7 +28,8 @@ return new class extends Migration
             $table->string('delivery_id', 128);
             $table->string('status', 16);
             $table->unsignedInteger('attempts')->default(0);
-            $table->string('last_error', 191)->nullable();
+            $table->string('failure_reason', 32)->nullable();
+            $table->string('failure_class', 191)->nullable();
             $table->unsignedBigInteger('replayed_from_id')->nullable();
             $table->timestamp('received_at');
             $table->timestamp('delivered_at')->nullable();

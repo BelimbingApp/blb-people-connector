@@ -87,9 +87,7 @@ final class WebhookDeliveryReplayer
                 $plan->connectionId,
                 null,
                 null,
-                // The failure text stays on the delivery row: an audit summary carries
-                // no exception text (docs/operators/sync-run-reports.md).
-                ['delivery' => $original->id, 'provider_delivery_id' => $original->delivery_id, 'status' => $original->status, 'attempts' => $original->attempts],
+                ['delivery' => $original->id, 'provider_delivery_id' => $original->delivery_id, 'status' => $original->status, 'attempts' => $original->attempts, 'failure_reason' => $original->failure_reason?->value],
                 ['delivery' => $replay->id, 'status' => $replay->status, 'queue' => RunIncrementalWorkforceSync::QUEUE],
             );
 

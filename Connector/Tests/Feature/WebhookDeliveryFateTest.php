@@ -6,6 +6,7 @@ use App\Base\Authz\DTO\AuthorizationDecision;
 use App\Base\Authz\DTO\ResourceContext;
 use App\Base\Tenancy\Contracts\TenantContext;
 use App\Domains\PeopleConnector\Connector\Data\ProviderScope;
+use App\Domains\PeopleConnector\Connector\Enums\WebhookDeliveryFailure;
 use App\Domains\PeopleConnector\Connector\Exceptions\WorkforceSyncException;
 use App\Domains\PeopleConnector\Connector\Jobs\RunIncrementalWorkforceSync;
 use App\Domains\PeopleConnector\Connector\Models\ProviderConnection;
@@ -42,11 +43,13 @@ beforeEach(function (): void {
 afterEach(fn () => app(TenantContext::class)->clear());
 
 /** @return array{tenantId: int, connection: ProviderConnection, delivery: WebhookDelivery} */
-function fateFixture(string $provider = FirstPartyPeopleAdapter::ID): array
+function fateFixture(string $provider = FirstPartyPeopleAdapter::ID, string $name = 'Fate Tenant'): array
 {
-    [$tenant, $company] = createTenantWithCompany(['name' => 'Fate Tenant']);
+    [$tenant, $company] = createTenantWithCompany(['name' => $name]);
     app(TenantContext::class)->set((int) $tenant->id);
-    app(ProviderRegistry::class)->register(app(FirstPartyPeopleAdapter::class));
+    if (app(ProviderRegistry::class)->find($provider) === null) {
+        app(ProviderRegistry::class)->register(app(FirstPartyPeopleAdapter::class));
+    }
     $store = app(ProviderConnectionStore::class);
     $connection = $store->activate((int) $store->configure(ProviderScope::company((int) $company->id), $provider)->id);
     // An incremental pass resumes from a bootstrap checkpoint, as in production.
@@ -70,10 +73,11 @@ test('a completed pass marks its delivery delivered', function (): void {
     expect($delivery->status)->toBe(WebhookDelivery::STATUS_DELIVERED)
         ->and($delivery->attempts)->toBe(1)
         ->and($delivery->delivered_at)->not->toBeNull()
-        ->and($delivery->last_error)->toBeNull();
+        ->and($delivery->failure_reason)->toBeNull()
+        ->and($delivery->failure_class)->toBeNull();
 });
 
-test('a pass that throws marks its delivery failed, keeps the failure text on the row and rethrows', function (): void {
+test('a pass that throws marks its delivery failed with a reason code and class, never the message, and rethrows', function (): void {
     $f = fateFixture();
     ProviderConnection::query()->whereKey($f['connection']->id)->update(['status' => ProviderConnection::STATUS_RETIRED]);
 
@@ -84,8 +88,23 @@ test('a pass that throws marks its delivery failed, keeps the failure text on th
     expect($delivery->status)->toBe(WebhookDelivery::STATUS_FAILED)
         ->and($delivery->attempts)->toBe(1)
         ->and($delivery->failed_at)->not->toBeNull()
-        ->and($delivery->last_error)->toContain(WorkforceSyncException::class, 'is not active')
+        ->and($delivery->failure_reason)->toBe(WebhookDeliveryFailure::SyncRefused)
+        ->and($delivery->failure_class)->toBe(WorkforceSyncException::class)
+        ->and(json_encode($delivery->getAttributes()))->not->toContain('is not active')
         ->and(app(TenantContext::class)->currentTenantId())->toBeNull();
+});
+
+test('a job never marks another tenant\'s delivery row, even by id', function (): void {
+    $a = fateFixture(name: 'Fate Tenant A');
+    $b = fateFixture(name: 'Fate Tenant B');
+
+    // Tenant A's pass completes, handed tenant B's delivery id: the row it
+    // reports to is looked up inside A, so B's row is untouched.
+    app()->call([new RunIncrementalWorkforceSync($a['tenantId'], (int) $a['connection']->id, (int) $b['delivery']->id), 'handle']);
+
+    expect($b['delivery']->fresh()->status)->toBe(WebhookDelivery::STATUS_ACCEPTED)
+        ->and($b['delivery']->fresh()->attempts)->toBe(0)
+        ->and($a['delivery']->fresh()->status)->toBe(WebhookDelivery::STATUS_ACCEPTED);
 });
 
 test('a job without a recorded delivery touches no ledger row', function (): void {
