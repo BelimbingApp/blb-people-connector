@@ -130,9 +130,9 @@ test('connector doctor records every run and lists only this tenants latest snap
     expect(DB::table('people_connector_connector_doctor_snapshots')->where('tenant_id', $tenantId)->count())->toBe(8)
         ->and(DB::table('people_connector_connector_doctor_snapshots')
             ->where('tenant_id', $tenantId)
-            ->selectRaw('`check`, count(*) as snapshots')
-            ->groupBy('check')
-            ->pluck('snapshots', 'check')->all())
+            ->pluck('check')
+            ->countBy()
+            ->all())
         ->toBe([
             'adapter_conformance' => 2,
             'identity_mappings' => 2,

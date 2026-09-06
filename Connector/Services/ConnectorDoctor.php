@@ -32,10 +32,7 @@ final class ConnectorDoctor
     public function inspect(Actor $actor): ConnectorDoctorReport
     {
         $tenantId = $this->tenants->requireTenantId();
-        $this->authorization->authorize($actor, ConnectorHealthService::READ_CAPABILITY);
-        if ($actor->validate() !== null || $actor->tenantId !== $tenantId) {
-            throw new ProviderAuthorizationException('connector', 'doctor', 'Connector doctor requires an operator inside the current tenant.');
-        }
+        $this->authorizeOperator($actor, $tenantId);
 
         [$adapterCount, $adapterViolations] = $this->adapterConformance($tenantId);
         [$stale, $staleDetail] = $this->staleWebhookDeliveries($tenantId);
@@ -48,6 +45,56 @@ final class ConnectorDoctor
             $this->row('reconciliation_drift', $drift, "{$drift} open"),
             $this->row('identity_mappings', $unresolved, "{$unresolved} unresolved"),
         ]);
+    }
+
+    public function record(Actor $actor, ?\DateTimeImmutable $measuredAt = null): ConnectorDoctorReport
+    {
+        $report = $this->inspect($actor);
+        $tenantId = $this->tenants->requireTenantId();
+        $measuredAt ??= \DateTimeImmutable::createFromInterface(now());
+
+        DB::table('people_connector_connector_doctor_snapshots')->insert(array_map(
+            static fn (array $row): array => [
+                'tenant_id' => $tenantId,
+                'check' => $row['check'],
+                'status' => $row['status'],
+                'count' => $row['count'],
+                'measured_at' => $measuredAt,
+            ],
+            $report->checks,
+        ));
+
+        return $report;
+    }
+
+    /** @return list<array{check: string, status: string, count: int, measured_at: string}> */
+    public function history(Actor $actor, int $days, ?\DateTimeImmutable $now = null): array
+    {
+        $tenantId = $this->tenants->requireTenantId();
+        $this->authorizeOperator($actor, $tenantId);
+
+        if ($days < 1) {
+            throw new \InvalidArgumentException('Connector doctor history days must be at least one.');
+        }
+
+        $now ??= \DateTimeImmutable::createFromInterface(now());
+
+        return DB::table('people_connector_connector_doctor_snapshots')
+            ->where('tenant_id', $tenantId)
+            ->where('measured_at', '>=', $now->modify("-{$days} days"))
+            ->orderBy('check')
+            ->orderByDesc('measured_at')
+            ->orderByDesc('id')
+            ->get(['check', 'status', 'count', 'measured_at'])
+            ->unique('check')
+            ->map(static fn (object $row): array => [
+                'check' => (string) $row->check,
+                'status' => (string) $row->status,
+                'count' => (int) $row->count,
+                'measured_at' => (string) $row->measured_at,
+            ])
+            ->values()
+            ->all();
     }
 
     /** @return array{int, list<string>} */
@@ -135,9 +182,17 @@ final class ConnectorDoctor
             ->count();
     }
 
-    /** @return array{check: string, status: string, detail: string} */
+    /** @return array{check: string, status: string, count: int, detail: string} */
     private function row(string $check, int $failures, string $detail): array
     {
-        return ['check' => $check, 'status' => $failures === 0 ? 'green' : 'red', 'detail' => $detail];
+        return ['check' => $check, 'status' => $failures === 0 ? 'green' : 'red', 'count' => $failures, 'detail' => $detail];
+    }
+
+    private function authorizeOperator(Actor $actor, int $tenantId): void
+    {
+        $this->authorization->authorize($actor, ConnectorHealthService::READ_CAPABILITY);
+        if ($actor->validate() !== null || $actor->tenantId !== $tenantId) {
+            throw new ProviderAuthorizationException('connector', 'doctor', 'Connector doctor requires an operator inside the current tenant.');
+        }
     }
 }
