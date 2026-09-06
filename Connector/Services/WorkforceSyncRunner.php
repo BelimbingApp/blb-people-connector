@@ -26,6 +26,7 @@ use App\Domains\PeopleConnector\Connector\Data\WorkforceUpsert;
 use App\Domains\PeopleConnector\Connector\Enums\PeopleCapability;
 use App\Domains\PeopleConnector\Connector\Exceptions\CompanyMoveRefusedException;
 use App\Domains\PeopleConnector\Connector\Exceptions\ConnectorRecordNotFoundException;
+use App\Domains\PeopleConnector\Connector\Exceptions\CorruptWorkforcePageException;
 use App\Domains\PeopleConnector\Connector\Exceptions\ExternalIdentityCollisionException;
 use App\Domains\PeopleConnector\Connector\Exceptions\WorkforceHistoryConflictException;
 use App\Domains\PeopleConnector\Connector\Exceptions\WorkforceProjectionConflictException;
@@ -33,6 +34,7 @@ use App\Domains\PeopleConnector\Connector\Exceptions\WorkforceSyncException;
 use App\Domains\PeopleConnector\Connector\Models\ExternalIdentity;
 use App\Domains\PeopleConnector\Connector\Models\ProviderConnection;
 use App\Domains\PeopleConnector\Connector\Models\ReconciliationIssue;
+use App\Domains\PeopleConnector\Connector\Support\WorkforcePageChecksum;
 
 /**
  * Drives an adapter's bootstrap and incremental pages through the persistence
@@ -69,6 +71,8 @@ final class WorkforceSyncRunner
 
     public const ISSUE_KIND_DEAD_LETTER = 'sync_dead_letter';
 
+    public const ISSUE_KIND_PAGE_CORRUPT = 'sync_page_corrupt';
+
     public function __construct(
         private TenantContext $tenantContext,
         private ProviderPortResolver $ports,
@@ -90,6 +94,7 @@ final class WorkforceSyncRunner
 
         do {
             $page = $port->bootstrap(new WorkforcePageRequest($pageCursor, $limit ?? self::pageLimit()));
+            $this->assertPageIntact($connectionId, 'bootstrap', $pageCursor, $page);
             $tally['pages']++;
 
             foreach ([$page->companies, $page->organizationUnits, $page->positions, $page->employees] as $records) {
@@ -145,6 +150,7 @@ final class WorkforceSyncRunner
 
         do {
             $page = $port->changes(new WorkforceChangeRequest($checkpoint->resume_cursor, $pageCursor, $limit ?? self::pageLimit()));
+            $this->assertPageIntact($connectionId, 'incremental', $pageCursor, $page);
             $tally['pages']++;
 
             foreach ($page->changes as $change) {
@@ -216,6 +222,7 @@ final class WorkforceSyncRunner
 
         do {
             $page = $port->changes(new WorkforceChangeRequest($resumeCursor, $pageCursor, $limit ?? self::pageLimit()));
+            $this->assertPageIntact($connectionId, 'replay', $pageCursor, $page);
             $tally['pages']++;
 
             foreach ($page->changes as $change) {
@@ -521,6 +528,40 @@ final class WorkforceSyncRunner
     private function provenance(string $source, ProviderAdapter $provider, string $stream): WorkforceProvenance
     {
         return new WorkforceProvenance($source, correlationReference: $provider->descriptor()->id.':'.$stream);
+    }
+
+    /**
+     * A page whose declared checksum does not fingerprint its content is
+     * refused whole, before any record of it is projected, with an issue that
+     * names the page and nothing of what was in it (#204). The checkpoint is
+     * untouched because the pass stops here; the next pass asks for the same
+     * page again.
+     */
+    private function assertPageIntact(int $connectionId, string $pass, ?string $pageCursor, WorkforcePage|WorkforceChangePage $page): void
+    {
+        if ($page->checksum === null) {
+            return;
+        }
+
+        $computed = WorkforcePageChecksum::of($page);
+
+        if (hash_equals($computed, $page->checksum)) {
+            return;
+        }
+
+        $cursor = $pageCursor ?? 'first';
+        $this->issues->report(
+            $connectionId,
+            "sync:page:corrupt:{$pass}:{$cursor}",
+            self::ISSUE_KIND_PAGE_CORRUPT,
+            new ReconciliationIssueDetails(field: 'checksum', reasonCode: 'checksum_mismatch'),
+            severity: 'error',
+            seenAt: $page->asOf,
+        );
+
+        throw new CorruptWorkforcePageException(
+            "The {$pass} page at cursor [{$cursor}] declares a checksum its content does not match; refused before projection and reported as a reconciliation issue.",
+        );
     }
 
     private function nextCursor(WorkforcePage|WorkforceChangePage $page, ?string $previous): ?string
