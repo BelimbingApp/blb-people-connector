@@ -75,6 +75,12 @@ return [
     'delegation' => [
         'secret' => env('PEOPLE_CONNECTOR_DELEGATION_SECRET'),
         'max_lifetime_seconds' => 300,
+        // The name this service answers to. The wire checks the audience a
+        // route was addressed on; the in-process port checks this (#185).
+        'audience' => env('PEOPLE_CONNECTOR_DELEGATION_AUDIENCE', 'people-connector.first-party'),
+        // Tolerance, in seconds, for the issuer's clock disagreeing with ours
+        // at either end of the lifetime. Zero makes the bounds exact.
+        'clock_skew_seconds' => 30,
     ],
 
     /*
@@ -97,6 +103,10 @@ return [
         // Inbound idempotency ledger (#227): a delivery id is a duplicate for
         // seven days; after that the provider would not resend it anyway.
         'people_connector_connector_webhook_receipts' => ['days' => 7, 'column' => 'first_seen_at'],
+
+        // Delegated-authority spends (#185): a token is replayable only until
+        // it expires, so a spend row past its expiry by a day is dead weight.
+        'people_connector_connector_delegated_spends' => ['days' => 1, 'column' => 'expires_at'],
 
         // Scheduled operator health is deliberately short-lived. It is trend
         // context, not an audit log; durable operator actions live elsewhere.
