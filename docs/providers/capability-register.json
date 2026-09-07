@@ -2,7 +2,8 @@
     "description": "Machine-readable capability evidence register (connector #209). A provider's verified list names the PeopleCapability values that have deployment evidence per docs/providers/<provider>-capability-evidence.md. connector:health:check reports any capability an adapter declares that is not verified here, and any verified capability the adapter no longer declares. An entry is a bare name or {capability, evidence, verified_at, verified_by} as appended by connector:capability:verify (#231); entries are appended, never rewritten.",
     "providers": {
         "blb-people": {
-            "verified": ["company_directory", "organization_directory", "employee_directory"]
+            "verified": ["company_directory", "organization_directory", "employee_directory"],
+            "notes": "Positions have no PeopleCapability case; People's ReadsWorkforcePositions travels under organization_directory on the bootstrap page (connector #299)."
         },
         "hr2000.sbg": {
             "verified": []
