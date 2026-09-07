@@ -100,7 +100,7 @@ function bundleSeed(array $t, string $label): void
     ]);
     $audit = app(OperatorAuditLog::class);
     $audit->record($t['actor'], OperatorAuditOperation::SyncPass, $t['connection'], null, 'run-'.$label.'-inside',
-        ['stream' => 'workforce', 'pass' => 'incremental', 'pages' => 2, 'upserts' => 5, 'deactivations' => 0, 'refusals' => 0, 'duration_ms' => 120, 'completed' => true], [], now()->subDays(1));
+        ['stream' => 'workforce', 'pass' => 'incremental', 'pages' => 2, 'upserts' => 5, 'deactivations' => 0, 'refusals' => 0, 'duration_ms' => 120, 'completed' => true, 'cursor' => 'CURSOR-'.$label.'-OPAQUE'], [], now()->subDays(1));
     $audit->record($t['actor'], OperatorAuditOperation::SyncPass, $t['connection'], null, 'run-'.$label.'-outside',
         ['stream' => 'workforce', 'pass' => 'bootstrap', 'pages' => 9, 'upserts' => 99, 'deactivations' => 0, 'refusals' => 0, 'duration_ms' => 999, 'completed' => true], [], now()->subDays(7)->subSecond());
     foreach (['accepted', 'delivered', 'dead_lettered'] as $status) {
@@ -148,19 +148,28 @@ test('the bundle holds only this tenant, bounds the window to the second, and au
     $files = bundleRead($zips[0]);
     expect(array_keys($files))->toBe(['doctor-history.json', 'sync-runs.json', 'webhooks.json', 'reconciliation.json', 'retention.json', 'versions.json', 'config.json', 'manifest.json']);
 
+    // One needle per assertion: a negated toContain with several needles
+    // fails only when all of them are present.
     $checks = array_column($files['doctor-history.json'], 'check');
-    expect($checks)->toContain('probe_a_inside', 'probe_a_edge')
-        ->and($checks)->not->toContain('probe_a_outside', 'probe_b_inside', 'probe_b_edge');
+    expect($checks)->toContain('probe_a_inside')->toContain('probe_a_edge');
+    foreach (['probe_a_outside', 'probe_b_inside', 'probe_b_edge'] as $absent) {
+        expect($checks)->not->toContain($absent);
+    }
     expect(array_column($files['sync-runs.json'], 'connection'))->toBe([$a['connection']])
         ->and($files['sync-runs.json'][0])->toMatchArray(['pass' => 'incremental', 'pages' => 2, 'upserts' => 5, 'duration_ms' => 120, 'completed' => true])
-        ->and(json_encode($files['sync-runs.json']))->not->toContain('run-a-inside', 'bootstrap');
+        ->and($files['sync-runs.json'][0])->not->toHaveKey('cursor');
+    foreach (['run-a-inside', 'bootstrap', 'CURSOR-a-OPAQUE'] as $absent) {
+        expect(json_encode($files['sync-runs.json']))->not->toContain($absent);
+    }
     expect($files['webhooks.json']['deliveries_by_status'])->toBe(['accepted' => 1, 'dead_lettered' => 1, 'delivered' => 1])
         ->and($files['webhooks.json']['dead_lettered_deliveries'])->toBe(1)
         ->and($files['webhooks.json']['receipts'])->toBe(1)
         ->and($files['webhooks.json']['duplicates_skipped'])->toBe(2)
         ->and($files['webhooks.json']['parked_pages_open'])->toBe(1);
-    expect($files['reconciliation.json']['open_by_kind'])->toBe(['sync_conflict' => 1, 'sync_dead_letter' => 1])
-        ->and(json_encode($files))->not->toContain('EMP-a-SUBJECT', 'EMP-b-SUBJECT', 'PAGE-a', (string) $b['connection']);
+    expect($files['reconciliation.json']['open_by_kind'])->toBe(['sync_conflict' => 1, 'sync_dead_letter' => 1]);
+    foreach (['EMP-a-SUBJECT', 'EMP-b-SUBJECT', 'PAGE-a', 'CURSOR-b-OPAQUE', '"connection": '.$b['connection'].','] as $absent) {
+        expect(json_encode($files, JSON_PRETTY_PRINT))->not->toContain($absent);
+    }
     expect($files['versions.json']['php'])->toBe(PHP_VERSION)
         ->and($files['manifest.json']['tenant'])->toBe($a['tenantId'])
         ->and($files['manifest.json']['files'])->toHaveCount(7);
