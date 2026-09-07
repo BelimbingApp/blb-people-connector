@@ -27,7 +27,11 @@ use Illuminate\Support\Facades\DB;
  */
 final class FileExchangeLedger
 {
-    private const MAX_REASON = 191;
+    /**
+     * A status reason is copied into the audit summary, so its bound is the
+     * audit's: a reason the ledger accepts is one the audit accepts too.
+     */
+    private const MAX_REASON = OperatorAuditLog::MAX_STRING;
 
     public function __construct(
         private readonly TenantContext $tenantContext,
@@ -106,28 +110,31 @@ final class FileExchangeLedger
             'status_reason' => null,
         ];
 
-        // The insert runs in its own (savepoint) transaction: a unique
-        // violation poisons the PostgreSQL transaction it happens in, so it
-        // must be one that is rolled back and nothing else.
-        try {
-            $record = DB::transaction(fn (): FileExchangeRecord => FileExchangeRecord::query()->create($attributes));
-        } catch (UniqueConstraintViolationException) {
-            return $this->existing((int) $owned->id, $direction, $sha256)
-                ?? throw new FileExchangeException('The file exchange record was written concurrently and could not be read back.');
-        }
+        // The row and its audit land together or not at all. The insert runs
+        // in its own (savepoint) transaction inside that: a unique violation
+        // poisons the PostgreSQL transaction it happens in, so it must be one
+        // that is rolled back and nothing else.
+        return DB::transaction(function () use ($attributes, $owned, $direction, $sha256, $actor, $evidenceReference, $recordedAt): FileExchangeRecord {
+            try {
+                $record = DB::transaction(fn (): FileExchangeRecord => FileExchangeRecord::query()->create($attributes));
+            } catch (UniqueConstraintViolationException) {
+                return $this->existing((int) $owned->id, $direction, $sha256)
+                    ?? throw new FileExchangeException('The file exchange record was written concurrently and could not be read back.');
+            }
 
-        $this->audit->record(
-            $actor,
-            OperatorAuditOperation::FileExchangeRecorded,
-            (int) $owned->id,
-            null,
-            $evidenceReference,
-            [],
-            $this->summary($record),
-            $recordedAt,
-        );
+            $this->audit->record(
+                $actor,
+                OperatorAuditOperation::FileExchangeRecorded,
+                (int) $owned->id,
+                null,
+                $evidenceReference,
+                [],
+                $this->summary($record),
+                $recordedAt,
+            );
 
-        return $record;
+            return $record;
+        });
     }
 
     public function quarantine(FileExchangeRecord $record, string $reason, Actor $actor): FileExchangeRecord
@@ -158,19 +165,21 @@ final class FileExchangeLedger
 
         $before = ['status' => $record->status, 'status_reason' => $record->status_reason];
 
-        DB::transaction(function () use ($record, $status, $reason): void {
+        // The status and its audit row land together or not at all: an audit
+        // refusal inside the transaction rolls the status back.
+        DB::transaction(function () use ($record, $status, $reason, $actor, $before): void {
             $record->forceFill(['status' => $status, 'status_reason' => $reason])->save();
-        });
 
-        $this->audit->record(
-            $actor,
-            OperatorAuditOperation::FileExchangeRecorded,
-            (int) $record->provider_connection_id,
-            null,
-            $record->evidence_reference,
-            $before,
-            $this->summary($record),
-        );
+            $this->audit->record(
+                $actor,
+                OperatorAuditOperation::FileExchangeRecorded,
+                (int) $record->provider_connection_id,
+                null,
+                $record->evidence_reference,
+                $before,
+                $this->summary($record),
+            );
+        });
 
         return $record;
     }

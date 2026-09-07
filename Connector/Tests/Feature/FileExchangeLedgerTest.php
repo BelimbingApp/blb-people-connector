@@ -8,6 +8,7 @@ use App\Domains\PeopleConnector\Connector\Data\ProviderScope;
 use App\Domains\PeopleConnector\Connector\Enums\OperatorAuditOperation;
 use App\Domains\PeopleConnector\Connector\Exceptions\AppendOnlyRecordException;
 use App\Domains\PeopleConnector\Connector\Exceptions\FileExchangeException;
+use App\Domains\PeopleConnector\Connector\Exceptions\OperatorAuditException;
 use App\Domains\PeopleConnector\Connector\Models\FileExchangeRecord;
 use App\Domains\PeopleConnector\Connector\Models\OperatorAudit;
 use App\Domains\PeopleConnector\Connector\Models\ProviderConnection;
@@ -310,4 +311,17 @@ test('an operation name longer than its column is refused and nothing is written
     expect(fn () => $ledger->record($f['connection'], fileExchangeFile('op81.csv', 'a,b,c'), 'import', str_repeat('o', 81), $f['actor']))
         ->toThrow(FileExchangeException::class);
     expect(fileExchangeRows())->toBe(1);
+});
+
+test('a file name the audit refuses leaves no record behind', function (): void {
+    $f = fileExchangeTenant('File Exchange Name Length Tenant');
+    $ledger = app(FileExchangeLedger::class);
+    $audits = OperatorAudit::query()->count();
+    $name = str_repeat('n', 200).'.csv';
+
+    expect(fn () => $ledger->record($f['connection'], fileExchangeFile($name, 'a,b'), 'import', 'workforce.import', $f['actor']))
+        ->toThrow(OperatorAuditException::class);
+
+    expect(DB::table(FILE_EXCHANGE_TABLE)->where('file_name', $name)->count())->toBe(0)
+        ->and(OperatorAudit::query()->count())->toBe($audits);
 });
