@@ -61,6 +61,12 @@ final class SyncWorkforceCommand extends Command
             $tenants->set((int) $connection->tenant_id);
 
             try {
+                if ($connection->inMaintenance()) {
+                    $this->line("Connection {$connection->id}: in maintenance until {$connection->maintenance_until->format(DATE_ATOM)} — skipped, checkpoint not moved.");
+
+                    continue;
+                }
+
                 $provider = $registry->find((string) $connection->provider_id)
                     ?? throw new WorkforceSyncException(
                         "Provider '{$connection->provider_id}' is not registered for connection {$connection->id}.",
