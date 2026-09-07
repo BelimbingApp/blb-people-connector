@@ -9,6 +9,9 @@ use App\Domains\PeopleConnector\Connector\Console\Commands\CapabilityVerifyComma
 use App\Domains\PeopleConnector\Connector\Console\Commands\ConnectionHealthCheckCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\ConnectorDoctorCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\CutoverRehearsalCommand;
+use App\Domains\PeopleConnector\Connector\Console\Commands\FileExchangeArchiveCommand;
+use App\Domains\PeopleConnector\Connector\Console\Commands\FileExchangeListCommand;
+use App\Domains\PeopleConnector\Connector\Console\Commands\FileExchangeQuarantineCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\Hr2000ImportDryRunCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\IdentityAuditTrailCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\MigrateDryRunCommand;
@@ -82,6 +85,9 @@ class ServiceProvider extends BaseServiceProvider
                 CutoverRehearsalCommand::class,
                 CapabilityVerifyCommand::class,
                 ConnectionHealthCheckCommand::class,
+                FileExchangeArchiveCommand::class,
+                FileExchangeListCommand::class,
+                FileExchangeQuarantineCommand::class,
                 ConnectorDoctorCommand::class,
                 Hr2000ImportDryRunCommand::class,
                 MigrateDryRunCommand::class,
