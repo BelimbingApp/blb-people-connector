@@ -304,6 +304,96 @@ final class WorkforceIdentityStore
         });
     }
 
+    /**
+     * Reverse one handover while nothing has observed the replacement identity.
+     *
+     * The boundary is stated, not implied. A handed-over identity the
+     * replacement connection has since observed in a sync pass carries facts
+     * the source never saw; putting it back would leave the source current for
+     * a record it is not. So the new identity must still be active with its
+     * last observation at the handover itself, and the source connection must
+     * not be retired: retirement is the deliberate one-way step (#180).
+     *
+     * The new identity is never deleted. It becomes `remapped` pointing back at
+     * the old one, so the history reads as two handovers rather than as one
+     * that never happened.
+     */
+    public function reverseHandover(
+        int $fromConnectionId,
+        int $toConnectionId,
+        ExternalReference $oldReference,
+        ExternalReference $newReference,
+        \DateTimeInterface $occurredAt,
+        ?WorkforceProvenance $provenance = null,
+    ): ExternalIdentity {
+        if ($provenance?->reviewReference === null) {
+            throw new ExternalIdentityCollisionException('Reversing a handover requires a review reference.');
+        }
+
+        return DB::transaction(function () use ($fromConnectionId, $toConnectionId, $oldReference, $newReference, $occurredAt, $provenance): ExternalIdentity {
+            $fromConnection = $this->connections->get($fromConnectionId, lock: true);
+            $toConnection = $this->connections->get($toConnectionId, lock: true);
+
+            if ($fromConnection->status === ProviderConnection::STATUS_RETIRED) {
+                throw new ExternalIdentityCollisionException('A handover from a retired connection is history; retirement is the irreversible step.');
+            }
+
+            $oldIdentity = $this->findIdentity($fromConnection, $oldReference, lock: true)
+                ?? throw new ConnectorRecordNotFoundException('The handed-over external identity was not found on the source connection.');
+            $newIdentity = $this->findIdentity($toConnection, $newReference, lock: true)
+                ?? throw new ConnectorRecordNotFoundException('The replacement external identity was not found on the replacement connection.');
+
+            if ($oldIdentity->state !== ExternalIdentity::STATE_REMAPPED
+                || (int) $oldIdentity->replaced_by_identity_id !== (int) $newIdentity->id
+                || $oldIdentity->effective_to === null) {
+                throw new ExternalIdentityCollisionException("No handover of [{$oldReference->externalId}] to [{$newReference->externalId}] is on record.");
+            }
+
+            // Past the boundary: the replacement has observed this identity since
+            // the handover, or something else already superseded it there.
+            if ($newIdentity->state !== ExternalIdentity::STATE_ACTIVE
+                || $newIdentity->last_observed_at->getTimestamp() !== $oldIdentity->effective_to->getTimestamp()) {
+                throw new ExternalIdentityCollisionException(
+                    "The replacement connection has observed [{$newReference->externalId}] since the handover; that handover is history.",
+                );
+            }
+
+            $this->assertTransitionChronology($occurredAt, $newIdentity->last_observed_at);
+
+            $entity = $this->canonicalEntityForIdentity($newIdentity, lock: true);
+
+            $oldIdentity->fill([
+                'state' => ExternalIdentity::STATE_ACTIVE,
+                'replaced_by_identity_id' => null,
+                'effective_to' => null,
+            ])->save();
+
+            $newIdentity->fill([
+                'state' => ExternalIdentity::STATE_REMAPPED,
+                'replaced_by_identity_id' => $oldIdentity->id,
+                'effective_to' => $occurredAt,
+                'last_observed_at' => $occurredAt,
+            ])->save();
+
+            $this->history->record(
+                $toConnection,
+                $entity,
+                $newIdentity,
+                WorkforceHistoryEvent::identityHandedOver(
+                    $newReference,
+                    $oldReference,
+                    $fromConnectionId,
+                    (int) $entity->id,
+                ),
+                $occurredAt,
+                $occurredAt,
+                $provenance,
+            );
+
+            return $oldIdentity;
+        });
+    }
+
     public function merge(
         int $connectionId,
         ExternalReference $supersededReference,

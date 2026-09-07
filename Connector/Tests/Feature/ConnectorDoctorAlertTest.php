@@ -46,23 +46,13 @@ function doctorAlertTenant(string $name): array
     return [(int) $tenant->id, User::factory()->create(['company_id' => $company->id])];
 }
 
-/**
- * A stale webhook delivery is the one red the doctor can be put into, and taken
- * out of, from a test.
- *
- * The doctor calls a queued sync stale when it was created more than an hour
- * before the run, and every run below is travelled to a fixed hour of
- * 2026-09-07 — so the fixture has to be backdated on that timeline. Anchoring
- * it to `now()` instead read the wall clock on the first call of each test,
- * before any `travelTo`, which left the row stale only while the machine's
- * real time of day was still under 11:00 UTC on 2026-09-07 and red for good
- * after it. The anchor below is two hours before the earliest hour any test
- * here travels to.
- */
+/** A stale webhook delivery is the one red the doctor can be put into, and taken out of, from a test. */
 function doctorAlertStaleWebhook(int $tenantId): void
 {
     Queue::connection('database')->pushOn(RunIncrementalWorkforceSync::QUEUE, new RunIncrementalWorkforceSync($tenantId, 999));
-    DB::table('jobs')->latest('id')->limit(1)->update(['created_at' => Carbon::parse('2026-09-07 08:00:00')->timestamp]);
+    // Fixed, not wall-clock relative: the runs below travel to 2026-09-07 10:00-17:00
+    // and count a job stale when it is older than an hour before the travelled time.
+    DB::table('jobs')->latest('id')->limit(1)->update(['created_at' => Carbon::parse('2026-09-07 00:00:00')->timestamp]);
 }
 
 function doctorAlertRun(int $tenantId, User $operator, string $at): int
