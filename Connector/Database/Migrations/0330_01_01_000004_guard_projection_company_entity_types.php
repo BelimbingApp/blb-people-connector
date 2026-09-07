@@ -1,10 +1,19 @@
 <?php
 
+use App\Base\Database\Concerns\IncubatingSchema;
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Support\Facades\DB;
 
+/**
+ * Declares IncubatingSchema because the guarded projection tables are created
+ * by the incubating foundation migration: when `migrate --dev` rebuilds them,
+ * these triggers must be dropped and recreated with them instead of leaving a
+ * stable ledger row that the preflight refuses to rebuild across.
+ */
 return new class extends Migration
 {
+    use IncubatingSchema;
+
     /**
      * Projection ownership is allowed to change when a provider reports a
      * transfer. This guard deliberately does not decide whether that transfer
