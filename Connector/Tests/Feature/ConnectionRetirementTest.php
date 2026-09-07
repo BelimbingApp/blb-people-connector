@@ -7,18 +7,35 @@ use App\Base\Authz\DTO\ResourceContext;
 use App\Base\Authz\Enums\AuthorizationReasonCode;
 use App\Base\Authz\Enums\PrincipalType;
 use App\Base\Tenancy\Contracts\TenantContext;
+use App\Domains\PeopleConnector\Connector\Contracts\BootstrapsWorkforce;
+use App\Domains\PeopleConnector\Connector\Contracts\ProviderAdapter;
+use App\Domains\PeopleConnector\Connector\Contracts\ResolvesProviderPorts;
+use App\Domains\PeopleConnector\Connector\Data\CapabilityChannel;
+use App\Domains\PeopleConnector\Connector\Data\CapabilityDeclaration;
+use App\Domains\PeopleConnector\Connector\Data\CapabilitySet;
 use App\Domains\PeopleConnector\Connector\Data\ExternalReference;
+use App\Domains\PeopleConnector\Connector\Data\ProviderDescriptor;
+use App\Domains\PeopleConnector\Connector\Data\ProviderHealth;
+use App\Domains\PeopleConnector\Connector\Data\ProviderPortAuthorization;
 use App\Domains\PeopleConnector\Connector\Data\ProviderScope;
 use App\Domains\PeopleConnector\Connector\Data\ReconciliationIssueDetails;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceChangePage;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceCompany;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceEmployee;
+use App\Domains\PeopleConnector\Connector\Data\WorkforcePage;
+use App\Domains\PeopleConnector\Connector\Data\WorkforcePageRequest;
+use App\Domains\PeopleConnector\Connector\Enums\CapabilityDelivery;
+use App\Domains\PeopleConnector\Connector\Enums\PeopleCapability;
+use App\Domains\PeopleConnector\Connector\Enums\ProviderHealthState;
 use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
 use App\Domains\PeopleConnector\Connector\Exceptions\ConnectionRetirementException;
 use App\Domains\PeopleConnector\Connector\Exceptions\InvalidWorkforceProvenanceException;
 use App\Domains\PeopleConnector\Connector\Exceptions\ProviderAuthorizationException;
 use App\Domains\PeopleConnector\Connector\Models\ExternalIdentity;
+use App\Domains\PeopleConnector\Connector\Models\OperatorAudit;
 use App\Domains\PeopleConnector\Connector\Models\ProviderConnection;
+use App\Domains\PeopleConnector\Connector\Models\ReconciliationIssue;
+use App\Domains\PeopleConnector\Connector\Models\SyncCheckpoint;
 use App\Domains\PeopleConnector\Connector\Services\ConnectionRetirementService;
 use App\Domains\PeopleConnector\Connector\Services\ProviderConnectionStore;
 use App\Domains\PeopleConnector\Connector\Services\ReconciliationIssueStore;
@@ -26,6 +43,7 @@ use App\Domains\PeopleConnector\Connector\Services\SyncCheckpointStore;
 use App\Domains\PeopleConnector\Connector\Services\WorkforceFreshnessPolicy;
 use App\Domains\PeopleConnector\Connector\Services\WorkforceIdentityStore;
 use App\Domains\PeopleConnector\Connector\Services\WorkforceProjectionStore;
+use App\Domains\PeopleConnector\Connector\Services\WorkforceSyncRunner;
 use Illuminate\Support\Collection;
 
 /*
@@ -125,6 +143,79 @@ function retirementOpenIssue(int $connectionId): void
         WorkforceResourceType::Employee->value,
         'RET-EMP-1',
     );
+}
+
+/**
+ * A RETIREMENT_PROVIDER adapter whose bootstrap source answers page by page
+ * from a closure, so a test can retire the connection between two pages of a
+ * pass that has already started.
+ *
+ * @param  Closure(?string): WorkforcePage  $pages
+ */
+function retirementProvider(Closure $pages): ProviderAdapter
+{
+    return new class($pages) implements ProviderAdapter, ResolvesProviderPorts
+    {
+        public object $source;
+
+        public function __construct(Closure $pages)
+        {
+            $this->source = new class($pages) implements BootstrapsWorkforce
+            {
+                public function __construct(private Closure $pages) {}
+
+                public function bootstrap(WorkforcePageRequest $request): WorkforcePage
+                {
+                    return ($this->pages)($request->pageCursor);
+                }
+            };
+        }
+
+        public function descriptor(): ProviderDescriptor
+        {
+            return new ProviderDescriptor(RETIREMENT_PROVIDER, 'Retirement Test Provider', '0.1.0', '1.0.0');
+        }
+
+        public function capabilities(): CapabilitySet
+        {
+            return new CapabilitySet([
+                new CapabilityDeclaration(PeopleCapability::EmployeeDirectory, [
+                    new CapabilityChannel(CapabilityDelivery::Synchronous, BootstrapsWorkforce::class),
+                ]),
+            ]);
+        }
+
+        public function health(): ProviderHealth
+        {
+            return new ProviderHealth(ProviderHealthState::Healthy, new DateTimeImmutable('2026-09-01T00:00:00+00:00'));
+        }
+
+        public function resolvePort(string $contract, ProviderPortAuthorization $authorization): ?object
+        {
+            return $this->source instanceof $contract ? $this->source : null;
+        }
+    };
+}
+
+function retirementEmployee(string $externalId, DateTimeImmutable $at): WorkforceEmployee
+{
+    return new WorkforceEmployee(
+        reference: retirementRef(WorkforceResourceType::Employee, $externalId),
+        companyReference: retirementRef(WorkforceResourceType::Company, 'RET-CO'),
+        displayName: 'Person '.$externalId,
+        active: true,
+        effectiveAt: $at,
+        observedAt: $at,
+    );
+}
+
+function retirementIdentityExists(int $tenantId, string $externalId): bool
+{
+    return ExternalIdentity::query()
+        ->forTenant($tenantId)
+        ->where('resource_type', WorkforceResourceType::Employee->value)
+        ->where('external_id', $externalId)
+        ->exists();
 }
 
 test('retiring a connection freezes it without erasing what it recorded', function (): void {
@@ -307,6 +398,38 @@ test('a review reference that is not an opaque identifier is refused', function 
 
     expect(ProviderConnection::query()->whereKey($f['connectionId'])->value('status'))
         ->toBe(ProviderConnection::STATUS_ACTIVE);
+});
+
+test('retiring a connection while a sync pass is in flight stops the pass at the next write', function (): void {
+    $f = retirementFixture('Retirement In Flight Tenant');
+    retirementAuthz(true);
+    $later = $f['at']->modify('+1 day');
+    $provider = retirementProvider(function (?string $cursor) use ($f, $later): WorkforcePage {
+        if ($cursor === null) {
+            return new WorkforcePage([retirementEmployee('RET-EMP-2', $later)], $later, nextPageCursor: 'page-2');
+        }
+
+        // The pass checked the connection was active when it started. The
+        // operator retires it now, between two pages of that same pass.
+        app(ConnectionRetirementService::class)->retire($f['actor'], $f['connectionId'], 'retirement-2026-09-06');
+
+        return new WorkforcePage([retirementEmployee('RET-EMP-3', $later)], $later, resumeCursor: 'after-retirement', complete: true);
+    });
+
+    expect(fn () => app(WorkforceSyncRunner::class)->bootstrap($f['actor'], $provider, $f['connectionId']))
+        ->toThrow(ConnectionRetirementException::class);
+
+    // The status read at the start of the pass is not a licence for the rest
+    // of it: every write re-reads the connection, so the record that arrived
+    // after retirement is refused outright, not parked as a reconciliation
+    // issue, and the checkpoint the pass would have landed stays frozen.
+    expect(retirementIdentityExists($f['tenantId'], 'RET-EMP-2'))->toBeTrue()
+        ->and(retirementIdentityExists($f['tenantId'], 'RET-EMP-3'))->toBeFalse()
+        ->and(ReconciliationIssue::query()->forTenant($f['tenantId'])->count())->toBe(0)
+        ->and((int) SyncCheckpoint::query()->forTenant($f['tenantId'])->where('connection_id', $f['connectionId'])->value('version'))->toBe(1)
+        ->and(ProviderConnection::query()->whereKey($f['connectionId'])->value('status'))->toBe(ProviderConnection::STATUS_RETIRED)
+        ->and(OperatorAudit::query()->forTenant($f['tenantId'])->where('operation', 'sync.pass')->value('after_summary'))
+        ->toMatchArray(['pass' => 'bootstrap', 'pages' => 2, 'upserts' => 1, 'completed' => false]);
 });
 
 test('reconfiguring a retired connection is refused rather than rewriting frozen metadata', function (): void {
