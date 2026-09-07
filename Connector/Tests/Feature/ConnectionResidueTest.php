@@ -441,4 +441,3 @@ test('checkpoint events of a sibling connection in the same tenant are not count
     expect($events->count)->toBe($mine)
         ->and($events->count)->toBeLessThan(SyncCheckpointEvent::query()->count());
 });
-
