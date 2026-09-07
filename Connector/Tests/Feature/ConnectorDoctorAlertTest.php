@@ -9,6 +9,7 @@ use App\Core\User\Models\User;
 use App\Domains\PeopleConnector\Connector\Jobs\RunIncrementalWorkforceSync;
 use App\Domains\PeopleConnector\Connector\Models\ConnectorDoctorAlert;
 use App\Domains\PeopleConnector\Connector\Notifications\ConnectorDoctorAlertNotification;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
@@ -49,7 +50,9 @@ function doctorAlertTenant(string $name): array
 function doctorAlertStaleWebhook(int $tenantId): void
 {
     Queue::connection('database')->pushOn(RunIncrementalWorkforceSync::QUEUE, new RunIncrementalWorkforceSync($tenantId, 999));
-    DB::table('jobs')->latest('id')->limit(1)->update(['created_at' => now()->subSeconds(7200)->timestamp]);
+    // Fixed, not wall-clock relative: the runs below travel to 2026-09-07 10:00-17:00
+    // and count a job stale when it is older than an hour before the travelled time.
+    DB::table('jobs')->latest('id')->limit(1)->update(['created_at' => Carbon::parse('2026-09-07 00:00:00')->timestamp]);
 }
 
 function doctorAlertRun(int $tenantId, User $operator, string $at): int
@@ -78,7 +81,7 @@ test('a red once stays quiet, red twice alerts once naming the check, red a thir
 
     expect(doctorAlertRun($tenantId, $operator, '2026-09-07 10:00:00'))->toBe(1);
     Notification::assertNothingSent();
-    expect(DB::table('people_connector_connector_doctor_snapshots')->where('tenant_id', $tenantId)->count())->toBe(7);
+    expect(DB::table('people_connector_connector_doctor_snapshots')->where('tenant_id', $tenantId)->count())->toBe(8);
 
     expect(doctorAlertRun($tenantId, $operator, '2026-09-07 11:00:00'))->toBe(1)
         ->and(Artisan::output())->toContain('webhook_deliveries');
