@@ -39,6 +39,18 @@ beforeEach(function (): void {
 afterEach(fn () => app(TenantContext::class)->clear());
 
 /** @return array{0: int, 1: User} */
+/*
+ * Pin the clock away from the travelled hours so the anchor below cannot be
+ * reverted to a wall-clock offset and still pass. Measured while fixing this:
+ * with `now()->subSeconds(7200)` restored and the clock left free, the file is
+ * green on any machine whose real time of day is before 11:00 UTC on
+ * 2026-09-07 and red after it — which is how the bug reached `main` green and
+ * then broke every open pull request. With this pin, the same revert is red
+ * whatever the date.
+ */
+beforeEach(fn () => Carbon::setTestNow('2030-01-01 00:00:00'));
+afterEach(fn () => Carbon::setTestNow());
+
 function doctorAlertTenant(string $name): array
 {
     [$tenant, $company] = createTenantWithCompany(['name' => $name]);
