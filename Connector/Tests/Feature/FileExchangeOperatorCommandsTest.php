@@ -17,6 +17,7 @@ use App\Domains\PeopleConnector\Connector\Services\FileExchangeLedger;
 use App\Domains\PeopleConnector\Connector\Services\FileExchangeOperator;
 use App\Domains\PeopleConnector\Connector\Services\OperatorAuditLog;
 use App\Domains\PeopleConnector\Connector\Services\ProviderConnectionStore;
+use Carbon\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
@@ -282,4 +283,57 @@ test('list resolves the connection through the store so a foreign connection id 
 test('FileExchangeOperator capability constants match the issue contract', function (): void {
     expect(FileExchangeOperator::LIST_CAPABILITY)->toBe('people-connector.connection.list')
         ->and(FileExchangeOperator::MANAGE_CAPABILITY)->toBe('people-connector.connection.manage');
+});
+
+test('a second connection in the same tenant is not listed under the first', function (): void {
+    $f = fxOpFixture('FX Op Two Connections', 'test.fx-op-two-a');
+    $store = app(ProviderConnectionStore::class);
+    $other = $store->activate((int) $store->configure(ProviderScope::company($f['companyId']), 'test.fx-op-two-b')->id);
+    $second = [
+        'tenantId' => $f['tenantId'],
+        'companyId' => $f['companyId'],
+        'connectionId' => (int) $other->id,
+        'operator' => $f['operator'],
+        'actor' => $f['actor'],
+    ];
+
+    fxOpRecord($f, 'first-connection.csv', "a,1\n");
+    fxOpRecord($second, 'second-connection.csv', "b,2\n");
+
+    $list = fxOpCall('connector:file-exchange:list', $f, ['--connection' => $f['connectionId']]);
+
+    expect($list['status'])->toBe(0)
+        ->and($list['output'])->toContain('first-connection.csv')
+        ->and($list['output'])->not->toContain('second-connection.csv');
+});
+
+test('--since leaves out rows recorded before it', function (): void {
+    $f = fxOpFixture('FX Op Since', 'test.fx-op-since');
+    Carbon::setTestNow('2026-09-01T09:00:00+00:00');
+    fxOpRecord($f, 'old-row.csv', "old,1\n");
+    Carbon::setTestNow('2026-09-05T09:00:00+00:00');
+    fxOpRecord($f, 'new-row.csv', "new,1\n");
+    Carbon::setTestNow();
+
+    $list = fxOpCall('connector:file-exchange:list', $f, [
+        '--connection' => $f['connectionId'],
+        '--since' => '2026-09-03T00:00:00+00:00',
+    ]);
+
+    expect($list['status'])->toBe(0)
+        ->and($list['output'])->toContain('new-row.csv')
+        ->and($list['output'])->not->toContain('old-row.csv');
+});
+
+test('an unknown --status is refused rather than silently matching nothing', function (): void {
+    $f = fxOpFixture('FX Op Bad Status', 'test.fx-op-bad-status');
+    fxOpRecord($f, 'present.csv', "p,1\n");
+
+    $list = fxOpCall('connector:file-exchange:list', $f, [
+        '--connection' => $f['connectionId'],
+        '--status' => 'shredded',
+    ]);
+
+    expect($list['status'])->toBe(1)
+        ->and($list['output'])->toContain('recorded, quarantined or archived');
 });
