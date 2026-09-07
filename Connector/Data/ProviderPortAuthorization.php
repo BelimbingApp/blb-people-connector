@@ -36,9 +36,25 @@ final readonly class ProviderPortAuthorization
      * must never stand in for all twelve — that shape was found to let any
      * directory-read role read Payroll or Documents through the same check.
      */
+    /**
+     * The capability key that gates one direction of one provider port.
+     *
+     * The direction is the LAST segment because the platform grammar reads
+     * domain.resource.action from the end: with it in the middle the action
+     * parsed as the port name, every one of these keys was dropped from the
+     * registry, and the whole provider surface was denied at runtime.
+     *
+     * Underscores become dashes rather than being deleted. Deleting them
+     * happens to be collision-free across the twelve cases today — I checked —
+     * but it throws away the word boundary, so it stays collision-free only by
+     * luck as cases are added. A dash keeps the boundary and is what the
+     * grammar accepts.
+     */
     public static function permissionFor(PeopleCapability $capability, string $direction): string
     {
-        return "people-connector.provider.{$direction}.{$capability->value}";
+        $port = str_replace('_', '-', $capability->value);
+
+        return "people-connector.provider.{$port}.{$direction}";
     }
 
     public static function authorize(
