@@ -47,7 +47,6 @@ return [
     'webhook' => [
         'enabled' => env('PEOPLE_CONNECTOR_WEBHOOK_ENABLED', false),
         'timestamp_tolerance_seconds' => (int) env('PEOPLE_CONNECTOR_WEBHOOK_TOLERANCE_SECONDS', 300),
-        'delivery_id_ttl_seconds' => (int) env('PEOPLE_CONNECTOR_WEBHOOK_DELIVERY_TTL_SECONDS', 86400),
         'max_payload_bytes' => (int) env('PEOPLE_CONNECTOR_WEBHOOK_MAX_PAYLOAD_BYTES', 1048576),
         'secrets' => json_decode((string) env('PEOPLE_CONNECTOR_WEBHOOK_SECRETS', '{}'), true) ?: [],
         'delivery_policy' => [
@@ -94,6 +93,10 @@ return [
         // failed delivery from. A year-old delivery is not worth re-sending;
         // the replay itself is on the operator audit, which is kept.
         'people_connector_connector_webhook_deliveries' => ['days' => 365, 'column' => 'received_at'],
+
+        // Inbound idempotency ledger (#227): a delivery id is a duplicate for
+        // seven days; after that the provider would not resend it anyway.
+        'people_connector_connector_webhook_receipts' => ['days' => 7, 'column' => 'first_seen_at'],
 
         // Scheduled operator health is deliberately short-lived. It is trend
         // context, not an audit log; durable operator actions live elsewhere.

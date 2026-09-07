@@ -10,6 +10,8 @@ use App\Domains\PeopleConnector\Connector\Data\ExternalReference;
 use App\Domains\PeopleConnector\Connector\Data\ProviderScope;
 use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
 use App\Domains\PeopleConnector\Connector\Jobs\RunIncrementalWorkforceSync;
+use App\Domains\PeopleConnector\Connector\Models\WebhookDelivery;
+use App\Domains\PeopleConnector\Connector\Models\WebhookReceipt;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceEntity;
 use App\Domains\PeopleConnector\Connector\Services\ProviderConnectionStore;
 use App\Domains\PeopleConnector\Connector\Services\ProviderRegistry;
@@ -84,7 +86,8 @@ test('connector doctor reports only this tenants stale webhook delivery and exit
     DB::table('jobs')->delete();
     expect(Artisan::call('connector:doctor', ['--tenant' => $tenantId, '--as' => $operator->id, '--json' => true]))->toBe(0);
     $rows = collect(json_decode(trim(Artisan::output()), true, flags: JSON_THROW_ON_ERROR)['checks']);
-    expect($rows)->toHaveCount(4)
+    expect($rows)->toHaveCount(6)
+        ->and($rows->firstWhere('check', 'webhook_duplicates')['detail'] ?? null)->toBe('0 skipped in 7 days')
         ->and($rows->pluck('status')->unique()->all())->toBe(['green']);
 });
 
@@ -100,6 +103,43 @@ test('connector doctor checks configured adapters that have no active connection
             'red',
             'adapter_not_active:test.inactive-doctor',
         );
+});
+
+test('connector doctor counts this tenants acknowledged webhook duplicates and stays green', function (): void {
+    [$tenantId, $companyId, $operator] = doctorTenant('Duplicate Doctor Tenant');
+    [$otherTenantId, $otherCompanyId] = doctorTenant('Other Duplicate Tenant');
+    foreach ([[$tenantId, 3, 1], [$tenantId, 2, 10], [$otherTenantId, 5, 1]] as [$tenant, $duplicates, $daysAgo]) {
+        WebhookReceipt::query()->create([
+            'tenant_id' => $tenant, 'provider_id' => 'test.doctor', 'connection_id' => 1, 'delivery_id' => 'delivery-'.$tenant.'-'.$daysAgo,
+            'first_seen_at' => now()->subDays($daysAgo), 'duplicate_count' => $duplicates,
+        ]);
+        // Each receipt has its delivery behind it: these are genuine duplicates, not stuck reservations.
+        WebhookDelivery::query()->create(['tenant_id' => $tenant, 'connection_id' => 1, 'delivery_id' => 'delivery-'.$tenant.'-'.$daysAgo, 'status' => WebhookDelivery::STATUS_DELIVERED, 'received_at' => now()->subDays($daysAgo)]);
+    }
+
+    expect(Artisan::call('connector:doctor', ['--tenant' => $tenantId, '--as' => $operator->id, '--json' => true]))->toBe(0);
+    $rows = collect(json_decode(trim(Artisan::output()), true, flags: JSON_THROW_ON_ERROR)['checks']);
+    expect($rows->firstWhere('check', 'webhook_duplicates'))->toBe(['check' => 'webhook_duplicates', 'status' => 'green', 'count' => 3, 'detail' => '3 skipped in 7 days']);
+});
+
+test('connector doctor turns red on a receipt with no delivery behind it, after the grace window, in this tenant only', function (): void {
+    [$tenantId, $companyId, $operator] = doctorTenant('Stuck Doctor Tenant');
+    [$otherTenantId] = doctorTenant('Other Stuck Tenant');
+    $receipt = fn (int $tenant, string $delivery, int $minutesAgo) => WebhookReceipt::query()->create([
+        'tenant_id' => $tenant, 'provider_id' => 'test.doctor', 'connection_id' => 7, 'delivery_id' => $delivery, 'first_seen_at' => now()->subMinutes($minutesAgo),
+    ]);
+    $receipt($tenantId, 'delivery-fresh', 1);
+    $receipt($tenantId, 'delivery-done', 30);
+    WebhookDelivery::query()->create(['tenant_id' => $tenantId, 'connection_id' => 7, 'delivery_id' => 'delivery-done', 'status' => WebhookDelivery::STATUS_DELIVERED, 'received_at' => now()->subMinutes(30)]);
+    $receipt($otherTenantId, 'delivery-foreign-stuck', 30);
+
+    expect(Artisan::call('connector:doctor', ['--tenant' => $tenantId, '--as' => $operator->id, '--json' => true]))->toBe(0);
+    $rows = collect(json_decode(trim(Artisan::output()), true, flags: JSON_THROW_ON_ERROR)['checks']);
+    expect($rows->firstWhere('check', 'webhook_stuck_reservations'))->toBe(['check' => 'webhook_stuck_reservations', 'status' => 'green', 'count' => 0, 'detail' => '0 stuck']);
+
+    $receipt($tenantId, 'delivery-lost', 10);
+    expect(Artisan::call('connector:doctor', ['--tenant' => $tenantId, '--as' => $operator->id]))->toBe(1)
+        ->and(Artisan::output())->toContain('webhook_stuck_reservations', 'red', '1 stuck');
 });
 
 test('connector doctor records every run and lists only this tenants latest snapshot per check', function (): void {
@@ -127,7 +167,7 @@ test('connector doctor records every run and lists only this tenants latest snap
         'measured_at' => now(),
     ]);
 
-    expect(DB::table('people_connector_connector_doctor_snapshots')->where('tenant_id', $tenantId)->count())->toBe(8)
+    expect(DB::table('people_connector_connector_doctor_snapshots')->where('tenant_id', $tenantId)->count())->toBe(12)
         ->and(DB::table('people_connector_connector_doctor_snapshots')
             ->where('tenant_id', $tenantId)
             ->pluck('check')
@@ -139,6 +179,8 @@ test('connector doctor records every run and lists only this tenants latest snap
             'identity_mappings' => 2,
             'reconciliation_drift' => 2,
             'webhook_deliveries' => 2,
+            'webhook_duplicates' => 2,
+            'webhook_stuck_reservations' => 2,
         ]);
 
     expect(Artisan::call('connector:doctor', ['--tenant' => $tenantId, '--as' => $operator->id, '--history' => 1]))->toBe(0)
@@ -147,8 +189,8 @@ test('connector doctor records every run and lists only this tenants latest snap
 
     expect(Artisan::call('connector:doctor', ['--tenant' => $tenantId, '--as' => $operator->id, '--history' => 1, '--json' => true]))->toBe(0);
     $history = collect(json_decode(trim(Artisan::output()), true, flags: JSON_THROW_ON_ERROR)['checks']);
-    expect($history)->toHaveCount(4)
-        ->and($history->pluck('check')->unique())->toHaveCount(4);
+    expect($history)->toHaveCount(6)
+        ->and($history->pluck('check')->unique())->toHaveCount(6);
 });
 
 test('connector snapshot retention removes only this tenants rows older than thirty days', function (): void {
