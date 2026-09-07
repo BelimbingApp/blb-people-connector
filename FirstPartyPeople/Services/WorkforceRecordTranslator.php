@@ -7,12 +7,14 @@ use App\Domains\People\Provider\Data\WorkforceCompany as PeopleWorkforceCompany;
 use App\Domains\People\Provider\Data\WorkforceDeactivation as PeopleWorkforceDeactivation;
 use App\Domains\People\Provider\Data\WorkforceEmployee as PeopleWorkforceEmployee;
 use App\Domains\People\Provider\Data\WorkforceOrganizationUnit as PeopleWorkforceOrganizationUnit;
+use App\Domains\People\Provider\Data\WorkforcePosition as PeopleWorkforcePosition;
 use App\Domains\People\Provider\Data\WorkforceUpsert as PeopleWorkforceUpsert;
 use App\Domains\PeopleConnector\Connector\Data\ExternalReference;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceCompany;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceDeactivation;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceEmployee;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceOrganizationUnit;
+use App\Domains\PeopleConnector\Connector\Data\WorkforcePosition;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceUpsert;
 use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
 use App\Domains\PeopleConnector\FirstPartyPeople\Exceptions\ForeignProviderReferenceException;
@@ -21,10 +23,13 @@ use App\Domains\PeopleConnector\FirstPartyPeople\Exceptions\ForeignProviderRefer
  * Restates one published People record as its provider-neutral connector value.
  *
  * The two vocabularies are deliberately near-identical, so this stays a
- * rename rather than a reinterpretation. The two places they differ are the
- * places People has published nothing: a connector organization unit can name
- * a parent unit and a connector employee can name a position, and People
- * emits neither, so both arrive null rather than invented.
+ * rename rather than a reinterpretation. Where People has published nothing
+ * the connector value arrives null rather than invented: a connector
+ * organization unit can name a parent unit and People emits none; a connector
+ * position carries a code, a tier and its own effective date, and People
+ * publishes only the observation time (`ReadsWorkforcePositions`, R1b), so a
+ * position's effective date is the date it was observed. An employee's
+ * position reference is published since R1b and passes through.
  */
 final readonly class WorkforceRecordTranslator
 {
@@ -80,6 +85,19 @@ final readonly class WorkforceRecordTranslator
         );
     }
 
+    public function position(PeopleWorkforcePosition $position): WorkforcePosition
+    {
+        return new WorkforcePosition(
+            reference: $this->reference($position->reference),
+            companyReference: $this->reference($position->companyReference),
+            name: $position->name,
+            active: $position->active,
+            effectiveAt: $position->observedAt,
+            observedAt: $position->observedAt,
+            organizationReference: $this->optionalReference($position->organizationReference),
+        );
+    }
+
     public function employee(PeopleWorkforceEmployee $employee): WorkforceEmployee
     {
         return new WorkforceEmployee(
@@ -93,7 +111,7 @@ final readonly class WorkforceRecordTranslator
             email: $employee->email,
             userReference: $this->optionalReference($employee->userReference),
             organizationReference: $this->optionalReference($employee->organizationReference),
-            positionReference: null,
+            positionReference: $this->optionalReference($employee->positionReference),
             managerReference: $this->optionalReference($employee->managerReference),
             departmentHeadReference: $this->optionalReference($employee->departmentHeadReference),
             sourceVersion: $employee->sourceVersion,

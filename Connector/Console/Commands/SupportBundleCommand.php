@@ -4,19 +4,18 @@ namespace App\Domains\PeopleConnector\Connector\Console\Commands;
 
 use App\Base\Authz\DTO\Actor;
 use App\Base\Authz\Exceptions\AuthorizationDeniedException;
+use App\Base\Tenancy\Console\TenantScopedCommand;
 use App\Base\Tenancy\Contracts\TenantContext;
 use App\Core\User\Models\User;
 use App\Domains\PeopleConnector\Connector\Exceptions\InvalidProviderConfigurationException;
 use App\Domains\PeopleConnector\Connector\Exceptions\ProviderAuthorizationException;
 use App\Domains\PeopleConnector\Connector\Services\SupportBundleBuilder;
 use DateTimeImmutable;
-use Illuminate\Console\Command;
 
 /** Write one privacy-safe diagnostics zip for the operator's tenant (#250). */
-final class SupportBundleCommand extends Command
+final class SupportBundleCommand extends TenantScopedCommand
 {
     protected $signature = 'connector:support:bundle
-                            {--tenant= : Tenant to bundle; defaults to the current tenant context}
                             {--since=7d : Window for history and runs: <n>d, <n>h or <n>m}
                             {--out= : Directory to write into; defaults to storage/app/people-connector/support}
                             {--as= : Id of the operator this bundle runs as}';
@@ -34,9 +33,6 @@ final class SupportBundleCommand extends Command
             $this->error("No user [{$operatorId}].");
 
             return self::FAILURE;
-        }
-        if (($tenantId = $this->option('tenant')) !== null && $tenantId !== '') {
-            $tenants->set((int) $tenantId);
         }
         if (preg_match('/^(\d+)([dhm])$/', (string) $this->option('since'), $m) !== 1 || (int) $m[1] < 1) {
             $this->error('--since takes <n>d, <n>h or <n>m, for example 7d.');

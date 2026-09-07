@@ -6,7 +6,7 @@ Run all tenant-scoped connector health checks as a named operator:
 php artisan connector:doctor --tenant=7 --as=42
 ```
 
-Persist the same four tenant-scoped checks for scheduled operational history:
+Persist the same tenant-scoped checks for scheduled operational history:
 
 ```bash
 php artisan connector:doctor --tenant=7 --as=42 --record
@@ -39,7 +39,7 @@ the snapshots after 30 days.
 The table reports adapter conformance for every configured provider, queued
 webhook-triggered syncs older than one hour, open reconciliation drift,
 active identity mappings that no longer join to a compatible current entity
-and connection, plus two webhook ledger rows (#227): `webhook_stuck_reservations`,
+and connection, two dead-letter rows (#271), plus two webhook ledger rows (#227): `webhook_stuck_reservations`,
 red when a receipt older than five minutes has no delivery behind it (the
 request died between reserving the delivery id and queuing the pass; its
 retry is acknowledged as a duplicate, so this row is where the lost sync
@@ -54,6 +54,23 @@ configured without a usable expiry, which is a rotation nobody finished. It
 names the expiry and never the key, and every tenant is told the same answer
 because the key is not tenant-scoped; the procedure is in
 [../security/delegated-authority.md](../security/delegated-authority.md).
+The two dead-letter rows are red whenever something the connector gave up
+on is still waiting for an operator. `webhook_dead_letters` counts this
+tenant's deliveries whose retry budget ended (`dead_lettered`) and that no
+replay points at yet, with the oldest `failed_at`; a delivery that failed for
+the last time has left the queue, so `webhook_deliveries` alone would get
+greener as it failed. Clear it with `connector:webhook:replay` (or
+`connector:webhook:dead-letters --replay`); the replay keeps the dead-lettered
+row and the count drops when the replay is created, its pass then watched by
+`webhook_deliveries`. `sync_dead_letters` counts open parked feed pages
+(reconciliation issues of kind `sync_dead_letter`) and the connections they
+sit on; `reconciliation_drift` stays the total of every open issue and
+includes them, so the new row is the subset that means a stuck feed rather
+than a merge under review. No console command requeues a parked page: an
+operator re-queues it from the reconciliation page, which goes through
+`DeadLetterService::requeue()` with a review reference and resolves the issue
+(see the `sync_dead_letter` row of [reconciliation-runbook.md](reconciliation-runbook.md)).
+
 `connection_maintenance` (#264) is yellow with the count of connections
 inside a planned maintenance window and the latest `maintenance_until`, green
 with count 0 otherwise, never red: the pause is an operator's decision, see

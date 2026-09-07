@@ -4,6 +4,7 @@ use App\Base\Tenancy\Contracts\TenantContext;
 use App\Base\Tenancy\Exceptions\TenantContextMissingException;
 use App\Domains\People\Provider\Contracts\ReadsWorkforceBootstrap;
 use App\Domains\People\Provider\Contracts\ReadsWorkforceChanges as ReadsPeopleChanges;
+use App\Domains\People\Provider\Contracts\ReadsWorkforcePositions;
 use App\Domains\People\Provider\Data\ExternalReference;
 use App\Domains\People\Provider\Data\WorkforceBootstrapPage;
 use App\Domains\People\Provider\Data\WorkforceChangePage;
@@ -58,7 +59,7 @@ test('both first-party read boundaries refuse foreign nested references without 
             complete: true,
             organizationUnits: $recordKind === 'unit' ? [$record] : [],
         ));
-        $invoke = fn () => (new WorkforceBootstrapPort($reader, $translator))->bootstrap(new WorkforcePageRequest);
+        $invoke = fn () => (new WorkforceBootstrapPort($reader, refusalNoPositions(), $translator))->bootstrap(new WorkforcePageRequest);
     } else {
         $reader = Mockery::mock(ReadsPeopleChanges::class);
         $reader->shouldReceive('read')->once()->andReturn(new WorkforceChangePage(
@@ -88,9 +89,19 @@ test('both first-party read boundaries refuse foreign nested references without 
     'employee company' => ['employee', 'companyReference', WorkforceResourceType::Company],
     'employee user' => ['employee', 'userReference', WorkforceResourceType::User],
     'employee organization' => ['employee', 'organizationReference', WorkforceResourceType::OrganizationUnit],
+    'employee position' => ['employee', 'positionReference', WorkforceResourceType::Position],
     'employee manager' => ['employee', 'managerReference', WorkforceResourceType::Employee],
     'employee department head' => ['employee', 'departmentHeadReference', WorkforceResourceType::Employee],
 ]);
+
+/** A positions reader for pages that carry no company, so it is never consulted. */
+function refusalNoPositions(): ReadsWorkforcePositions
+{
+    $positions = Mockery::mock(ReadsWorkforcePositions::class);
+    $positions->shouldNotReceive('positions');
+
+    return $positions;
+}
 
 test('unexpected People reader failures retain their original exception at both boundaries', function (string $operation): void {
     $failure = new LogicException('Unexpected provider defect');
@@ -100,7 +111,7 @@ test('unexpected People reader failures retain their original exception at both 
 
     try {
         if ($operation === 'bootstrap') {
-            (new WorkforceBootstrapPort($reader, $translator))->bootstrap(new WorkforcePageRequest);
+            (new WorkforceBootstrapPort($reader, refusalNoPositions(), $translator))->bootstrap(new WorkforcePageRequest);
         } else {
             (new WorkforceChangePort($reader, $translator))->changes(new WorkforceChangeRequest('resume'));
         }

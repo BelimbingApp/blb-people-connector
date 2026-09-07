@@ -3,18 +3,17 @@
 namespace App\Domains\PeopleConnector\Connector\Console\Commands;
 
 use App\Base\Authz\DTO\Actor;
+use App\Base\Tenancy\Console\TenantScopedCommand;
 use App\Base\Tenancy\Contracts\TenantContext;
 use App\Core\User\Models\User;
 use App\Domains\PeopleConnector\Connector\Exceptions\ProviderAuthorizationException;
 use App\Domains\PeopleConnector\Connector\Exceptions\WorkforceSubjectExportException;
 use App\Domains\PeopleConnector\Connector\Services\WorkforceSubjectExporter;
-use Illuminate\Console\Command;
 
-final class WorkforceSubjectExportCommand extends Command
+final class WorkforceSubjectExportCommand extends TenantScopedCommand
 {
     protected $signature = 'people-connector:subject-export
                             {entity : Canonical workforce entity id}
-                            {--tenant= : Tenant containing the subject; defaults to the current tenant context}
                             {--as= : Id of the operator this export runs as}
                             {--json : Emit machine-readable result JSON}';
 
@@ -34,11 +33,6 @@ final class WorkforceSubjectExportCommand extends Command
             $this->error("No user [{$operatorId}].");
 
             return self::FAILURE;
-        }
-
-        $tenantOption = $this->option('tenant');
-        if ($tenantOption !== null && $tenantOption !== '') {
-            $tenants->set((int) $tenantOption);
         }
 
         try {

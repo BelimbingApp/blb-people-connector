@@ -3,19 +3,18 @@
 namespace App\Domains\PeopleConnector\Connector\Console\Commands;
 
 use App\Base\Authz\DTO\Actor;
+use App\Base\Tenancy\Console\TenantScopedCommand;
 use App\Base\Tenancy\Contracts\TenantContext;
 use App\Core\User\Models\User;
 use App\Domains\PeopleConnector\Connector\Exceptions\ProviderAuthorizationException;
 use App\Domains\PeopleConnector\Connector\Exceptions\WorkforceSubjectImportException;
 use App\Domains\PeopleConnector\Connector\Services\WorkforceSubjectImporter;
-use Illuminate\Console\Command;
 
-final class WorkforceSubjectImportCommand extends Command
+final class WorkforceSubjectImportCommand extends TenantScopedCommand
 {
     protected $signature = 'connector:identity-import
                             {package : Package id in protected incoming DataShare storage}
                             {--connection= : Target provider connection id}
-                            {--tenant= : Target tenant id; defaults to the current tenant context}
                             {--as= : Id of the operator this import runs as}
                             {--json : Emit machine-readable result JSON}';
 
@@ -32,9 +31,6 @@ final class WorkforceSubjectImportCommand extends Command
             $this->error("No user [{$operatorId}].");
 
             return self::FAILURE;
-        }
-        if (($tenantId = $this->option('tenant')) !== null && $tenantId !== '') {
-            $tenants->set((int) $tenantId);
         }
 
         try {
