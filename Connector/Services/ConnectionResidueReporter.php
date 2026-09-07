@@ -123,12 +123,6 @@ final class ConnectionResidueReporter
     {
         $query = $model::query()->forTenant($tenantId);
 
-        if ($model === ProviderCredentialRecord::class) {
-            $query->withoutCompanyScope(
-                'Residue lists every credential bound to the retired connection, across companies.',
-            );
-        }
-
         if ($binding === 'checkpoint') {
             $checkpointIds = SyncCheckpoint::query()
                 ->forTenant($tenantId)
@@ -153,7 +147,10 @@ final class ConnectionResidueReporter
 
         return match ($table) {
             'people_connector_connector_external_identities' => $this->countFlag(
-                (clone $query)->whereNull('replaced_by_identity_id')->count(),
+                (clone $query)
+                    ->whereNull('replaced_by_identity_id')
+                    ->whereNull('effective_to')
+                    ->count(),
                 'current identity still unbound to a replacement',
             ),
             'people_connector_connector_provider_credentials' => $this->countFlag(

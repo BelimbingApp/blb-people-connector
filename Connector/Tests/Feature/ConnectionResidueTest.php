@@ -402,3 +402,43 @@ test('the command refuses to run without a tenant scope', function (): void {
     expect($exit)->toBe(1)
         ->and(Artisan::output())->toContain('tenant');
 });
+
+test('an identity deactivated before retirement is not an open decision', function (): void {
+    $f = residueRetiredFixture('Residue Departed');
+
+    // Everyone the connection still names has left: their identities are
+    // closed, state inactive, and nothing replaced them because there was
+    // nobody to hand over. Raw-written in the style this file already uses for
+    // the open issue, because retirement has frozen the supported path.
+    DB::table('people_connector_connector_external_identities')
+        ->where('tenant_id', $f['tenantId'])
+        ->where('connection_id', $f['connectionId'])
+        ->whereNull('replaced_by_identity_id')
+        ->update(['state' => ExternalIdentity::STATE_INACTIVE, 'effective_to' => now()]);
+
+    $report = app(ConnectionResidueReporter::class)->for($f['actor'], $f['connectionId']);
+    $identities = residueRow($report->rows, 'people_connector_connector_external_identities');
+
+    expect($identities->flagged)->toBeFalse();
+});
+
+test('checkpoint events of a sibling connection in the same tenant are not counted', function (): void {
+    $f = residueRetiredFixture('Residue Sibling Checkpoint');
+    app(SyncCheckpointStore::class)->advanceCompletedPage(
+        $f['replacementId'],
+        'workforce',
+        new WorkforceChangePage(changes: [], asOf: new DateTimeImmutable, resumeCursor: 'replacement-1', complete: true),
+        expectedVersion: 0,
+    );
+
+    $report = app(ConnectionResidueReporter::class)->for($f['actor'], $f['connectionId']);
+    $events = residueRow($report->rows, 'people_connector_connector_sync_checkpoint_events');
+    $mine = SyncCheckpointEvent::query()->whereIn(
+        'checkpoint_id',
+        SyncCheckpoint::query()->forTenant($f['tenantId'])->where('connection_id', $f['connectionId'])->pluck('id'),
+    )->count();
+
+    expect($events->count)->toBe($mine)
+        ->and($events->count)->toBeLessThan(SyncCheckpointEvent::query()->count());
+});
+

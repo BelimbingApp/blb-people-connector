@@ -40,5 +40,6 @@ carry `checkpoint_id`, not `connection_id`). File exchange rows bind via
 | File exchange still recorded | Archive or quarantine the ledger row once the bytes are handled; a `recorded` row is unfinished work |
 
 A table can have rows without a flag — for example webhook deliveries that are
-already dead-lettered, or identities that were remapped before retirement. Those
-are inventory, not open decisions.
+already dead-lettered, identities that were remapped before retirement, or
+identities closed by departure (`effective_to` set, no replacement). Those are
+inventory, not open decisions.
