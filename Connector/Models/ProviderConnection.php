@@ -23,6 +23,37 @@ final class ProviderConnection extends TenantOwnedModel
 
     protected $table = 'people_connector_connector_provider_connections';
 
+    /**
+     * Whether a planned maintenance window (#264) currently holds this
+     * connection: sync passes skip it and webhook-triggered runs are deferred.
+     *
+     * Only a future `maintenance_until` counts. A window that has lapsed is
+     * cleared here, on the read that notices it, so no purge or scheduler has
+     * to own the clean-up and no later reader sees a stale window.
+     */
+    public function inMaintenance(?\DateTimeImmutable $at = null): bool
+    {
+        $until = $this->maintenance_until;
+
+        if ($until === null) {
+            return false;
+        }
+
+        $at ??= \DateTimeImmutable::createFromInterface(now());
+
+        if ($until > $at) {
+            return true;
+        }
+
+        if ($this->exists) {
+            static::query()->whereKey($this->getKey())->update(['maintenance_until' => null, 'maintenance_reason' => null]);
+        }
+        $this->forceFill(['maintenance_until' => null, 'maintenance_reason' => null]);
+        $this->syncOriginalAttributes('maintenance_until', 'maintenance_reason');
+
+        return false;
+    }
+
     protected static function booted(): void
     {
         self::saving(function (ProviderConnection $connection): void {
@@ -55,6 +86,7 @@ final class ProviderConnection extends TenantOwnedModel
             'public_metadata' => 'array',
             'activated_at' => 'immutable_datetime',
             'deactivated_at' => 'immutable_datetime',
+            'maintenance_until' => 'immutable_datetime',
         ];
     }
 }

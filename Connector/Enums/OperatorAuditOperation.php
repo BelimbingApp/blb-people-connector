@@ -7,6 +7,7 @@ enum OperatorAuditOperation: string
 {
     case SyncPass = 'sync.pass';
     case ConnectionRetired = 'connection.retired';
+    case ConnectionMaintenance = 'connection.maintenance';
     case IdentitiesRemapped = 'provider.identities_remapped';
     case CutoverRehearsed = 'cutover.rehearsed';
     case RetentionPurged = 'retention.purged';
@@ -23,6 +24,7 @@ enum OperatorAuditOperation: string
         return match ($this) {
             self::SyncPass => 'Workforce sync pass',
             self::ConnectionRetired => 'Connection retired',
+            self::ConnectionMaintenance => 'Connection maintenance window changed',
             self::IdentitiesRemapped => 'Identities remapped to a replacement connection',
             self::CutoverRehearsed => 'Cutover rehearsed',
             self::RetentionPurged => 'Retention purge executed',

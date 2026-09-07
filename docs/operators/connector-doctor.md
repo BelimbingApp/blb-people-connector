@@ -54,6 +54,10 @@ configured without a usable expiry, which is a rotation nobody finished. It
 names the expiry and never the key, and every tenant is told the same answer
 because the key is not tenant-scoped; the procedure is in
 [../security/delegated-authority.md](../security/delegated-authority.md).
+`connection_maintenance` (#264) is yellow with the count of connections
+inside a planned maintenance window and the latest `maintenance_until`, green
+with count 0 otherwise, never red: the pause is an operator's decision, see
+[connection-maintenance.md](connection-maintenance.md).
 Yellow does not fail the doctor; only red does. A provider without an active connection is red because its
 ports cannot be exercised. Any red row makes the command exit non-zero. Use
 `--json` for automation.
