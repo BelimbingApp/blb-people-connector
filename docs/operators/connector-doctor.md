@@ -25,7 +25,10 @@ red when a receipt older than five minutes has no delivery behind it (the
 request died between reserving the delivery id and queuing the pass; its
 retry is acknowledged as a duplicate, so this row is where the lost sync
 shows), and the informational `webhook_duplicates`: deliveries acknowledged
-as duplicates in the last seven days, never red. A provider without an active connection is red because its
+as duplicates in the last seven days, never red; and `webhook_secret_overlap`
+(#247), yellow while a connection's previous signing secret is still inside
+its rotation overlap, with the count and the earliest expiry. Yellow does not
+fail the doctor; only red does. A provider without an active connection is red because its
 ports cannot be exercised. Any red row makes the command exit non-zero. Use
 `--json` for automation.
 

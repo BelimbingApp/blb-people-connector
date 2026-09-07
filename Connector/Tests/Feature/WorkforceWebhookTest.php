@@ -280,3 +280,39 @@ test('a signature made with a sibling connection secret is refused', function ()
 
     Bus::assertNothingDispatched();
 });
+
+test('during a rotation overlap deliveries signed with the old and the new secret are both accepted; after it, the old one is refused before dispatch', function (): void {
+    $connection = webhookConnection();
+    enableWebhookFor($connection);
+    config()->set("people-connector.webhook.secrets.{$connection->id}", [
+        ['secret' => 'new-secret'],
+        ['secret' => 'old-secret', 'expires_at' => '2026-09-07T11:00:00+00:00'],
+    ]);
+    Bus::fake();
+    $body = webhookBody();
+    $post = fn (string $secret, string $delivery) => $this->call('POST', "/webhooks/people-connector/{$connection->id}",
+        server: webhookServerHeaders((int) $connection->id, $body, now()->getTimestamp(), $secret, $delivery), content: $body);
+
+    $this->travelTo('2026-09-07 10:00:00');
+    $post('old-secret', 'delivery-old-1')->assertAccepted();
+    $post('new-secret', 'delivery-new-1')->assertAccepted();
+    $post('never-secret', 'delivery-never-1')->assertForbidden()->assertJson(['refused' => 'invalid_signature']);
+
+    $this->travelTo('2026-09-07 11:00:01');
+    $post('old-secret', 'delivery-old-2')->assertForbidden()->assertJson(['refused' => 'invalid_signature']);
+    $post('new-secret', 'delivery-new-2')->assertAccepted();
+
+    Bus::assertDispatchedTimes(RunIncrementalWorkforceSync::class, 3);
+});
+
+test('a malformed rotation list verifies nothing rather than something', function (): void {
+    $connection = webhookConnection();
+    enableWebhookFor($connection);
+    config()->set("people-connector.webhook.secrets.{$connection->id}", [['secret' => 'ok'], ['secret' => 'old', 'expires_at' => 'yesterday']]);
+    Bus::fake();
+    $body = webhookBody();
+
+    $this->call('POST', "/webhooks/people-connector/{$connection->id}", server: webhookServerHeaders((int) $connection->id, $body, time(), 'ok'), content: $body)
+        ->assertStatus(503)->assertJson(['refused' => 'unconfigured']);
+    Bus::assertNothingDispatched();
+});

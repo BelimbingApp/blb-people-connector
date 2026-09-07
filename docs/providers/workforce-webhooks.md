@@ -39,6 +39,12 @@ receipt and before queuing the pass leaves a stuck reservation whose retry
 is acknowledged as a duplicate; `connector:doctor` reports those red as
 `webhook_stuck_reservations` after a five-minute grace window.
 
+A connection's entry in `PEOPLE_CONNECTOR_WEBHOOK_SECRETS` is either one
+secret string or a list of `{"secret": ..., "expires_at": ...}` entries,
+newest first; an entry with `expires_at` (RFC 3339) is a previous secret kept
+for a rotation overlap and verifies nothing after it. Every unexpired entry
+is tried. See [webhook-secret-rotate.md](../operators/webhook-secret-rotate.md).
+
 A valid request returns `202` and queues the ordinary incremental workforce
 pass for that connection. The job receives only the tenant and connection ids;
 it never receives or parses the webhook payload, so projections remain owned

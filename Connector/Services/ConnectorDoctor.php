@@ -52,6 +52,10 @@ final class ConnectorDoctor
             // Informational (#227): a duplicate acknowledged is a retry that did
             // no harm, so the row never turns the doctor red.
             ['check' => 'webhook_duplicates', 'status' => 'green', 'count' => $duplicates = $this->receipts->duplicatesSkipped($tenantId), 'detail' => "{$duplicates} skipped in 7 days"],
+            // Yellow while a previous signing secret is still inside its
+            // rotation overlap (#247): expected during a rotation, worth
+            // noticing if it never clears.
+            $this->secretOverlap($tenantId),
         ]);
     }
 
@@ -191,6 +195,29 @@ final class ConnectorDoctor
     }
 
     /** @return array{check: string, status: string, count: int, detail: string} */
+    /** @return array{check: string, status: string, count: int, detail: string} */
+    private function secretOverlap(int $tenantId): array
+    {
+        $now = \DateTimeImmutable::createFromInterface(now());
+        $earliest = null;
+        $count = 0;
+        foreach (ProviderConnection::query()->forTenant($tenantId)->orderBy('id')->pluck('id') as $connectionId) {
+            $endsAt = WebhookSecrets::overlapEndsAt((int) $connectionId, $now);
+            if ($endsAt === null) {
+                continue;
+            }
+            $count++;
+            $earliest = $earliest === null || $endsAt < $earliest ? $endsAt : $earliest;
+        }
+
+        return [
+            'check' => 'webhook_secret_overlap',
+            'status' => $count === 0 ? 'green' : 'yellow',
+            'count' => $count,
+            'detail' => $count === 0 ? '0 overlapping' : "{$count} overlapping, earliest expiry {$earliest?->format(DATE_ATOM)}",
+        ];
+    }
+
     private function row(string $check, int $failures, string $detail): array
     {
         return ['check' => $check, 'status' => $failures === 0 ? 'green' : 'red', 'count' => $failures, 'detail' => $detail];

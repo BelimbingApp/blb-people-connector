@@ -56,13 +56,16 @@ final class WorkforceWebhookVerifier
             throw new WebhookRefusal('malformed_delivery_id', 'The webhook delivery id is missing or malformed.');
         }
 
-        $now ??= new DateTimeImmutable;
+        $now ??= DateTimeImmutable::createFromInterface(now());
         if (abs($now->getTimestamp() - (int) $timestamp) > $tolerance) {
             throw new WebhookRefusal('stale_timestamp', 'The webhook timestamp is outside the allowed window.');
         }
 
-        $secret = config("people-connector.webhook.secrets.{$connectionId}");
-        if (! is_string($secret) || $secret === '') {
+        // One string or a rotation list (#247): every secret still inside its
+        // window is tried, so a provider switching secrets mid-overlap is
+        // accepted whichever one it signed with.
+        $secrets = WebhookSecrets::usable($connectionId, $now);
+        if ($secrets === []) {
             throw new WebhookRefusal('unconfigured', 'Webhook verification is not configured for this connection.');
         }
 
@@ -72,9 +75,14 @@ final class WorkforceWebhookVerifier
         }
 
         $message = $connectionId."\n".$timestamp."\n".$deliveryId."\n".$body;
-        $expected = hash_hmac('sha256', $message, $secret);
+        $matched = false;
+        foreach ($secrets as $secret) {
+            // Every candidate is compared, constant-time each, with no early
+            // exit: the number of secrets, not which one matched, sets the time.
+            $matched = hash_equals(hash_hmac('sha256', $message, $secret), strtolower($signature)) || $matched;
+        }
 
-        if (! hash_equals($expected, strtolower($signature))) {
+        if (! $matched) {
             throw new WebhookRefusal('invalid_signature', 'The webhook signature is invalid.');
         }
     }
