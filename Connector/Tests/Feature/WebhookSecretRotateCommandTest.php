@@ -8,11 +8,14 @@ use App\Base\Authz\Enums\AuthorizationReasonCode;
 use App\Base\Tenancy\Contracts\TenantContext;
 use App\Core\User\Models\User;
 use App\Domains\PeopleConnector\Connector\Data\ProviderScope;
+use App\Domains\PeopleConnector\Connector\Data\WorkforceChangePage;
 use App\Domains\PeopleConnector\Connector\Enums\OperatorAuditOperation;
 use App\Domains\PeopleConnector\Connector\Exceptions\ProviderAuthorizationException;
 use App\Domains\PeopleConnector\Connector\Models\OperatorAudit;
 use App\Domains\PeopleConnector\Connector\Services\ProviderConnectionStore;
 use App\Domains\PeopleConnector\Connector\Services\ProviderRegistry;
+use App\Domains\PeopleConnector\Connector\Services\SyncCheckpointStore;
+use App\Domains\PeopleConnector\Connector\Services\WorkforceFreshnessPolicy;
 use App\Domains\PeopleConnector\FirstPartyPeople\FirstPartyPeopleAdapter;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Artisan;
@@ -138,6 +141,8 @@ test('the doctor shows the overlap row yellow only while a previous secret is un
     config()->set('queue.default', 'database');
     $t = secretRotateTenant('Rotate Doctor Tenant');
     $this->travelTo('2026-09-07 10:00:00');
+    // A fresh checkpoint keeps the connection's workforce_freshness row (#284) green; only the overlap row moves here.
+    app(SyncCheckpointStore::class)->advanceCompletedPage($t['connection'], WorkforceFreshnessPolicy::stream(), new WorkforceChangePage([], now()->toImmutable(), resumeCursor: 'cursor-0', complete: true), 0, now());
     config()->set("people-connector.webhook.secrets.{$t['connection']}", [
         ['secret' => 'new-secret'],
         ['secret' => 'old-secret', 'expires_at' => '2026-09-07T11:00:00+00:00'],

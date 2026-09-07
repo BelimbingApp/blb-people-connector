@@ -8,6 +8,7 @@ use App\Base\Tenancy\Contracts\TenantContext;
 use App\Core\User\Models\User;
 use App\Domains\PeopleConnector\Connector\Data\ExternalReference;
 use App\Domains\PeopleConnector\Connector\Data\ProviderScope;
+use App\Domains\PeopleConnector\Connector\Data\WorkforceChangePage;
 use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
 use App\Domains\PeopleConnector\Connector\Jobs\RunIncrementalWorkforceSync;
 use App\Domains\PeopleConnector\Connector\Models\WebhookDelivery;
@@ -15,6 +16,8 @@ use App\Domains\PeopleConnector\Connector\Models\WebhookReceipt;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceEntity;
 use App\Domains\PeopleConnector\Connector\Services\ProviderConnectionStore;
 use App\Domains\PeopleConnector\Connector\Services\ProviderRegistry;
+use App\Domains\PeopleConnector\Connector\Services\SyncCheckpointStore;
+use App\Domains\PeopleConnector\Connector\Services\WorkforceFreshnessPolicy;
 use App\Domains\PeopleConnector\Connector\Services\WorkforceIdentityStore;
 use App\Domains\PeopleConnector\FirstPartyPeople\FirstPartyPeopleAdapter;
 use Illuminate\Support\Collection;
@@ -49,6 +52,18 @@ function doctorTenant(string $name): array
     return [(int) $tenant->id, (int) $company->id, User::factory()->create(['company_id' => $company->id])];
 }
 
+/** A fresh checkpoint, so the connection's workforce_freshness row (#284) is green and only the row under test moves. */
+function doctorCheckpoint(int $connectionId, DateTimeImmutable $asOf): void
+{
+    app(SyncCheckpointStore::class)->advanceCompletedPage(
+        $connectionId,
+        WorkforceFreshnessPolicy::stream(),
+        new WorkforceChangePage([], $asOf, resumeCursor: 'cursor-0', complete: true),
+        0,
+        $asOf,
+    );
+}
+
 function queueDoctorWebhook(int $tenantId, int $ageSeconds): void
 {
     Queue::connection('database')->pushOn(RunIncrementalWorkforceSync::QUEUE, new RunIncrementalWorkforceSync($tenantId, 999));
@@ -64,6 +79,7 @@ test('connector doctor reports only this tenants stale webhook delivery and exit
     $targetConnections = app(ProviderConnectionStore::class);
     $targetConnection = $targetConnections->configure(ProviderScope::company($companyId), FirstPartyPeopleAdapter::ID);
     $targetConnections->activate((int) $targetConnection->id);
+    doctorCheckpoint((int) $targetConnection->id, now()->toImmutable());
 
     app(TenantContext::class)->set($otherTenantId);
     $connections = app(ProviderConnectionStore::class);
@@ -86,7 +102,7 @@ test('connector doctor reports only this tenants stale webhook delivery and exit
     DB::table('jobs')->delete();
     expect(Artisan::call('connector:doctor', ['--tenant' => $tenantId, '--as' => $operator->id, '--json' => true]))->toBe(0);
     $rows = collect(json_decode(trim(Artisan::output()), true, flags: JSON_THROW_ON_ERROR)['checks']);
-    expect($rows)->toHaveCount(8)
+    expect($rows)->toHaveCount(9)
         ->and($rows->firstWhere('check', 'webhook_duplicates')['detail'] ?? null)->toBe('0 skipped in 7 days')
         ->and($rows->pluck('status')->unique()->all())->toBe(['green']);
 });
@@ -153,6 +169,7 @@ test('connector doctor records every run and lists only this tenants latest snap
     $connections->activate((int) $connection->id);
 
     $this->travelTo('2026-09-06 10:00:00');
+    doctorCheckpoint((int) $connection->id, now()->toImmutable());
     expect(Artisan::call('connector:doctor', ['--tenant' => $tenantId, '--as' => $operator->id, '--record' => true]))->toBe(0);
 
     queueDoctorWebhook($tenantId, 3601);
@@ -167,7 +184,7 @@ test('connector doctor records every run and lists only this tenants latest snap
         'measured_at' => now(),
     ]);
 
-    expect(DB::table('people_connector_connector_doctor_snapshots')->where('tenant_id', $tenantId)->count())->toBe(16)
+    expect(DB::table('people_connector_connector_doctor_snapshots')->where('tenant_id', $tenantId)->count())->toBe(18)
         ->and(DB::table('people_connector_connector_doctor_snapshots')
             ->where('tenant_id', $tenantId)
             ->pluck('check')
@@ -183,6 +200,7 @@ test('connector doctor records every run and lists only this tenants latest snap
             'webhook_duplicates' => 2,
             'webhook_secret_overlap' => 2,
             'webhook_stuck_reservations' => 2,
+            'workforce_freshness:'.$connection->id => 2,
         ]);
 
     expect(Artisan::call('connector:doctor', ['--tenant' => $tenantId, '--as' => $operator->id, '--history' => 1]))->toBe(0)
@@ -191,8 +209,8 @@ test('connector doctor records every run and lists only this tenants latest snap
 
     expect(Artisan::call('connector:doctor', ['--tenant' => $tenantId, '--as' => $operator->id, '--history' => 1, '--json' => true]))->toBe(0);
     $history = collect(json_decode(trim(Artisan::output()), true, flags: JSON_THROW_ON_ERROR)['checks']);
-    expect($history)->toHaveCount(8)
-        ->and($history->pluck('check')->unique())->toHaveCount(8);
+    expect($history)->toHaveCount(9)
+        ->and($history->pluck('check')->unique())->toHaveCount(9);
 });
 
 test('connector snapshot retention removes only this tenants rows older than thirty days', function (): void {

@@ -54,6 +54,14 @@ configured without a usable expiry, which is a rotation nobody finished. It
 names the expiry and never the key, and every tenant is told the same answer
 because the key is not tenant-scoped; the procedure is in
 [../security/delegated-authority.md](../security/delegated-authority.md).
+Then one `workforce_freshness:<connection id>` row per active connection
+(#284): red when `WorkforceFreshnessPolicy` says the connection is stale, with
+the reason code in the detail (`never_synchronized`, or `exceeded_max_age`
+with the age and the configured maximum in minutes), green with the age
+alone. Inactive and retired connections have no row: their staleness is a
+decision already taken. Because the row is a check like any other, `--alert`
+covers sync lag: two consecutive stale snapshots send one alert naming the
+connection, and the next fresh checkpoint sends the recovery.
 Yellow does not fail the doctor; only red does. A provider without an active connection is red because its
 ports cannot be exercised. Any red row makes the command exit non-zero. Use
 `--json` for automation.

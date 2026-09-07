@@ -28,6 +28,7 @@ final class ConnectorDoctor
         private readonly ProviderPortResolver $ports,
         private readonly SchedulerPrincipal $principals,
         private readonly WebhookReceiptLedger $receipts,
+        private readonly WorkforceFreshnessPolicy $freshness,
     ) {}
 
     public function inspect(Actor $actor): ConnectorDoctorReport
@@ -61,6 +62,10 @@ final class ConnectorDoctor
             // a rotation nobody finished is invisible until tokens minted
             // before it start being refused.
             $this->delegationSecretOverlap(),
+            // One row per active connection (#284): the durable checkpoint is
+            // the only evidence a feed is still moving, so a connection that
+            // stopped synchronizing is red here and reaches --alert.
+            ...$this->workforceFreshness($tenantId),
         ]);
     }
 
@@ -255,6 +260,32 @@ final class ConnectorDoctor
         return DelegationPolicy::previousSecretAcceptedAt(\DateTimeImmutable::createFromInterface(now()))
             ? $row('yellow', 1, 'previous delegation secret accepted until '.$expiresAt->format(DATE_ATOM))
             : $row('red', 1, 'previous delegation secret lapsed at '.$expiresAt->format(DATE_ATOM));
+    }
+
+    /**
+     * Workforce freshness per active connection, keyed `workforce_freshness:<id>`.
+     *
+     * Red carries the policy's reason code and the age; green the age alone.
+     * Inactive and retired connections produce no row: their staleness is a
+     * decision already taken, not a fault the doctor should page on.
+     *
+     * @return list<array{check: string, status: string, count: int, detail: string}>
+     */
+    private function workforceFreshness(int $tenantId): array
+    {
+        $now = \DateTimeImmutable::createFromInterface(now());
+        $rows = [];
+        foreach (ProviderConnection::query()->forTenant($tenantId)->where('status', ProviderConnection::STATUS_ACTIVE)->orderBy('id')->pluck('id') as $connectionId) {
+            $freshness = $this->freshness->for((int) $connectionId, $now);
+            $age = $freshness->ageMinutes() === null ? null : "{$freshness->ageMinutes()} minutes old, maximum {$freshness->maxAgeMinutes}";
+            $rows[] = $this->row(
+                "workforce_freshness:{$connectionId}",
+                $freshness->isStale() ? 1 : 0,
+                $freshness->isStale() ? $freshness->staleReason.($age === null ? '' : ", {$age}") : (string) $age,
+            );
+        }
+
+        return $rows;
     }
 
     private function row(string $check, int $failures, string $detail): array
