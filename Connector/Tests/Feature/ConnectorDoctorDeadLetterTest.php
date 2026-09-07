@@ -12,6 +12,7 @@ use App\Domains\PeopleConnector\Connector\Enums\WebhookDeliveryFailure;
 use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
 use App\Domains\PeopleConnector\Connector\Exceptions\CorruptWorkforcePageException;
 use App\Domains\PeopleConnector\Connector\Models\ProviderConnection;
+use App\Domains\PeopleConnector\Connector\Models\ProviderCredentialRecord;
 use App\Domains\PeopleConnector\Connector\Models\ReconciliationIssue;
 use App\Domains\PeopleConnector\Connector\Models\WebhookDelivery;
 use App\Domains\PeopleConnector\Connector\Services\ConnectorDoctor;
@@ -61,6 +62,12 @@ function doctorDlTenant(string $name): array
     }
     $store = app(ProviderConnectionStore::class);
     $connection = $store->activate((int) $store->configure(ProviderScope::company((int) $company->id), FirstPartyPeopleAdapter::ID)->id);
+    // A usable credential keeps the connection's provider_credential_expiry row (#296) green.
+    ProviderCredentialRecord::query()->create([
+        'tenant_id' => (int) $connection->tenant_id, 'connection_id' => (int) $connection->id, 'provider_id' => FirstPartyPeopleAdapter::ID,
+        'key_id' => 'fixture-key', 'secret_reference' => 'base-integration:fixture', 'audience' => 'provider',
+        'scopes' => ['workforce:read'], 'issued_at' => '2020-01-01 00:00:00', 'expires_at' => '2099-01-01 00:00:00',
+    ]);
 
     return ['tenantId' => (int) $tenant->id, 'operator' => User::factory()->create(['company_id' => $company->id]), 'connection' => $connection];
 }

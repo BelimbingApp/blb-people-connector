@@ -75,6 +75,21 @@ operator re-queues it from the reconciliation page, which goes through
 inside a planned maintenance window and the latest `maintenance_until`, green
 with count 0 otherwise, never red: the pause is an operator's decision, see
 [connection-maintenance.md](connection-maintenance.md).
+
+Credential expiry (#296) is one row per **active** connection,
+`provider_credential_expiry:<connection id>`: red when no usable provider
+credential exists for the connection right now (expired, revoked, or never
+issued), yellow when the latest usable one expires inside
+`people-connector.doctor.credential_warning_days`
+(`PEOPLE_CONNECTOR_DOCTOR_CREDENTIAL_WARNING_DAYS`, default 14), green
+otherwise. The detail names the credential id, key id and expiry and never the
+secret reference. Inactive and retired connections have no row. The action for
+red or yellow is to issue a replacement through the credential store's
+`ProviderCredentialStore::rotate()` path (which revokes the previous
+credential as it issues the new one); `connector:webhook:secret:rotate` is the
+webhook signing secret, not this. Because `--record` writes one snapshot per
+row, `--alert` covers expiry with no further configuration, keyed by the same
+`provider_credential_expiry:<id>` name.
 Yellow does not fail the doctor; only red does. A provider without an active connection is red because its
 ports cannot be exercised. Any red row makes the command exit non-zero. Use
 `--json` for automation.

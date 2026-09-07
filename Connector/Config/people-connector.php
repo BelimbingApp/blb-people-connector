@@ -113,6 +113,11 @@ return [
         // (#257), e.g. database or mail. Null disables alerting: the command
         // says so and carries on.
         'alert_channel' => env('PEOPLE_CONNECTOR_DOCTOR_ALERT_CHANNEL'),
+
+        // Days before a connection's latest usable provider credential expires
+        // at which connector:doctor turns its provider_credential_expiry row
+        // yellow (#296). Red needs no window: no usable credential is red now.
+        'credential_warning_days' => (int) env('PEOPLE_CONNECTOR_DOCTOR_CREDENTIAL_WARNING_DAYS', 14),
     ],
 
     'file_exchange' => [

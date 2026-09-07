@@ -13,6 +13,7 @@ use App\Domains\PeopleConnector\Connector\Exceptions\ProviderAuthorizationExcept
 use App\Domains\PeopleConnector\Connector\Jobs\RunIncrementalWorkforceSync;
 use App\Domains\PeopleConnector\Connector\Models\ExternalIdentity;
 use App\Domains\PeopleConnector\Connector\Models\ProviderConnection;
+use App\Domains\PeopleConnector\Connector\Models\ProviderCredentialRecord;
 use App\Domains\PeopleConnector\Connector\Models\ReconciliationIssue;
 use App\Domains\PeopleConnector\Connector\Models\WebhookDelivery;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceEntity;
@@ -71,7 +72,69 @@ final class ConnectorDoctor
             // Yellow while a connection is inside a planned maintenance window
             // (#264): the pause is an operator's decision, not a fault.
             $this->maintenance($tenantId),
+            // One row per active connection (#296): the only failure knowable
+            // weeks ahead, so it gets a warning window and its own alert key.
+            ...$this->credentialExpiry($tenantId),
         ]);
+    }
+
+    /**
+     * Provider credential expiry, one row per active connection of the tenant.
+     *
+     * Red when no usable credential exists right now (expired, revoked, or
+     * never issued), yellow when the latest usable one expires inside
+     * `people-connector.doctor.credential_warning_days`, green otherwise. The
+     * detail names the credential id, key id and expiry and never the secret
+     * reference (docs/contracts/diagnostic-privacy.md). Inactive and retired
+     * connections have no row: nothing authenticates as them.
+     *
+     * @return list<array{check: string, status: string, count: int, detail: string}>
+     */
+    public function credentialExpiry(int $tenantId): array
+    {
+        $now = \DateTimeImmutable::createFromInterface(now());
+        $warning = $now->modify('+'.self::credentialWarningDays().' days');
+        $rows = [];
+
+        $connectionIds = ProviderConnection::query()->forTenant($tenantId)
+            ->where('status', ProviderConnection::STATUS_ACTIVE)
+            ->orderBy('id')
+            ->pluck('id');
+
+        foreach ($connectionIds as $connectionId) {
+            $check = 'provider_credential_expiry:'.(int) $connectionId;
+            $credential = ProviderCredentialRecord::query()
+                ->forTenant($tenantId)
+                ->where('connection_id', (int) $connectionId)
+                ->whereNull('revoked_at')
+                ->where('issued_at', '<=', $now)
+                ->where('expires_at', '>', $now)
+                ->orderByDesc('expires_at')
+                ->orderByDesc('id')
+                ->first(['credential_id', 'key_id', 'expires_at']);
+
+            if ($credential === null) {
+                $rows[] = ['check' => $check, 'status' => 'red', 'count' => 1, 'detail' => 'no usable credential'];
+
+                continue;
+            }
+
+            $expiresAt = \DateTimeImmutable::createFromInterface($credential->expires_at);
+            $detail = "credential {$credential->credential_id} key {$credential->key_id} expires ".$expiresAt->format(DATE_ATOM);
+
+            $rows[] = $expiresAt <= $warning
+                ? ['check' => $check, 'status' => 'yellow', 'count' => 1, 'detail' => $detail.' (inside the '.self::credentialWarningDays().'-day warning window)']
+                : ['check' => $check, 'status' => 'green', 'count' => 0, 'detail' => $detail];
+        }
+
+        return $rows;
+    }
+
+    public static function credentialWarningDays(): int
+    {
+        $days = config('people-connector.doctor.credential_warning_days');
+
+        return is_int($days) && $days >= 0 ? $days : 14;
     }
 
     public function record(Actor $actor, ?\DateTimeImmutable $measuredAt = null): ConnectorDoctorReport
