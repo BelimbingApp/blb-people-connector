@@ -438,7 +438,17 @@ final class WorkforceSyncRunner
                 $tally['reactivations']++;
             }
 
-            $this->projections->upsert($connectionId, $record, $provenance);
+            $projection = $this->projections->upsert($connectionId, $record, $provenance);
+
+            if ($projection->observed_at->greaterThan($record->observedAt)) {
+                // The store kept the newer facts it already had and wrote
+                // nothing (#273). Counting that as an upsert would have the
+                // report claim a change nobody can find; it is superseded.
+                $tally['superseded']++;
+
+                return;
+            }
+
             $tally[match (true) {
                 $record instanceof WorkforceCompany => 'companies',
                 $record instanceof WorkforceOrganizationUnit => 'organizationUnits',
@@ -602,7 +612,7 @@ final class WorkforceSyncRunner
     private function seen(array $tally): int
     {
         return $tally['companies'] + $tally['organizationUnits'] + $tally['positions'] + $tally['employees']
-            + $tally['deactivations'] + $tally['mergesQueued'] + $tally['conflicts'];
+            + $tally['deactivations'] + $tally['mergesQueued'] + $tally['conflicts'] + $tally['superseded'];
     }
 
     /**
