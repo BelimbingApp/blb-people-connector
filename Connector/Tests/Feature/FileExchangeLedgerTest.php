@@ -230,3 +230,84 @@ test('one operator audit row per recorded file, and neither the path nor the con
         ->and($raw)->not->toContain(dirname($file->path))
         ->and($raw)->not->toContain('Ada Secretive');
 });
+
+/*
+ * Reviewer findings (fable-5.1-medium, #265): each guard below survived
+ * deletion with the file green, so each gets the test that makes it matter.
+ */
+
+test('the model refuses a direction or status outside its vocabulary even when written directly', function (): void {
+    $f = fileExchangeTenant('File Exchange Vocabulary Tenant');
+    $record = app(FileExchangeLedger::class)->record($f['connection'], fileExchangeFile('vocab.csv', 'a,b'), 'import', 'workforce.import', $f['actor']);
+
+    // The ledger checks the direction on the way in; the model is what stops
+    // a direct write, and status has no ledger-side check at all.
+    expect(fn () => FileExchangeRecord::query()->findOrFail($record->id)->forceFill(['status' => 'approved'])->save())
+        ->toThrow(AppendOnlyRecordException::class, 'status');
+
+    $fresh = new FileExchangeRecord(array_merge(
+        (array) DB::table(FILE_EXCHANGE_TABLE)->where('id', $record->id)->first(),
+        ['id' => null, 'sha256' => str_repeat('c', 64), 'direction' => 'sideways'],
+    ));
+    expect(fn () => $fresh->save())->toThrow(AppendOnlyRecordException::class, 'direction')
+        ->and(fileExchangeRows())->toBe(1);
+});
+
+test('an archived record is final: it can be neither quarantined nor archived again', function (): void {
+    $f = fileExchangeTenant('File Exchange Final Tenant');
+    $ledger = app(FileExchangeLedger::class);
+    $record = $ledger->record($f['connection'], fileExchangeFile('final.csv', 'a,b'), 'import', 'workforce.import', $f['actor']);
+    $archived = $ledger->archive($record, $f['actor']);
+    $audits = OperatorAudit::query()->count();
+
+    expect(fn () => $ledger->quarantine($archived, 'too late', $f['actor']))->toThrow(FileExchangeException::class, 'final');
+    expect(fn () => $ledger->archive($archived, $f['actor']))->toThrow(FileExchangeException::class, 'final');
+
+    expect(DB::table(FILE_EXCHANGE_TABLE)->where('id', $record->id)->value('status'))->toBe('archived')
+        ->and(OperatorAudit::query()->count())->toBe($audits);
+});
+
+test('a quarantine reason the ledger accepts is quarantined and audited, or refused before the write', function (): void {
+    $f = fileExchangeTenant('File Exchange Reason Length Tenant');
+    $ledger = app(FileExchangeLedger::class);
+    $record = $ledger->record($f['connection'], fileExchangeFile('reason.csv', 'a,b'), 'import', 'workforce.import', $f['actor']);
+    $audits = OperatorAudit::query()->count();
+
+    // At the reviewed head the ledger admits 191 bytes and the audit admits
+    // 190: the status is written inside its transaction, then the audit
+    // throws outside it, leaving a quarantined record with no audit row. The
+    // bound the ledger enforces must be one the audit accepts, and the audit
+    // must land with the status or the status must not land at all.
+    $reason = str_repeat('r', 191);
+
+    try {
+        $ledger->quarantine($record, $reason, $f['actor']);
+        $accepted = true;
+    } catch (FileExchangeException) {
+        $accepted = false;
+    }
+
+    $status = DB::table(FILE_EXCHANGE_TABLE)->where('id', $record->id)->value('status');
+    $auditsAfter = OperatorAudit::query()->count();
+
+    if ($accepted) {
+        expect($status)->toBe('quarantined')
+            ->and($auditsAfter)->toBe($audits + 1);
+    } else {
+        expect($status)->toBe('recorded')
+            ->and($auditsAfter)->toBe($audits);
+    }
+
+    expect(fn () => $ledger->quarantine(FileExchangeRecord::query()->findOrFail($record->id), str_repeat('r', 400), $f['actor']))
+        ->toThrow(FileExchangeException::class);
+});
+
+test('an operation name longer than its column is refused and nothing is written', function (): void {
+    $f = fileExchangeTenant('File Exchange Operation Length Tenant');
+    $ledger = app(FileExchangeLedger::class);
+
+    expect($ledger->record($f['connection'], fileExchangeFile('op80.csv', 'a,b'), 'import', str_repeat('o', 80), $f['actor'])->operation)->toBe(str_repeat('o', 80));
+    expect(fn () => $ledger->record($f['connection'], fileExchangeFile('op81.csv', 'a,b,c'), 'import', str_repeat('o', 81), $f['actor']))
+        ->toThrow(FileExchangeException::class);
+    expect(fileExchangeRows())->toBe(1);
+});
