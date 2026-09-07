@@ -11,6 +11,7 @@ use App\Domains\PeopleConnector\Connector\Data\ProviderScope;
 use App\Domains\PeopleConnector\Connector\Enums\OperatorAuditOperation;
 use App\Domains\PeopleConnector\Connector\Exceptions\ProviderAuthorizationException;
 use App\Domains\PeopleConnector\Connector\Models\OperatorAudit;
+use App\Domains\PeopleConnector\Connector\Models\ProviderCredentialRecord;
 use App\Domains\PeopleConnector\Connector\Services\ProviderConnectionStore;
 use App\Domains\PeopleConnector\Connector\Services\ProviderRegistry;
 use App\Domains\PeopleConnector\FirstPartyPeople\FirstPartyPeopleAdapter;
@@ -137,6 +138,13 @@ test('an unauthorized operator gets the authorization failure and no rotation', 
 test('the doctor shows the overlap row yellow only while a previous secret is unexpired, and stays healthy', function (): void {
     config()->set('queue.default', 'database');
     $t = secretRotateTenant('Rotate Doctor Tenant');
+    // A usable credential keeps the connection's expiry row (#296) green, so
+    // the only non-green row here is the overlap under test.
+    ProviderCredentialRecord::query()->create([
+        'tenant_id' => $t['tenantId'], 'connection_id' => $t['connection'], 'provider_id' => FirstPartyPeopleAdapter::ID,
+        'key_id' => 'rotate-doctor', 'secret_reference' => 'base-integration:rotate-doctor', 'audience' => 'provider',
+        'scopes' => ['workforce:read'], 'issued_at' => '2020-01-01 00:00:00', 'expires_at' => '2099-01-01 00:00:00',
+    ]);
     $this->travelTo('2026-09-07 10:00:00');
     config()->set("people-connector.webhook.secrets.{$t['connection']}", [
         ['secret' => 'new-secret'],
