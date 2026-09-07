@@ -97,7 +97,7 @@ function dryRunCall(array $source, array $target, array $extra = []): int
 {
     app(TenantContext::class)->clear();
 
-    return Artisan::call('connector:migrate:dry-run', ['source' => $source['tenantId'], '--to' => $target['tenantId'], '--as' => $source['operator']->id, ...$extra]);
+    return Artisan::call('connector:migrate:dry-run', ['--tenant' => $source['tenantId'], '--to' => $target['tenantId'], '--as' => $source['operator']->id, ...$extra]);
 }
 
 test('a source identity the target already maps is listed as a collision and the run exits 1, writing nothing', function (): void {
@@ -180,9 +180,9 @@ test('an operator not admitted by the target tenant is refused before anything i
     expect(dryRunCall($source, $target))->toBe(1)
         ->and(Artisan::output())->toContain('lacks the capability in tenant '.$source['tenantId']);
 
-    expect(Artisan::call('connector:migrate:dry-run', ['source' => $source['tenantId'], '--to' => $source['tenantId'], '--as' => $source['operator']->id]))->toBe(1)
+    expect(Artisan::call('connector:migrate:dry-run', ['--tenant' => $source['tenantId'], '--to' => $source['tenantId'], '--as' => $source['operator']->id]))->toBe(1)
         ->and(Artisan::output())->toContain('must differ');
-    expect(Artisan::call('connector:migrate:dry-run', ['source' => $source['tenantId'], '--as' => $source['operator']->id]))->toBe(1)
+    expect(Artisan::call('connector:migrate:dry-run', ['--tenant' => $source['tenantId'], '--as' => $source['operator']->id]))->toBe(1)
         ->and(Artisan::output())->toContain('pass --to=<tenant id>');
 });
 

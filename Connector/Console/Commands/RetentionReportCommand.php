@@ -3,13 +3,13 @@
 namespace App\Domains\PeopleConnector\Connector\Console\Commands;
 
 use App\Base\Authz\DTO\Actor;
+use App\Base\Tenancy\Console\TenantScopedCommand;
 use App\Base\Tenancy\Contracts\TenantContext;
 use App\Core\User\Models\User;
 use App\Domains\PeopleConnector\Connector\Data\RetentionTableReport;
 use App\Domains\PeopleConnector\Connector\Exceptions\ProviderAuthorizationException;
 use App\Domains\PeopleConnector\Connector\Exceptions\RetentionPolicyException;
 use App\Domains\PeopleConnector\Connector\Services\RetentionPolicy;
-use Illuminate\Console\Command;
 
 /**
  * Show what a retention purge would find, without purging anything.
@@ -18,10 +18,9 @@ use Illuminate\Console\Command;
  * capability-gated, and a command that invented its own actor would answer the
  * question "may this person see this" with "a command asked, so yes".
  */
-final class RetentionReportCommand extends Command
+final class RetentionReportCommand extends TenantScopedCommand
 {
     protected $signature = 'people-connector:retention-report
-                            {--tenant= : Tenant to report on; defaults to the current tenant context}
                             {--as= : Id of the operator this report runs as}';
 
     protected $description = 'Report connector-owned rows past their retention window, without deleting any';
@@ -42,12 +41,6 @@ final class RetentionReportCommand extends Command
             $this->error("No user [{$operatorId}].");
 
             return self::FAILURE;
-        }
-
-        $tenantOption = $this->option('tenant');
-
-        if ($tenantOption !== null && $tenantOption !== '') {
-            $tenants->set((int) $tenantOption);
         }
 
         try {

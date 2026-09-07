@@ -21,6 +21,10 @@ use App\Domains\PeopleConnector\Connector\Services\TenantConnectionLocator;
  * nothing (#161). Runs inside one tenant (--tenant, from the base) because an
  * export is one tenant's personnel data, even when nothing is written. Exits
  * non-zero while any defect exists. Prints reason codes only: this output lands
+ * in a terminal. The SHA-256 is streamed off disk and the parser refuses a file
+ * over people-connector.file_exchange.max_bytes / max_rows (#301), so an
+ * oversized drop is a defect line, not a memory fatal.
+ *
  * in a terminal.
  *
  * With --reconcile (#298) the typed records are also classified against one
@@ -60,14 +64,15 @@ final class Hr2000ImportDryRunCommand extends TenantScopedCommand
         }
 
         $path = (string) $this->argument('path');
-        $bytes = is_file($path) ? @file_get_contents($path) : false;
-        if ($bytes === false) {
+        $sha256 = is_file($path) ? @hash_file('sha256', $path) : false;
+        $sizeBytes = $sha256 === false ? false : @filesize($path);
+        if ($sha256 === false || $sizeBytes === false) {
             $this->error('file_unreadable: '.basename($path));
 
             return self::FAILURE;
         }
 
-        $run = $parser->parse(new ProviderFile(basename($path), hash('sha256', $bytes), $path), now()->toDateTimeImmutable(), $bytes);
+        $run = $parser->parse(new ProviderFile(basename($path), $sha256, $path, $sizeBytes), now()->toDateTimeImmutable());
 
         $reconciliation = null;
         if ($reconcile) {

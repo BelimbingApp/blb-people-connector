@@ -3,20 +3,19 @@
 namespace App\Domains\PeopleConnector\Connector\Console\Commands;
 
 use App\Base\Authz\DTO\Actor;
+use App\Base\Tenancy\Console\TenantScopedCommand;
 use App\Base\Tenancy\Contracts\TenantContext;
 use App\Core\User\Models\User;
 use App\Domains\PeopleConnector\Connector\Services\WorkforceSyncBench;
-use Illuminate\Console\Command;
 
 /**
  * Operator entry for WorkforceSyncBench (#254). Authorized like
  * connector:doctor: a named operator inside the tenant, checked before the
  * throwaway connection is provisioned.
  */
-final class BenchSyncCommand extends Command
+final class BenchSyncCommand extends TenantScopedCommand
 {
     protected $signature = 'connector:bench:sync
-                            {--tenant= : Tenant to bench in; defaults to the current tenant context}
                             {--as= : Id of the operator this bench runs as}
                             {--employees= : Synthetic employees per run (at least 1)}
                             {--units=1 : Synthetic organisation units (at least 1)}
@@ -36,9 +35,6 @@ final class BenchSyncCommand extends Command
             $this->error("No user [{$operatorId}].");
 
             return self::FAILURE;
-        }
-        if (($tenantId = $this->option('tenant')) !== null && $tenantId !== '') {
-            $tenants->set((int) $tenantId);
         }
 
         $report = $bench->run(

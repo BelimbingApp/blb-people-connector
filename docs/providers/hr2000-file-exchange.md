@@ -100,6 +100,16 @@ authoritative-writer and field allowlist permit the data. The sequence is:
    verified contract explicitly supplies complete-snapshot and deactivation
    semantics.
 
+The dry run (`connector:hr2000:import:dry-run`, #161) is bounded (#301):
+`people-connector.file_exchange.max_bytes` (default 50 MiB,
+`PEOPLE_CONNECTOR_FILE_MAX_BYTES`) refuses a larger file with the file-level
+defect `file_too_large` before any byte is read, and `max_rows` (default
+100 000, `PEOPLE_CONNECTOR_FILE_MAX_ROWS`) stops at row `max_rows + 1` with
+`row_limit_exceeded`, reporting the rows read so far. Both refuse the whole
+file, so no record is typed. The SHA-256 is streamed off disk, so an over-limit
+file still has the digest the ledger keys on. Either defect is a reason code:
+the report never carries the path or the size.
+
 ### Dry-run reconciliation vocabulary
 
 `connector:hr2000:import:dry-run --reconcile --connection=<id> --as=<user id>`
