@@ -79,7 +79,15 @@ final class DelegatedAuthoritySigner
             );
         }
 
-        if ($now > $authority->expiresAt) {
+        $skew = DelegationPolicy::clockSkewSeconds();
+
+        // A token from the future is either a badly skewed issuer or a token
+        // being pre-positioned; past the tolerance both are refused alike.
+        if ($authority->issuedAt > $now->modify("+{$skew} seconds")) {
+            throw new DelegatedAuthorityException('This authority is not valid yet.', DelegatedAuthorityRefusal::NotYetValid);
+        }
+
+        if ($now > $authority->expiresAt->modify("+{$skew} seconds")) {
             throw new DelegatedAuthorityException('This authority has expired.', DelegatedAuthorityRefusal::Expired);
         }
 

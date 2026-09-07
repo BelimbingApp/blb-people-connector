@@ -87,6 +87,13 @@ function parityCases(): array
             'operation' => 'employee.command.cancel',
             'refusal' => DelegatedAuthorityRefusal::WrongOperation,
         ],
+        // Since #185 the audience is a backend question too, so it belongs in
+        // the shared dataset rather than in the wire-only cases below.
+        'wrong audience' => [
+            'token' => parityAuthority(['audience' => 'people-connector.somewhere-else']),
+            'operation' => PARITY_OPERATION,
+            'refusal' => DelegatedAuthorityRefusal::WrongAudience,
+        ],
     ];
 }
 
@@ -104,8 +111,12 @@ function parityDecide(DelegatedAuthority $authority, string $operation): array
         $inProcess = $refused->refusal;
     }
 
+    // Same claims, its own jti: the in-process spend above consumed the
+    // first token, and a replay refusal here would be the ledger talking,
+    // not the transport under comparison (#185).
+    $twin = DelegatedAuthority::fromClaims([...$authority->claims(), 'jti' => $authority->id.'-http']);
     $request = Request::create('/delegated', 'POST');
-    $request->headers->set(DelegatedCommandController::AUTHORITY_HEADER, $signer->sign($authority));
+    $request->headers->set(DelegatedCommandController::AUTHORITY_HEADER, $signer->sign($twin));
     $response = app(DelegatedCommandController::class)($request, PARITY_AUDIENCE, $operation);
     $body = $response->getData(true);
     $http = $response->getStatusCode() === 200
@@ -130,7 +141,7 @@ test('every denial in the shared dataset is answered identically by both transpo
         $fixture['refusal'],
         "http path answered differently from the dataset for [{$case}]",
     );
-})->with(['accepted', 'expired', 'wrong tenant', 'wrong operation']);
+})->with(['accepted', 'expired', 'wrong tenant', 'wrong operation', 'wrong audience']);
 
 test('a token this connector did not sign is refused by the transport that can see it', function (): void {
     parityReady();
