@@ -79,7 +79,7 @@ test('a completed pass marks its delivery delivered', function (): void {
 
 test('a pass that throws marks its delivery failed with a reason code and class, never the message, and rethrows', function (): void {
     $f = fateFixture();
-    ProviderConnection::query()->whereKey($f['connection']->id)->update(['status' => ProviderConnection::STATUS_RETIRED]);
+    ProviderConnection::query()->whereKey($f['connection']->id)->update(['status' => ProviderConnection::STATUS_RETIRED, 'active_scope_key' => null]);
 
     expect(fn () => app()->call([new RunIncrementalWorkforceSync($f['tenantId'], (int) $f['connection']->id, (int) $f['delivery']->id), 'handle']))
         ->toThrow(WorkforceSyncException::class, 'is not active');

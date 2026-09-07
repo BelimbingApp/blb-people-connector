@@ -12,6 +12,7 @@ use App\Domains\PeopleConnector\Connector\Data\ProviderScope;
 use App\Domains\PeopleConnector\Connector\Data\ReconciliationIssueDetails;
 use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
 use App\Domains\PeopleConnector\Connector\Exceptions\ProviderAuthorizationException;
+use App\Domains\PeopleConnector\Connector\Models\ExternalIdentity;
 use App\Domains\PeopleConnector\Connector\Models\ReconciliationIssue;
 use App\Domains\PeopleConnector\Connector\Models\WebhookDelivery;
 use App\Domains\PeopleConnector\Connector\Services\ProviderConnectionStore;
@@ -183,4 +184,40 @@ test('an operator not admitted by the target tenant is refused before anything i
         ->and(Artisan::output())->toContain('must differ');
     expect(Artisan::call('connector:migrate:dry-run', ['--tenant' => $source['tenantId'], '--as' => $source['operator']->id]))->toBe(1)
         ->and(Artisan::output())->toContain('pass --to=<tenant id>');
+});
+
+test('a delivery whose retry is still pending is in flight; a dead-lettered one is not', function (): void {
+    $source = dryRunTenant('Move Source', 'test.move');
+    $target = dryRunTenant('Move Target', 'test.move');
+    dryRunAuthz([$source['tenantId'], $target['tenantId']]);
+
+    // RunIncrementalWorkforceSync::handle marks the delivery `failed` and
+    // rethrows while attempts remain, so the job is back on the queue for
+    // another attempt. That is unfinished work a tenant move would strand.
+    WebhookDelivery::query()->create(['tenant_id' => $source['tenantId'], 'connection_id' => $source['connection'], 'delivery_id' => 'd-failed-retrying', 'status' => WebhookDelivery::STATUS_FAILED, 'attempts' => 1, 'received_at' => now()]);
+    WebhookDelivery::query()->create(['tenant_id' => $source['tenantId'], 'connection_id' => $source['connection'], 'delivery_id' => 'd-dead', 'status' => WebhookDelivery::STATUS_DEAD_LETTERED, 'attempts' => 3, 'received_at' => now()]);
+
+    expect(dryRunCall($source, $target, ['--json' => true]))->toBe(1);
+    $report = json_decode(trim(Artisan::output()), true, flags: JSON_THROW_ON_ERROR);
+    expect($report['in_flight_deliveries'])->toBe(1)
+        ->and($report['blockers'])->toHaveCount(1)
+        ->and($report['dead_letters'])->toBe(0);
+});
+
+test('a non-active identity on either side is not a collision', function (): void {
+    $source = dryRunTenant('Move Source', 'test.move');
+    $target = dryRunTenant('Move Target', 'test.move');
+    dryRunAuthz([$source['tenantId'], $target['tenantId']]);
+    // Source retired identity vs target active: not reported.
+    $retiredSource = dryRunIdentity($source, 'test.move', 'EMP-RETIRED-SOURCE');
+    dryRunIdentity($target, 'test.move', 'EMP-RETIRED-SOURCE');
+    ExternalIdentity::query()->forTenant($source['tenantId'])->whereKey($retiredSource)->update(['state' => 'replaced']);
+    // Source active vs target retired identity: not reported either.
+    dryRunIdentity($source, 'test.move', 'EMP-RETIRED-TARGET');
+    $retiredTarget = dryRunIdentity($target, 'test.move', 'EMP-RETIRED-TARGET');
+    ExternalIdentity::query()->forTenant($target['tenantId'])->whereKey($retiredTarget)->update(['state' => 'replaced']);
+
+    expect(dryRunCall($source, $target, ['--json' => true]))->toBe(0);
+    $report = json_decode(trim(Artisan::output()), true, flags: JSON_THROW_ON_ERROR);
+    expect($report['collisions'])->toBe([])->and($report['blocked'])->toBeFalse();
 });

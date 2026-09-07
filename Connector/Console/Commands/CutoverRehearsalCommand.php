@@ -6,6 +6,8 @@ use App\Base\Authz\DTO\Actor;
 use App\Base\Tenancy\Console\TenantScopedCommand;
 use App\Base\Tenancy\Contracts\TenantContext;
 use App\Core\User\Models\User;
+use App\Domains\PeopleConnector\Connector\Data\CutoverCountRow;
+use App\Domains\PeopleConnector\Connector\Data\CutoverRehearsalReport;
 use App\Domains\PeopleConnector\Connector\Exceptions\ConnectorRecordNotFoundException;
 use App\Domains\PeopleConnector\Connector\Exceptions\ProviderAuthorizationException;
 use App\Domains\PeopleConnector\Connector\Services\CutoverRehearsalService;
@@ -22,7 +24,8 @@ final class CutoverRehearsalCommand extends TenantScopedCommand
     protected $signature = 'people-connector:cutover-rehearsal
                             {from : Connection being replaced}
                             {to : Connection taking over}
-                            {--as= : Id of the operator this rehearsal runs as}';
+                            {--as= : Id of the operator this rehearsal runs as}
+                            {--json : Emit the report as JSON instead of tables}';
 
     protected $description = 'Report what a provider cutover would break, without changing anything';
 
@@ -56,12 +59,33 @@ final class CutoverRehearsalCommand extends TenantScopedCommand
             return self::FAILURE;
         }
 
+        if ($this->option('json')) {
+            $this->line((string) json_encode($this->payload($report), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+
+            return $report->blocked() ? self::FAILURE : self::SUCCESS;
+        }
+
         $this->line("Cutover rehearsal: connection {$report->fromConnectionId} → {$report->toConnectionId}");
         $this->table(['Check', 'Result'], [
             ['Identities the target cannot answer for', (string) $report->unmappedIdentities],
             ['Target connection stale', $report->targetStale ? ($report->targetStaleReason ?? 'yes') : 'no'],
             ['Open reconciliation issues', (string) $report->openIssues],
+            ['Projection count mismatches', (string) $report->countMismatches()],
         ]);
+
+        // Named before it is printed, because a table of bare numbers with no
+        // statement of what is being compared is the thing an operator misreads.
+        $this->line('Live projections each connection can answer for, per company:');
+        $this->table(
+            ['Company entity', 'Resource', 'Source', 'Target', 'Agrees'],
+            array_map(static fn (CutoverCountRow $row): array => [
+                (string) $row->companyEntityId,
+                $row->resourceType->value,
+                (string) $row->sourceCount,
+                (string) $row->targetCount,
+                $row->matches() ? 'yes' : 'no',
+            ], $report->counts),
+        );
 
         if (! $report->blocked()) {
             $this->line('No blockers found. Nothing was changed.');
@@ -74,5 +98,27 @@ final class CutoverRehearsalCommand extends TenantScopedCommand
         }
 
         return self::FAILURE;
+    }
+
+    /** @return array<string, mixed> */
+    private function payload(CutoverRehearsalReport $report): array
+    {
+        return [
+            'from_connection_id' => $report->fromConnectionId,
+            'to_connection_id' => $report->toConnectionId,
+            'unmapped_identities' => $report->unmappedIdentities,
+            'target_stale' => $report->targetStale,
+            'target_stale_reason' => $report->targetStaleReason,
+            'open_issues' => $report->openIssues,
+            'count_mismatches' => $report->countMismatches(),
+            'counts' => array_map(static fn (CutoverCountRow $row): array => [
+                'company_entity_id' => $row->companyEntityId,
+                'resource_type' => $row->resourceType->value,
+                'source_count' => $row->sourceCount,
+                'target_count' => $row->targetCount,
+            ], $report->counts),
+            'blocked' => $report->blocked(),
+            'blockers' => $report->blockers(),
+        ];
     }
 }

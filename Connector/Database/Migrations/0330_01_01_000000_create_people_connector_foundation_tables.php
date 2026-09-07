@@ -190,12 +190,14 @@ return new class extends Migration
             $table->timestamp('effective_at');
             $table->timestamp('observed_at');
             $table->string('source_version', 100)->nullable();
+            $table->timestamp('privacy_deleted_at')->nullable();
             $table->timestamps();
 
             $table->index('tenant_id', 'pc_org_tenant_idx');
             $table->unique(['id', 'tenant_id'], 'pc_org_id_tenant_uq');
             $table->unique(['tenant_id', 'workforce_entity_id'], 'pc_org_entity_uq');
             $table->index(['tenant_id', 'company_entity_id', 'active'], 'pc_org_company_active_idx');
+            $table->index(['tenant_id', 'company_entity_id', 'privacy_deleted_at'], 'pc_org_privacy_idx');
             $this->addProjectionForeignKeys($table, 'pc_org');
             $this->addEntityForeignKey($table, 'company_entity_id', 'pc_org_company_tenant_fk');
             $this->addEntityForeignKey($table, 'parent_entity_id', 'pc_org_parent_tenant_fk');
@@ -218,12 +220,14 @@ return new class extends Migration
             $table->timestamp('effective_at');
             $table->timestamp('observed_at');
             $table->string('source_version', 100)->nullable();
+            $table->timestamp('privacy_deleted_at')->nullable();
             $table->timestamps();
 
             $table->index('tenant_id', 'pc_position_tenant_idx');
             $table->unique(['id', 'tenant_id'], 'pc_position_id_tenant_uq');
             $table->unique(['tenant_id', 'workforce_entity_id'], 'pc_position_entity_uq');
             $table->index(['tenant_id', 'company_entity_id', 'active'], 'pc_position_company_active_idx');
+            $table->index(['tenant_id', 'company_entity_id', 'privacy_deleted_at'], 'pc_position_privacy_idx');
             $this->addProjectionForeignKeys($table, 'pc_position');
             $this->addEntityForeignKey($table, 'company_entity_id', 'pc_position_company_tenant_fk');
             $this->addEntityForeignKey($table, 'organization_entity_id', 'pc_position_org_tenant_fk');
@@ -250,6 +254,7 @@ return new class extends Migration
             $table->timestamp('effective_at');
             $table->timestamp('observed_at');
             $table->string('source_version', 100)->nullable();
+            $table->timestamp('privacy_deleted_at')->nullable();
             $table->timestamps();
 
             $table->index('tenant_id', 'pc_employee_tenant_idx');
@@ -257,6 +262,7 @@ return new class extends Migration
             $table->unique(['tenant_id', 'workforce_entity_id'], 'pc_employee_entity_uq');
             $table->index(['tenant_id', 'company_entity_id', 'active'], 'pc_employee_company_active_idx');
             $table->index(['tenant_id', 'employee_number'], 'pc_employee_number_idx');
+            $table->index(['tenant_id', 'company_entity_id', 'privacy_deleted_at'], 'pc_employee_privacy_idx');
             $this->addProjectionForeignKeys($table, 'pc_employee');
             $this->addEntityForeignKey($table, 'company_entity_id', 'pc_employee_company_tenant_fk');
             $this->addEntityForeignKey($table, 'user_entity_id', 'pc_employee_user_tenant_fk');
@@ -283,12 +289,14 @@ return new class extends Migration
             $table->string('source_version', 100)->nullable();
             $table->json('payload');
             $table->json('provenance')->nullable();
+            $table->timestamp('redacted_at')->nullable();
             $table->timestamp('created_at');
 
             $table->index('tenant_id', 'pc_snapshot_tenant_idx');
             $table->unique(['id', 'tenant_id'], 'pc_snapshot_id_tenant_uq');
             $table->unique(['tenant_id', 'event_key'], 'pc_snapshot_event_uq');
             $table->index(['tenant_id', 'workforce_entity_id', 'observed_at'], 'pc_snapshot_entity_time_idx');
+            $table->index(['tenant_id', 'redacted_at'], 'pc_snapshot_redacted_idx');
             $table->foreign('tenant_id', 'pc_snapshot_tenant_fk')
                 ->references('id')->on('tenants')->restrictOnDelete();
             $table->foreign(['connection_id', 'tenant_id'], 'pc_snapshot_conn_tenant_fk')
