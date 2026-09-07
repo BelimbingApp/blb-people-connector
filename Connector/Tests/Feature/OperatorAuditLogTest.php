@@ -241,7 +241,20 @@ test('the writer refuses a summary that names a credential, token or payload, an
     ))->toThrow(OperatorAuditException::class, 'never enter the operator audit');
 
     expect(operatorAuditRows($f['tenantId']))->toHaveCount(0);
-})->with(['api_token', 'client_secret', 'password', 'credential_hint', 'raw_payload', 'Authorization']);
+})->with(['api_token', 'client_secret', 'password', 'credential_hint', 'raw_payload', 'Authorization', 'old_secret', 'webhook_secret']);
+
+test('a secret fingerprint is accepted where the secret itself is refused (#247)', function (): void {
+    $f = operatorAuditFixture('Audit Fingerprint Tenant');
+
+    $row = app(OperatorAuditLog::class)->record(
+        $f['actor'], OperatorAuditOperation::WebhookSecretRotated, $f['oldId'], null, null,
+        ['previous_fingerprints' => ['0123abcd']], ['new_fingerprint' => 'deadbeef', 'overlap_minutes' => 60],
+    );
+
+    expect($row->before_summary['previous_fingerprints'])->toBe(['0123abcd'])
+        ->and($row->after_summary['new_fingerprint'])->toBe('deadbeef')
+        ->and(operatorAuditRows($f['tenantId']))->toHaveCount(1);
+});
 
 test('the writer refuses contents: nested structures, objects and long strings', function (mixed $value, string $fragment): void {
     $f = operatorAuditFixture('Audit Contents Tenant');

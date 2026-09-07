@@ -14,6 +14,7 @@ use App\Domains\PeopleConnector\Connector\Console\Commands\RetentionReportComman
 use App\Domains\PeopleConnector\Connector\Console\Commands\SyncWorkforceCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\WebhookDeadLettersCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\WebhookReplayCommand;
+use App\Domains\PeopleConnector\Connector\Console\Commands\WebhookSecretRotateCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\WorkforceSubjectExportCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\WorkforceSubjectImportCommand;
 use App\Domains\PeopleConnector\Connector\Contracts\AcceptsDelegatedCommands;
@@ -81,6 +82,7 @@ class ServiceProvider extends BaseServiceProvider
                 SyncWorkforceCommand::class,
                 WebhookDeadLettersCommand::class,
                 WebhookReplayCommand::class,
+                WebhookSecretRotateCommand::class,
                 WorkforceSubjectExportCommand::class,
                 WorkforceSubjectImportCommand::class,
             ]);
