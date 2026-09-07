@@ -67,6 +67,8 @@ function connectorTenantScopedArguments(string $name): array
         'people-connector:cutover-rehearsal' => ['from' => 1, 'to' => 2],
         'connector:identity:audit-trail' => ['external-id' => 'EMP-1'],
         'connector:migrate:dry-run' => ['--to' => 2, '--as' => 1],
+        'connector:hr2000:import:dry-run' => ['path' => __FILE__],
+        'people-connector:replacement-rollback' => ['audit' => 1, '--as' => 1, '--review' => 'none'],
         'connector:webhook:replay' => ['delivery' => 1],
         'connector:webhook:secret:rotate' => ['connection' => 1],
         'people-connector:subject-export' => ['entity' => 1],
