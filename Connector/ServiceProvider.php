@@ -9,6 +9,7 @@ use App\Domains\PeopleConnector\Connector\Console\Commands\CapabilityVerifyComma
 use App\Domains\PeopleConnector\Connector\Console\Commands\ConnectionHealthCheckCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\ConnectorDoctorCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\CutoverRehearsalCommand;
+use App\Domains\PeopleConnector\Connector\Console\Commands\Hr2000ImportDryRunCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\IdentityAuditTrailCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\MigrateDryRunCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\OperatorWhoamiCommand;
@@ -82,6 +83,7 @@ class ServiceProvider extends BaseServiceProvider
                 CapabilityVerifyCommand::class,
                 ConnectionHealthCheckCommand::class,
                 ConnectorDoctorCommand::class,
+                Hr2000ImportDryRunCommand::class,
                 MigrateDryRunCommand::class,
                 OperatorWhoamiCommand::class,
                 ReplacementRollbackCommand::class,
