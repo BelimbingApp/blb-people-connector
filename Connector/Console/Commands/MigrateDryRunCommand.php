@@ -4,28 +4,32 @@ namespace App\Domains\PeopleConnector\Connector\Console\Commands;
 
 use App\Base\Authz\DTO\Actor;
 use App\Base\Authz\Exceptions\AuthorizationDeniedException;
+use App\Base\Tenancy\Console\TenantScopedCommand;
+use App\Base\Tenancy\Contracts\TenantContext;
 use App\Core\User\Models\User;
 use App\Domains\PeopleConnector\Connector\Exceptions\InvalidProviderConfigurationException;
 use App\Domains\PeopleConnector\Connector\Exceptions\ProviderAuthorizationException;
 use App\Domains\PeopleConnector\Connector\Services\TenantMoveDryRun;
-use Illuminate\Console\Command;
 
 /**
  * Report what a tenant move would touch and any blocker, writing nothing
  * (#240). Exits non-zero while any blocker exists: the exit status is what a
  * runbook reads.
  */
-final class MigrateDryRunCommand extends Command
+final class MigrateDryRunCommand extends TenantScopedCommand
 {
     protected $signature = 'connector:migrate:dry-run
-                            {source : Source tenant id}
                             {--to= : Target tenant id}
                             {--as= : Id of the operator this dry run runs as}
                             {--json : Emit machine-readable result JSON}';
 
     protected $description = 'Report what a tenant move would touch and any blockers, without writing';
 
-    public function handle(TenantMoveDryRun $dryRun): int
+    /**
+     * The source tenant is the one bound by --tenant (#249): a dry run reads
+     * the tenant it runs in and names only the target separately.
+     */
+    public function handle(TenantMoveDryRun $dryRun, TenantContext $tenants): int
     {
         if (($operatorId = $this->option('as')) === null || $operatorId === '') {
             $this->error('A tenant move dry run runs as a named operator: pass --as=<user id>.');
@@ -45,7 +49,7 @@ final class MigrateDryRunCommand extends Command
         }
 
         try {
-            $report = $dryRun->report(Actor::forUser($operator), (int) $this->argument('source'), (int) $target);
+            $report = $dryRun->report(Actor::forUser($operator), $tenants->requireTenantId(), (int) $target);
         } catch (AuthorizationDeniedException|ProviderAuthorizationException|InvalidProviderConfigurationException $refusal) {
             $this->error($refusal->getMessage());
 

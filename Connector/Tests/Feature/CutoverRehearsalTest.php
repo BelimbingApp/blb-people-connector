@@ -311,6 +311,9 @@ test('the command exits non-zero while a blocker stands and zero once it is clea
         'from' => $f['oldId'], 'to' => $f['newId'], '--tenant' => $f['tenantId'], '--as' => $operator->id,
     ])->assertExitCode(1);
 
+    // TenantScopedCommand clears the tenant it bound when the command ends
+    // (#249); the fixture calls below still need the ambient one.
+    app(TenantContext::class)->set($f['tenantId']);
     cutoverMapAll($f);
     cutoverSyncTarget($f);
 

@@ -4,22 +4,21 @@ namespace App\Domains\PeopleConnector\Connector\Console\Commands;
 
 use App\Base\Authz\DTO\Actor;
 use App\Base\Authz\Exceptions\AuthorizationDeniedException;
+use App\Base\Tenancy\Console\TenantScopedCommand;
 use App\Base\Tenancy\Contracts\TenantContext;
 use App\Core\User\Models\User;
 use App\Domains\PeopleConnector\Connector\Exceptions\InvalidProviderConfigurationException;
 use App\Domains\PeopleConnector\Connector\Exceptions\ProviderAuthorizationException;
 use App\Domains\PeopleConnector\Connector\Services\ConnectionHealthChecker;
-use Illuminate\Console\Command;
 
 /**
  * Ping each active connection's adapter and report capability drift against
  * the evidence register (#209). Exits non-zero on drift, an unregistered
  * adapter, or an unavailable one: a deployment script reads the status.
  */
-final class ConnectionHealthCheckCommand extends Command
+final class ConnectionHealthCheckCommand extends TenantScopedCommand
 {
     protected $signature = 'connector:health:check
-                            {--tenant= : Tenant to check; defaults to the current tenant context}
                             {--as= : Id of the operator this check runs as}
                             {--json : Emit machine-readable result JSON}';
 
@@ -36,9 +35,6 @@ final class ConnectionHealthCheckCommand extends Command
             $this->error("No user [{$operatorId}].");
 
             return self::FAILURE;
-        }
-        if (($tenantId = $this->option('tenant')) !== null && $tenantId !== '') {
-            $tenants->set((int) $tenantId);
         }
 
         try {
