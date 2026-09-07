@@ -13,6 +13,7 @@ enum OperatorAuditOperation: string
     case SubjectHistoryExported = 'subject.history_exported';
     case SubjectHistoryImported = 'subject.history_imported';
     case WebhookReplayed = 'webhook.replayed';
+    case CapabilityVerified = 'capability.verified';
 
     public function label(): string
     {
@@ -25,6 +26,7 @@ enum OperatorAuditOperation: string
             self::SubjectHistoryExported => 'Workforce subject history exported',
             self::SubjectHistoryImported => 'Workforce subject history imported',
             self::WebhookReplayed => 'Webhook delivery replayed',
+            self::CapabilityVerified => 'Provider capability evidence recorded',
         };
     }
 }

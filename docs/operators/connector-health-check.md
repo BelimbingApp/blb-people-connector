@@ -18,7 +18,9 @@ The register is [docs/providers/capability-register.json](../providers/capabilit
 prose evidence registers such as
 [hr2000-capability-evidence.md](../providers/hr2000-capability-evidence.md).
 A provider absent from the file has verified nothing, so everything it
-declares is drift. A file naming an unknown capability is refused.
+declares is drift. A file naming an unknown capability is refused. To record
+evidence for one capability from the console, see
+[capability-verify.md](capability-verify.md).
 
 The command exits non-zero on any unsupported declared capability, on a
 connection whose adapter is not registered, and on an adapter reporting
