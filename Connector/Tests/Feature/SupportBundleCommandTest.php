@@ -20,6 +20,8 @@ use App\Domains\PeopleConnector\Connector\Services\ProviderConnectionStore;
 use App\Domains\PeopleConnector\Connector\Services\ReconciliationIssueStore;
 use App\Domains\PeopleConnector\Connector\Services\SupportBundleRedactor;
 use App\Domains\PeopleConnector\Connector\Services\WorkforceSyncRunner;
+use Carbon\CarbonImmutable;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Artisan;
 use Illuminate\Support\Facades\DB;
@@ -27,8 +29,13 @@ use Illuminate\Support\Facades\DB;
 /**
  * connector:support:bundle (#250): one zip per tenant, nothing of another
  * tenant, no secret or personal value, every fired rule in the manifest.
- * Self-contained: helpers are prefixed bundle.
+ * Self-contained: helpers are prefixed bundle. The window is asserted to the
+ * second, so the whole file runs on a frozen clock (#261): on the real clock
+ * the seed instant and the command instant can land either side of a tick and
+ * the row sitting exactly on the boundary drops out of the window.
  */
+const BUNDLE_NOW = '2026-09-06 09:30:15 UTC';
+
 const BUNDLE_CORPUS = [
     'credential' => 'AKIAIOSFODNN7EXAMPLE',
     'token' => 'ghp_16C7e42F292c6912E7710c838347Ae178B4a',
@@ -63,9 +70,13 @@ function bundleAuthz(bool $allow): void
     });
 }
 
-beforeEach(fn () => bundleAuthz(true));
+beforeEach(function (): void {
+    Carbon::setTestNow(BUNDLE_NOW);
+    bundleAuthz(true);
+});
 
 afterEach(function (): void {
+    Carbon::setTestNow();
     app(TenantContext::class)->clear();
     config()->set('people-connector.webhook.secrets', []);
     config()->set('people-connector.support_bundle_probe', null);
@@ -89,24 +100,39 @@ function bundleTenant(string $name): array
     return ['tenantId' => (int) $tenant->id, 'operator' => $operator, 'connection' => (int) $connection->id, 'actor' => Actor::forUser($operator)];
 }
 
-/** Doctor snapshots, sync-pass audits, deliveries, receipts and issues for one tenant, dated relative to now. */
+/** The frozen instant the command's own now() also returns; every seeded row is placed against it. */
+function bundleFrozenNow(): CarbonImmutable
+{
+    return now()->toImmutable();
+}
+
+/** The inclusive lower bound --since=7d resolves to on the frozen clock. */
+function bundleSince(): CarbonImmutable
+{
+    return bundleFrozenNow()->subDays(7);
+}
+
+/** Doctor snapshots, sync-pass audits, deliveries, receipts and issues for one tenant, dated off the frozen instant. */
 function bundleSeed(array $t, string $label): void
 {
     app(TenantContext::class)->set($t['tenantId']);
+    $frozen = bundleFrozenNow();
+    $since = bundleSince();
     DB::table('people_connector_connector_doctor_snapshots')->insert([
-        ['tenant_id' => $t['tenantId'], 'check' => 'probe_'.$label.'_inside', 'status' => 'green', 'count' => 0, 'measured_at' => now()->subDays(6)],
-        ['tenant_id' => $t['tenantId'], 'check' => 'probe_'.$label.'_edge', 'status' => 'green', 'count' => 0, 'measured_at' => now()->subDays(7)],
-        ['tenant_id' => $t['tenantId'], 'check' => 'probe_'.$label.'_outside', 'status' => 'red', 'count' => 1, 'measured_at' => now()->subDays(7)->subSecond()],
+        ['tenant_id' => $t['tenantId'], 'check' => 'probe_'.$label.'_inside', 'status' => 'green', 'count' => 0, 'measured_at' => $frozen->subDays(6)],
+        // The two boundary rows: exactly on --since, and one second before it.
+        ['tenant_id' => $t['tenantId'], 'check' => 'probe_'.$label.'_edge', 'status' => 'green', 'count' => 0, 'measured_at' => $since],
+        ['tenant_id' => $t['tenantId'], 'check' => 'probe_'.$label.'_outside', 'status' => 'red', 'count' => 1, 'measured_at' => $since->subSecond()],
     ]);
     $audit = app(OperatorAuditLog::class);
     $audit->record($t['actor'], OperatorAuditOperation::SyncPass, $t['connection'], null, 'run-'.$label.'-inside',
-        ['stream' => 'workforce', 'pass' => 'incremental', 'pages' => 2, 'upserts' => 5, 'deactivations' => 0, 'refusals' => 0, 'duration_ms' => 120, 'completed' => true, 'cursor' => 'CURSOR-'.$label.'-OPAQUE'], [], now()->subDays(1));
+        ['stream' => 'workforce', 'pass' => 'incremental', 'pages' => 2, 'upserts' => 5, 'deactivations' => 0, 'refusals' => 0, 'duration_ms' => 120, 'completed' => true, 'cursor' => 'CURSOR-'.$label.'-OPAQUE'], [], $frozen->subDay());
     $audit->record($t['actor'], OperatorAuditOperation::SyncPass, $t['connection'], null, 'run-'.$label.'-outside',
-        ['stream' => 'workforce', 'pass' => 'bootstrap', 'pages' => 9, 'upserts' => 99, 'deactivations' => 0, 'refusals' => 0, 'duration_ms' => 999, 'completed' => true], [], now()->subDays(7)->subSecond());
+        ['stream' => 'workforce', 'pass' => 'bootstrap', 'pages' => 9, 'upserts' => 99, 'deactivations' => 0, 'refusals' => 0, 'duration_ms' => 999, 'completed' => true], [], $since->subSecond());
     foreach (['accepted', 'delivered', 'dead_lettered'] as $status) {
-        WebhookDelivery::query()->create(['tenant_id' => $t['tenantId'], 'connection_id' => $t['connection'], 'delivery_id' => 'd-'.$label.'-'.$status, 'status' => $status, 'received_at' => now()->subHour()]);
+        WebhookDelivery::query()->create(['tenant_id' => $t['tenantId'], 'connection_id' => $t['connection'], 'delivery_id' => 'd-'.$label.'-'.$status, 'status' => $status, 'received_at' => $frozen->subHour()]);
     }
-    WebhookReceipt::query()->create(['tenant_id' => $t['tenantId'], 'provider_id' => 'test.bundle', 'connection_id' => $t['connection'], 'delivery_id' => 'd-'.$label.'-delivered', 'first_seen_at' => now()->subHour(), 'duplicate_count' => 2]);
+    WebhookReceipt::query()->create(['tenant_id' => $t['tenantId'], 'provider_id' => 'test.bundle', 'connection_id' => $t['connection'], 'delivery_id' => 'd-'.$label.'-delivered', 'first_seen_at' => $frozen->subHour(), 'duplicate_count' => 2]);
     app(ReconciliationIssueStore::class)->report($t['connection'], 'sync:page:'.$label, WorkforceSyncRunner::ISSUE_KIND_DEAD_LETTER, new ReconciliationIssueDetails(reasonCode: 'page_refused'), WorkforceResourceType::Employee->value, 'PAGE-'.$label);
     app(ReconciliationIssueStore::class)->report($t['connection'], 'sync:employee:'.$label, 'sync_conflict', new ReconciliationIssueDetails(reasonCode: 'review_required'), WorkforceResourceType::Employee->value, 'EMP-'.$label.'-SUBJECT');
 }
@@ -140,6 +166,7 @@ test('the bundle holds only this tenant, bounds the window to the second, and au
     $b = bundleTenant('Bundle Tenant B');
     bundleSeed($a, 'a');
     bundleSeed($b, 'b');
+    $since = bundleSince();
     $audits = OperatorAudit::query()->count();
 
     [$exit, $output, $zips] = bundleRun($a);
@@ -148,10 +175,15 @@ test('the bundle holds only this tenant, bounds the window to the second, and au
     $files = bundleRead($zips[0]);
     expect(array_keys($files))->toBe(['doctor-history.json', 'sync-runs.json', 'webhooks.json', 'reconciliation.json', 'retention.json', 'versions.json', 'config.json', 'manifest.json']);
 
+    // The window boundary from both sides, on a frozen clock: the row sitting
+    // exactly on --since is kept, the row one second earlier is dropped.
     // One needle per assertion: a negated toContain with several needles
     // fails only when all of them are present.
     $checks = array_column($files['doctor-history.json'], 'check');
+    expect($files['manifest.json']['window'])->toBe(['since' => $since->format(DATE_ATOM), 'until' => bundleFrozenNow()->format(DATE_ATOM)]);
     expect($checks)->toContain('probe_a_inside')->toContain('probe_a_edge');
+    $edge = collect($files['doctor-history.json'])->firstWhere('check', 'probe_a_edge');
+    expect(Carbon::parse($edge['measured_at'])->format(DATE_ATOM))->toBe($since->format(DATE_ATOM));
     foreach (['probe_a_outside', 'probe_b_inside', 'probe_b_edge'] as $absent) {
         expect($checks)->not->toContain($absent);
     }
