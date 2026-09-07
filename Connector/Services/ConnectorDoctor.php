@@ -56,6 +56,11 @@ final class ConnectorDoctor
             // rotation overlap (#247): expected during a rotation, worth
             // noticing if it never clears.
             $this->secretOverlap($tenantId),
+            // The delegation signing key is deployment-wide, so every tenant
+            // is told the same thing here (#262). It is on the doctor because
+            // a rotation nobody finished is invisible until tokens minted
+            // before it start being refused.
+            $this->delegationSecretOverlap(),
         ]);
     }
 
@@ -216,6 +221,40 @@ final class ConnectorDoctor
             'count' => $count,
             'detail' => $count === 0 ? '0 overlapping' : "{$count} overlapping, earliest expiry {$earliest?->format(DATE_ATOM)}",
         ];
+    }
+
+    /**
+     * The rotation overlap on the deployment-wide delegated-authority secret.
+     *
+     * Yellow is a rotation in progress and does not fail the doctor; red is a
+     * previous secret that will never be accepted, which means either the
+     * operator never set an expiry or the window has closed and the key was
+     * left behind. The detail carries the expiry and never the secret, here
+     * as everywhere else: docs/contracts/diagnostic-privacy.md.
+     *
+     * @return array{check: string, status: string, count: int, detail: string}
+     */
+    private function delegationSecretOverlap(): array
+    {
+        $row = static fn (string $status, int $count, string $detail): array => [
+            'check' => 'delegation_secret_overlap', 'status' => $status, 'count' => $count, 'detail' => $detail,
+        ];
+
+        if (! DelegationPolicy::previousSecretConfigured()) {
+            return $row('green', 0, 'no previous delegation secret');
+        }
+
+        if (DelegationPolicy::previousSecret() === null) {
+            return $row('red', 1, 'previous delegation secret is shorter than '.DelegatedAuthoritySigner::MINIMUM_SECRET_BYTES.' bytes and is never accepted');
+        }
+
+        if (($expiresAt = DelegationPolicy::previousSecretExpiresAt()) === null) {
+            return $row('red', 1, 'previous delegation secret has no readable expiry');
+        }
+
+        return DelegationPolicy::previousSecretAcceptedAt(\DateTimeImmutable::createFromInterface(now()))
+            ? $row('yellow', 1, 'previous delegation secret accepted until '.$expiresAt->format(DATE_ATOM))
+            : $row('red', 1, 'previous delegation secret lapsed at '.$expiresAt->format(DATE_ATOM));
     }
 
     private function row(string $check, int $failures, string $detail): array

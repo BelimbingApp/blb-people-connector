@@ -27,8 +27,15 @@ retry is acknowledged as a duplicate, so this row is where the lost sync
 shows), and the informational `webhook_duplicates`: deliveries acknowledged
 as duplicates in the last seven days, never red; and `webhook_secret_overlap`
 (#247), yellow while a connection's previous signing secret is still inside
-its rotation overlap, with the count and the earliest expiry. Yellow does not
-fail the doctor; only red does. A provider without an active connection is red because its
+its rotation overlap, with the count and the earliest expiry, and
+`delegation_secret_overlap` (#262), the same shape for the deployment-wide
+delegated-authority signing key: yellow with the expiry while a previous secret
+is still accepted, red once that window has lapsed or when a previous secret is
+configured without a usable expiry, which is a rotation nobody finished. It
+names the expiry and never the key, and every tenant is told the same answer
+because the key is not tenant-scoped; the procedure is in
+[../security/delegated-authority.md](../security/delegated-authority.md).
+Yellow does not fail the doctor; only red does. A provider without an active connection is red because its
 ports cannot be exercised. Any red row makes the command exit non-zero. Use
 `--json` for automation.
 
