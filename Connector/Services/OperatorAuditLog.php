@@ -28,7 +28,7 @@ final class OperatorAuditLog
      */
     private const REFUSED_KEY = '/(secret|token|password|credential|payload|api[_-]?key|authorization|cookie|private[_-]?key)/i';
 
-    private const MAX_STRING = 190;
+    public const MAX_STRING = 190;
 
     public function __construct(private readonly TenantContext $tenantContext) {}
 
