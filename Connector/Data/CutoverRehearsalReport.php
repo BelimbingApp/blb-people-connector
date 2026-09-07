@@ -22,20 +22,46 @@ final readonly class CutoverRehearsalReport
         public ?string $targetStaleReason,
         /** Open reconciliation issues on either connection. */
         public int $openIssues,
+        /**
+         * What each side holds, per company and resource type.
+         *
+         * @var list<CutoverCountRow>
+         */
+        public array $counts = [],
     ) {}
 
     public function blocked(): bool
     {
-        return $this->unmappedIdentities > 0 || $this->targetStale || $this->openIssues > 0;
+        return $this->unmappedIdentities > 0
+            || $this->targetStale
+            || $this->openIssues > 0
+            || $this->countMismatches() > 0;
+    }
+
+    /**
+     * Rows where the two sides disagree about how many there are.
+     *
+     * A fourth blocker with a fourth remedy: find out what the target is
+     * missing, or what it has that the source does not.
+     */
+    public function countMismatches(): int
+    {
+        return count(array_filter(
+            $this->counts,
+            static fn (CutoverCountRow $row): bool => ! $row->matches(),
+        ));
     }
 
     /** @return list<string> */
     public function blockers(): array
     {
+        $mismatches = $this->countMismatches();
+
         return array_values(array_filter([
             $this->unmappedIdentities > 0 ? "{$this->unmappedIdentities} identity/identities have no counterpart on the target connection" : null,
             $this->targetStale ? "the target connection is stale ({$this->targetStaleReason})" : null,
             $this->openIssues > 0 ? "{$this->openIssues} reconciliation issue(s) are still open" : null,
+            $mismatches > 0 ? "{$mismatches} projection count mismatch(es)" : null,
         ]));
     }
 }
