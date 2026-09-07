@@ -49,6 +49,10 @@ return [
         'timestamp_tolerance_seconds' => (int) env('PEOPLE_CONNECTOR_WEBHOOK_TOLERANCE_SECONDS', 300),
         'max_payload_bytes' => (int) env('PEOPLE_CONNECTOR_WEBHOOK_MAX_PAYLOAD_BYTES', 1048576),
         'secrets' => json_decode((string) env('PEOPLE_CONNECTOR_WEBHOOK_SECRETS', '{}'), true) ?: [],
+        'delivery_policy' => [
+            'max_attempts' => 3,
+            'backoff_seconds' => [60, 300],
+        ],
     ],
 
     /*
@@ -73,6 +77,13 @@ return [
         'max_lifetime_seconds' => 300,
     ],
 
+    /*
+     * Machine-readable capability evidence register (#209): which
+     * PeopleCapability values each provider has deployment evidence for.
+     * connector:health:check reports adapter declarations that drift from it.
+     */
+    'capability_register' => env('PEOPLE_CONNECTOR_CAPABILITY_REGISTER', __DIR__.'/../../docs/providers/capability-register.json'),
+
     'retention' => [
         // Progress logs: how far a sync got is operationally useful for a
         // while, and of no interest a year later.
@@ -86,6 +97,10 @@ return [
         // Inbound idempotency ledger (#227): a delivery id is a duplicate for
         // seven days; after that the provider would not resend it anyway.
         'people_connector_connector_webhook_receipts' => ['days' => 7, 'column' => 'first_seen_at'],
+
+        // Scheduled operator health is deliberately short-lived. It is trend
+        // context, not an audit log; durable operator actions live elsewhere.
+        'people_connector_connector_doctor_snapshots' => ['days' => 30, 'column' => 'measured_at'],
 
         // Reconciliation issues age out from when they were resolved, so an
         // issue still open is never past retention however old it is.

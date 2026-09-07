@@ -121,7 +121,7 @@ test('an already delivered id exits non-zero and dispatches nothing', function (
     $delivered = webhookReplayDelivery($tenant, WebhookDelivery::STATUS_DELIVERED);
 
     expect(webhookReplayCall($tenant, $delivered))->toBe(1)
-        ->and(Artisan::output())->toContain("Webhook delivery {$delivered->id} is delivered; only a failed delivery can be replayed.")
+        ->and(Artisan::output())->toContain("Webhook delivery {$delivered->id} is delivered; only a failed or dead-lettered delivery can be replayed.")
         ->and(WebhookDelivery::query()->count())->toBe(1)
         ->and(OperatorAudit::query()->count())->toBe(0);
 

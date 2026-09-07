@@ -60,7 +60,7 @@ final class WorkforceWebhookController
                 $tenantId,
                 $connection,
                 (string) $deliveryId,
-                function () use ($tenantId, $connectionId, $deliveryId): void {
+                function () use ($tenantId, $connection, $connectionId, $deliveryId): void {
                     // The row is the operator's handle for a replay (#223); it
                     // records the trigger, never the provider's bytes.
                     $delivery = WebhookDelivery::query()->create([
@@ -70,7 +70,7 @@ final class WorkforceWebhookController
                         'status' => WebhookDelivery::STATUS_ACCEPTED,
                         'received_at' => now(),
                     ]);
-                    RunIncrementalWorkforceSync::dispatch($tenantId, $connectionId, (int) $delivery->id);
+                    dispatch(RunIncrementalWorkforceSync::forDelivery($connection, (int) $delivery->id));
                 },
             );
 
