@@ -193,6 +193,7 @@ test('connector doctor records every run and lists only this tenants latest snap
             ->all())
         ->toBe([
             'adapter_conformance' => 2,
+            'connection_maintenance' => 2,
             'delegation_secret_overlap' => 2,
             'identity_mappings' => 2,
             'reconciliation_drift' => 2,

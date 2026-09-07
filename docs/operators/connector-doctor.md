@@ -54,6 +54,11 @@ configured without a usable expiry, which is a rotation nobody finished. It
 names the expiry and never the key, and every tenant is told the same answer
 because the key is not tenant-scoped; the procedure is in
 [../security/delegated-authority.md](../security/delegated-authority.md).
+`connection_maintenance` (#264) is yellow with the count of connections
+inside a planned maintenance window and the latest `maintenance_until`, green
+with count 0 otherwise, never red: the pause is an operator's decision, see
+[connection-maintenance.md](connection-maintenance.md).
+
 Then one `workforce_freshness:<connection id>` row per active connection
 (#284): red when `WorkforceFreshnessPolicy` says the connection is stale, with
 the reason code in the detail (`never_synchronized`, or `exceeded_max_age`
