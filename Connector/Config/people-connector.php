@@ -56,6 +56,18 @@ return [
     ],
 
     /*
+     * File exchange bounds (#301). An import is refused before its bytes are
+     * read when the file exceeds max_bytes (defect file_too_large) and at the
+     * row after max_rows (defect row_limit_exceeded): an oversized drop is a
+     * reported defect, never a memory fatal. The SHA-256 is streamed, so an
+     * over-limit file still hashes for the ledger.
+     */
+    'file_exchange' => [
+        'max_bytes' => (int) env('PEOPLE_CONNECTOR_FILE_MAX_BYTES', 52428800),
+        'max_rows' => (int) env('PEOPLE_CONNECTOR_FILE_MAX_ROWS', 100000),
+    ],
+
+    /*
      * Retention per connector-owned table ([1012]). `days` is the period rows
      * are kept for, measured from `column`; null is indefinite and needs no
      * column, because "we keep this forever" reads no clock.
@@ -101,6 +113,14 @@ return [
         // (#257), e.g. database or mail. Null disables alerting: the command
         // says so and carries on.
         'alert_channel' => env('PEOPLE_CONNECTOR_DOCTOR_ALERT_CHANNEL'),
+    ],
+
+    'file_exchange' => [
+        // Discovery root (#297): connector:file-exchange:discover walks the
+        // subdirectory named after each connection id under it and records
+        // every regular file in the exchange ledger. Null disables discovery;
+        // a path that resolves outside the root is refused, never walked.
+        'inbound_root' => env('PEOPLE_CONNECTOR_FILE_INBOUND_ROOT'),
     ],
 
     'retention' => [

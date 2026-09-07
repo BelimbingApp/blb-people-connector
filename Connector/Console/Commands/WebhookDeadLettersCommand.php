@@ -4,6 +4,7 @@ namespace App\Domains\PeopleConnector\Connector\Console\Commands;
 
 use App\Base\Authz\DTO\Actor;
 use App\Base\Authz\Exceptions\AuthorizationDeniedException;
+use App\Base\Tenancy\Console\TenantScopedCommand;
 use App\Base\Tenancy\Contracts\TenantContext;
 use App\Core\User\Models\User;
 use App\Domains\PeopleConnector\Connector\Exceptions\ConnectorRecordNotFoundException;
@@ -12,12 +13,10 @@ use App\Domains\PeopleConnector\Connector\Exceptions\WebhookRefusal;
 use App\Domains\PeopleConnector\Connector\Models\WebhookDelivery;
 use App\Domains\PeopleConnector\Connector\Services\WebhookDeadLetterService;
 use App\Domains\PeopleConnector\Connector\Services\WebhookDeliveryReplayer;
-use Illuminate\Console\Command;
 
-final class WebhookDeadLettersCommand extends Command
+final class WebhookDeadLettersCommand extends TenantScopedCommand
 {
     protected $signature = 'connector:webhook:dead-letters
-                            {--tenant= : Tenant whose dead letters are listed; defaults to the current tenant context}
                             {--as= : Id of the operator reading or replaying the dead letters}
                             {--replay : Re-dispatch every listed dead letter through the audited replay path}';
 
@@ -37,9 +36,6 @@ final class WebhookDeadLettersCommand extends Command
             $this->error("No user [{$operatorId}].");
 
             return self::FAILURE;
-        }
-        if (($tenantId = $this->option('tenant')) !== null && $tenantId !== '') {
-            $tenants->set((int) $tenantId);
         }
 
         $actor = Actor::forUser($operator);
