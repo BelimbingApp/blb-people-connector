@@ -7,8 +7,10 @@ use App\Base\Authz\DTO\ResourceContext;
 use App\Base\Authz\Enums\AuthorizationReasonCode;
 use App\Base\Tenancy\Contracts\TenantContext;
 use App\Core\User\Models\User;
+use App\Domains\PeopleConnector\Connector\Data\ProviderFile;
 use App\Domains\PeopleConnector\Connector\Data\ProviderScope;
 use App\Domains\PeopleConnector\Connector\Enums\OperatorAuditOperation;
+use App\Domains\PeopleConnector\Connector\Exceptions\ProviderAuthorizationException;
 use App\Domains\PeopleConnector\Connector\Models\FileExchangeRecord;
 use App\Domains\PeopleConnector\Connector\Models\OperatorAudit;
 use App\Domains\PeopleConnector\Connector\Services\FileExchangeLedger;
@@ -46,7 +48,7 @@ function fxOpAuthz(bool $allow = true): void
         public function authorize(Actor $actor, string $capability, ?ResourceContext $resource = null, array $context = []): void
         {
             if (! $this->allow) {
-                throw new App\Domains\PeopleConnector\Connector\Exceptions\ProviderAuthorizationException(
+                throw new ProviderAuthorizationException(
                     'connector',
                     'file_exchange',
                     'The actor lacks the connector file-exchange capability.',
@@ -81,7 +83,7 @@ function fxOpFixture(string $name, string $providerId = 'test.file-exchange-op')
     ];
 }
 
-function fxOpFile(string $name, string $bytes): App\Domains\PeopleConnector\Connector\Data\ProviderFile
+function fxOpFile(string $name, string $bytes): ProviderFile
 {
     $directory = sys_get_temp_dir().'/blb-fx-op-'.getmypid();
     if (! is_dir($directory)) {
@@ -90,7 +92,7 @@ function fxOpFile(string $name, string $bytes): App\Domains\PeopleConnector\Conn
     $path = $directory.'/'.$name;
     file_put_contents($path, $bytes);
 
-    return new App\Domains\PeopleConnector\Connector\Data\ProviderFile($name, hash('sha256', $bytes), $path);
+    return new ProviderFile($name, hash('sha256', $bytes), $path);
 }
 
 function fxOpRecord(array $f, string $name, string $bytes, ?string $schema = 'hr2000-sbg-1'): FileExchangeRecord
