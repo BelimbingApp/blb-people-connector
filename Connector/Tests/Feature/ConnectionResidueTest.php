@@ -360,6 +360,29 @@ test("a sibling tenant's connection rows are never counted and a foreign operato
         ->toThrow(ProviderAuthorizationException::class);
 });
 
+test('a row of another tenant that names this connection id is not counted', function (): void {
+    $mine = residueRetiredFixture('Residue Tenant Guard Mine');
+    $theirs = residueRetiredFixture('Residue Tenant Guard Theirs');
+    residueAuthz(true);
+    app(TenantContext::class)->set($mine['tenantId']);
+
+    // A delivery labelled with the sibling tenant but carrying this connection's id:
+    // the tenant filter, not the connection filter, is what keeps it out.
+    DB::table('people_connector_connector_webhook_deliveries')->insert([
+        'tenant_id' => $theirs['tenantId'],
+        'connection_id' => $mine['connectionId'],
+        'delivery_id' => 'foreign-tenant-row',
+        'status' => WebhookDelivery::STATUS_DELIVERED,
+        'received_at' => now(),
+        'created_at' => now(),
+        'updated_at' => now(),
+    ]);
+
+    $report = app(ConnectionResidueReporter::class)->for($mine['actor'], $mine['connectionId']);
+
+    expect(residueRow($report->rows, 'people_connector_connector_webhook_deliveries')->count)->toBe(3);
+});
+
 test('exactly one operator audit row is written and no other table changes', function (): void {
     $f = residueRetiredFixture('Residue Audit Only Tenant');
     residueAuthz(true);
