@@ -560,3 +560,103 @@ test('the printed report names the count table before showing it', function (): 
         ->expectsOutputToContain('Live projections each connection can answer for, per company:')
         ->assertExitCode(0);
 });
+
+const CUTOVER_THIRD_PROVIDER = 'test.cutover-third';
+
+/** A third live connection in the same tenant, for the two-migrations cases. */
+function cutoverThirdConnection(array $f): int
+{
+    $store = app(ProviderConnectionStore::class);
+    $third = $store->configure(ProviderScope::company($f['companyId']), CUTOVER_THIRD_PROVIDER);
+
+    return (int) $store->activate((int) $third->id)->id;
+}
+
+test('people the source handed to a different provider are not credited to this cutover', function (): void {
+    $f = cutoverFixture('Cutover Counts Third Party Tenant');
+    cutoverAuthz(true);
+    $thirdId = cutoverThirdConnection($f);
+    app(ProviderReplacementService::class)->remap($f['actor'], $f['oldId'], $thirdId, [
+        new ProviderIdentityMapping(
+            cutoverRef(CUTOVER_OLD_PROVIDER, WorkforceResourceType::Employee, 'CUT-EMP-1'),
+            cutoverRef(CUTOVER_THIRD_PROVIDER, WorkforceResourceType::Employee, 'THIRD-EMP-1'),
+        ),
+        new ProviderIdentityMapping(
+            cutoverRef(CUTOVER_OLD_PROVIDER, WorkforceResourceType::Employee, 'CUT-EMP-2'),
+            cutoverRef(CUTOVER_THIRD_PROVIDER, WorkforceResourceType::Employee, 'THIRD-EMP-2'),
+        ),
+        new ProviderIdentityMapping(
+            cutoverRef(CUTOVER_OLD_PROVIDER, WorkforceResourceType::Company, 'CUT-CO'),
+            cutoverRef(CUTOVER_THIRD_PROVIDER, WorkforceResourceType::Company, 'THIRD-CO'),
+        ),
+    ], 'cutover-third-2026-09-06');
+
+    $report = app(CutoverRehearsalService::class)->rehearse($f['actor'], $f['oldId'], $f['newId']);
+
+    // The handover arm names this target on purpose. Somebody the source gave
+    // to a competing migration is not somebody this cutover is about to move,
+    // and crediting them would report a source that is two people richer than
+    // the switch will actually deliver.
+    expect($report->counts)->toBe([]);
+});
+
+test('a target identity that has itself been replaced no longer counts for the target', function (): void {
+    $f = cutoverFixture('Cutover Counts Onward Tenant');
+    cutoverAuthz(true);
+    cutoverMapAll($f);
+    cutoverSyncTarget($f);
+    $thirdId = cutoverThirdConnection($f);
+    app(ProviderReplacementService::class)->remap($f['actor'], $f['newId'], $thirdId, [
+        new ProviderIdentityMapping(
+            cutoverRef(CUTOVER_NEW_PROVIDER, WorkforceResourceType::Employee, 'NEW-EMP-2'),
+            cutoverRef(CUTOVER_THIRD_PROVIDER, WorkforceResourceType::Employee, 'THIRD-EMP-2'),
+        ),
+    ], 'cutover-onward-2026-09-07');
+
+    $report = app(CutoverRehearsalService::class)->rehearse($f['actor'], $f['oldId'], $f['newId']);
+
+    // The target has passed one of them on again. Counting an identity the
+    // target no longer speaks for would report a cutover as ready to hand over
+    // somebody the target cannot answer for.
+    expect(cutoverCounts($report))->toBe(['employee:'.cutoverCompanyEntityId($f) => ['source' => 2, 'target' => 1]])
+        ->and($report->countMismatches())->toBe(1);
+});
+
+test('an inactive projection is not somebody either side is handing over', function (): void {
+    $f = cutoverFixture('Cutover Counts Inactive Tenant');
+    cutoverAuthz(true);
+    cutoverMapAll($f);
+    cutoverSyncTarget($f);
+    cutoverEmployeeOn($f, CUTOVER_NEW_PROVIDER, 'NEW-EMP-3', active: false);
+
+    $report = app(CutoverRehearsalService::class)->rehearse($f['actor'], $f['oldId'], $f['newId']);
+
+    // The target knows about a fourth person and records them as not active.
+    // A count that ignored `active` would report the target as one ahead and
+    // block a cutover that is ready.
+    expect(cutoverCounts($report))->toBe(['employee:'.cutoverCompanyEntityId($f) => ['source' => 2, 'target' => 2]])
+        ->and($report->countMismatches())->toBe(0)
+        ->and($report->blocked())->toBeFalse();
+});
+
+test('a privacy tombstone excludes a row even where nothing deactivated it', function (): void {
+    $f = cutoverFixture('Cutover Counts Tombstone Tenant');
+    cutoverAuthz(true);
+    cutoverMapAll($f);
+    cutoverSyncTarget($f);
+
+    // PrivacyDeletionService deactivates as it tombstones, so erasure alone
+    // cannot show which of the two filters is doing the work. The store is not
+    // the only write path: this stamps the tombstone and leaves `active` true,
+    // which is the state a future erasure path that forgot to deactivate would
+    // leave behind — an erased person still being counted into a handover.
+    DB::table('people_connector_connector_workforce_employees')
+        ->where('tenant_id', $f['tenantId'])
+        ->orderBy('id')
+        ->limit(1)
+        ->update(['privacy_deleted_at' => now()]);
+
+    $report = app(CutoverRehearsalService::class)->rehearse($f['actor'], $f['oldId'], $f['newId']);
+
+    expect(cutoverCounts($report))->toBe(['employee:'.cutoverCompanyEntityId($f) => ['source' => 1, 'target' => 1]]);
+});
