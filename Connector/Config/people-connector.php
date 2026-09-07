@@ -96,6 +96,13 @@ return [
      */
     'capability_register' => env('PEOPLE_CONNECTOR_CAPABILITY_REGISTER', __DIR__.'/../../docs/providers/capability-register.json'),
 
+    'doctor' => [
+        // Laravel notification channel connector:doctor --alert sends through
+        // (#257), e.g. database or mail. Null disables alerting: the command
+        // says so and carries on.
+        'alert_channel' => env('PEOPLE_CONNECTOR_DOCTOR_ALERT_CHANNEL'),
+    ],
+
     'retention' => [
         // Progress logs: how far a sync got is operationally useful for a
         // while, and of no interest a year later.
@@ -117,6 +124,10 @@ return [
         // Scheduled operator health is deliberately short-lived. It is trend
         // context, not an audit log; durable operator actions live elsewhere.
         'people_connector_connector_doctor_snapshots' => ['days' => 30, 'column' => 'measured_at'],
+
+        // Doctor alerts (#257): the sent ledger that keeps an incident from
+        // alerting twice. Kept as long as the snapshots it is derived from.
+        'people_connector_connector_doctor_alerts' => ['days' => 30, 'column' => 'sent_at'],
 
         // Reconciliation issues age out from when they were resolved, so an
         // issue still open is never past retention however old it is.
