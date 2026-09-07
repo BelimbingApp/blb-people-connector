@@ -115,6 +115,14 @@ return [
         'alert_channel' => env('PEOPLE_CONNECTOR_DOCTOR_ALERT_CHANNEL'),
     ],
 
+    'file_exchange' => [
+        // Discovery root (#297): connector:file-exchange:discover walks the
+        // subdirectory named after each connection id under it and records
+        // every regular file in the exchange ledger. Null disables discovery;
+        // a path that resolves outside the root is refused, never walked.
+        'inbound_root' => env('PEOPLE_CONNECTOR_FILE_INBOUND_ROOT'),
+    ],
+
     'retention' => [
         // Progress logs: how far a sync got is operationally useful for a
         // while, and of no interest a year later.
