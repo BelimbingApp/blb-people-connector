@@ -1,5 +1,6 @@
 <?php
 
+use App\Base\Database\Concerns\IncubatingSchema;
 use Illuminate\Database\Migrations\Migration;
 use Illuminate\Support\Facades\DB;
 
@@ -17,9 +18,16 @@ use Illuminate\Support\Facades\DB;
  * null otherwise. It deliberately does not restate the status vocabulary or the
  * company/scope agreement — those refusals belong to the model, which is the
  * only writer production uses.
+ *
+ * Declares IncubatingSchema because the guarded table is created by the
+ * incubating foundation migration: when `migrate --dev` rebuilds it, these
+ * triggers must be dropped and recreated with it instead of leaving a stable
+ * ledger row that the preflight refuses to rebuild across.
  */
 return new class extends Migration
 {
+    use IncubatingSchema;
+
     public function up(): void
     {
         $driver = DB::connection()->getDriverName();
