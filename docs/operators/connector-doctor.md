@@ -39,7 +39,13 @@ boundary as a normal synchronization. The shipped database queue is required
 to attribute stale webhook jobs to a tenant; an opaque queue backend is
 reported red rather than guessed healthy.
 
-This command does not repair, retry, resolve, or delete anything.
+This command does not repair, retry, resolve, or delete anything. To see
+which connector capabilities the acting operator holds before running any of
+the operator commands, use `connector:operator:whoami --tenant=7 --as=42`
+(`--json` for scripts): it prints the tenant, company and every declared
+`people-connector.*` capability as allowed or denied by the authorization
+service itself. It is read-only and never describes an operator of another
+tenant (#235).
 
 To re-send one failed webhook delivery by id, see
 [webhook-replay.md](webhook-replay.md). To ping each adapter and report
