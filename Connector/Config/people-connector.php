@@ -135,5 +135,11 @@ return [
         // so purge audit rows are themselves never purged.
         'people_connector_connector_retention_purge_audits' => ['days' => null],
         'people_connector_connector_operator_audits' => ['days' => null],
+
+        // File exchange ledger (#263): which bytes each connection received or
+        // produced, and whether they were accepted. Provenance is kept with
+        // the connection; the model refuses delete, so a finite window here
+        // would be a policy no purge could carry out.
+        'people_connector_connector_file_exchange_records' => ['days' => null],
     ],
 ];
