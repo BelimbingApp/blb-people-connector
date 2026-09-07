@@ -115,7 +115,8 @@ final class IdentityAuditTrail
         $after = (array) $audit->after_summary;
 
         return match ($operation) {
-            OperatorAuditOperation::IdentitiesRemapped => array_intersect(
+            OperatorAuditOperation::IdentitiesRemapped,
+            OperatorAuditOperation::IdentitiesRemapRolledBack => array_intersect(
                 [...(array) ($before['external_ids'] ?? []), ...(array) ($after['external_ids'] ?? [])],
                 $externalIds,
             ) !== [],

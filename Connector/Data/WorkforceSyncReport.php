@@ -31,7 +31,11 @@ final readonly class WorkforceSyncReport
          * wrong — read feedRefused() for that.
          */
         public bool $checkpointAdvanced = true,
-        /** Changes a replay read but did not apply because current state already reflects something later. */
+        /**
+         * Changes the pass read but did not apply because current state
+         * already reflects something later: every such change on a replay,
+         * and an upsert older than its projection on any pass (#273).
+         */
         public int $superseded = 0,
     ) {
         if (! in_array($pass, ['bootstrap', 'incremental', 'replay'], true)) {
