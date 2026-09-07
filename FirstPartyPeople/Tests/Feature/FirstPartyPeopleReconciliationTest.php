@@ -16,12 +16,13 @@ use App\Domains\People\Provider\Data\WorkforceRemapFact;
 use App\Domains\People\Provider\Enums\WorkforceResourceType as PeopleWorkforceResourceType;
 use App\Domains\PeopleConnector\Connector\Contracts\ReconcilesWorkforce;
 use App\Domains\PeopleConnector\Connector\Data\ExternalReference;
+use App\Domains\PeopleConnector\Connector\Data\ProviderPortAuthorization;
 use App\Domains\PeopleConnector\Connector\Data\ProviderScope;
 use App\Domains\PeopleConnector\Connector\Data\ReconciliationReport;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceEmployee;
 use App\Domains\PeopleConnector\Connector\Enums\PeopleCapability;
 use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
-use App\Domains\PeopleConnector\Connector\Models\ExternalIdentity;
+use App\Domains\PeopleConnector\Connector\Exceptions\ProviderAuthorizationException;
 use App\Domains\PeopleConnector\Connector\Models\ReconciliationIssue;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceCompanyProjection;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceEmployeeProjection;
@@ -59,7 +60,7 @@ test('the conformance suite reconciliation branch runs for the first-party adapt
         resolvePort: function (PeopleCapability $capability, string $contract) use ($adapter, &$reconcileCalls): object {
             $port = $adapter->resolvePort(
                 $contract,
-                App\Domains\PeopleConnector\Connector\Data\ProviderPortAuthorization::forConformance(FirstPartyPeopleAdapter::ID),
+                ProviderPortAuthorization::forConformance(FirstPartyPeopleAdapter::ID),
             );
             expect($port)->toBeInstanceOf($contract);
 
@@ -199,7 +200,7 @@ test('a sibling tenant connection is refused before any People read', function (
     app(TenantContext::class)->set((int) $otherTenant->id);
 
     expect(fn () => $port->reconcile())
-        ->toThrow(App\Domains\PeopleConnector\Connector\Exceptions\ProviderAuthorizationException::class)
+        ->toThrow(ProviderAuthorizationException::class)
         ->and($calls['employees'])->toBe([])
         ->and($calls['organizationUnits'])->toBe([])
         ->and($calls['company'])->toBe([]);
