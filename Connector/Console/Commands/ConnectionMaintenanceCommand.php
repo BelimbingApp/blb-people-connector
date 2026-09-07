@@ -24,7 +24,7 @@ final class ConnectionMaintenanceCommand extends TenantScopedCommand
                             {--as= : Id of the operator this change runs as}
                             {--connection= : Id of the provider connection}
                             {--until= : When the window ends (ISO 8601, in the future, at most 7 days away)}
-                            {--reason= : Short reason shown to operators (200 characters)}
+                            {--reason= : Short reason shown to operators (190 characters)}
                             {--end : End the window now}';
 
     protected $description = 'Pause sync passes and defer webhook-triggered runs for one connection until a given time, with an audit row';

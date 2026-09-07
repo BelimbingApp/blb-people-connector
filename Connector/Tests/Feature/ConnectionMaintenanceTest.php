@@ -39,6 +39,7 @@ use App\Domains\PeopleConnector\Connector\Models\ReconciliationIssue;
 use App\Domains\PeopleConnector\Connector\Models\SyncCheckpoint;
 use App\Domains\PeopleConnector\Connector\Models\SyncCheckpointEvent;
 use App\Domains\PeopleConnector\Connector\Models\WebhookDelivery;
+use App\Domains\PeopleConnector\Connector\Services\ConnectionMaintenanceService;
 use App\Domains\PeopleConnector\Connector\Services\ConnectionRetirementService;
 use App\Domains\PeopleConnector\Connector\Services\ProviderConnectionStore;
 use App\Domains\PeopleConnector\Connector\Services\ProviderRegistry;
@@ -46,7 +47,6 @@ use App\Domains\PeopleConnector\Connector\Services\SchedulerPrincipal;
 use App\Domains\PeopleConnector\Connector\Services\SyncFreshnessAlerter;
 use App\Domains\PeopleConnector\Connector\Services\WorkforceFreshnessPolicy;
 use App\Domains\PeopleConnector\Connector\Services\WorkforceSyncRunner;
-use App\Domains\PeopleConnector\FirstPartyPeople\FirstPartyPeopleAdapter;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Artisan;
@@ -402,4 +402,20 @@ test('a freshness breach inside the window is stale (maintenance) and raises no 
         ->and($freshness->staleReason)->toBe(WorkforceFreshness::REASON_MAINTENANCE)
         ->and($issue)->toBeNull()
         ->and(ReconciliationIssue::query()->where('connection_id', $f['connectionId'])->where('kind', SyncFreshnessAlerter::ISSUE_KIND)->count())->toBe(0);
+});
+
+test('a reason at the bound is stored and audited; one past it is refused before the write', function (): void {
+    $f = maintFixture('Maintenance Reason Bound Tenant');
+    $audits = OperatorAudit::query()->count();
+
+    // The reason is copied into the operator audit summary, whose own bound is
+    // 190 bytes: a longer reason would write the window and then lose its
+    // audit row to OperatorAuditException.
+    $service = app(ConnectionMaintenanceService::class);
+    $service->start($f['actor'], $f['connectionId'], now()->addDay()->toImmutable(), str_repeat('r', 190));
+    expect(OperatorAudit::query()->count())->toBe($audits + 1);
+
+    expect(fn () => $service->start($f['actor'], $f['connectionId'], now()->addDay()->toImmutable(), str_repeat('r', 191)))
+        ->toThrow(ConnectionMaintenanceException::class);
+    expect(OperatorAudit::query()->count())->toBe($audits + 1);
 });

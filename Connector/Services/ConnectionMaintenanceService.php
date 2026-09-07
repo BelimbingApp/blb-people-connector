@@ -31,7 +31,7 @@ final class ConnectionMaintenanceService
 
     public const MAX_DAYS = 7;
 
-    public const MAX_REASON_LENGTH = 200;
+    public const MAX_REASON_LENGTH = 190;
 
     public function __construct(
         private readonly TenantContext $tenantContext,

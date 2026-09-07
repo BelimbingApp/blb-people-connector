@@ -23,7 +23,7 @@ retired connection cannot enter a window.
 window lapses on its own instead of silencing a provider for good. A window
 whose `maintenance_until` has passed is not maintenance; the next read that
 notices it clears both columns, no purge is involved. `--reason` is at most
-200 characters and is shown to operators, so keep credentials and provider
+190 characters (the operator audit summary bound) and is shown to operators, so keep credentials and provider
 response fragments out of it.
 
 ## What is held
