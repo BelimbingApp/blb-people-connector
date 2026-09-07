@@ -49,13 +49,23 @@ not silently inherit an earlier approval.
 
 ## Immutable exchange record
 
-Every received or produced file must be recorded against the provider
-connection, tenant and company before processing. The record binds the file
-name, lowercase SHA-256 of the exact bytes, approved schema version, operation
-and direction, receipt or production time, evidence-package reference and the
-responsible actor. The implementation must retain the permitted provenance and
-decision evidence for the approved retention period without putting credentials
-or raw sensitive payloads in logs or documentation.
+Every received or produced file is recorded by
+[`FileExchangeLedger`](../../Connector/Services/FileExchangeLedger.php) in
+`people_connector_connector_file_exchange_records` against the provider
+connection, tenant and company before processing. The record
+([`FileExchangeRecord`](../../Connector/Models/FileExchangeRecord.php)) binds
+the file name, lowercase SHA-256 of the exact bytes as hashed by the ledger
+itself, byte length, approved schema version, operation and direction, receipt
+or production time, evidence-package reference and the responsible actor. A
+`ProviderFile` whose declared hash is not the hash of its bytes is refused and
+nothing is written. Duplicate rule: the same bytes under the same connection
+and direction are one record — a second recording returns the first row and
+writes nothing — while the same bytes in the other direction are a second
+record. The row is immutable except for its status (`recorded`,
+`quarantined`, `archived`) and status reason; it is never deleted, is kept
+indefinitely (`people-connector.retention`), leaves with the connector's
+DataShare scope, and each write leaves an `OperatorAudit` row that carries the
+name and hash but never the path or the contents.
 
 The existing [`ProviderFile`](../../Connector/Data/ProviderFile.php) contract
 requires a name, path and lowercase SHA-256. Inspection returns the exact hash,

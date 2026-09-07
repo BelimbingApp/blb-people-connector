@@ -86,7 +86,7 @@ test('connector doctor reports only this tenants stale webhook delivery and exit
     DB::table('jobs')->delete();
     expect(Artisan::call('connector:doctor', ['--tenant' => $tenantId, '--as' => $operator->id, '--json' => true]))->toBe(0);
     $rows = collect(json_decode(trim(Artisan::output()), true, flags: JSON_THROW_ON_ERROR)['checks']);
-    expect($rows)->toHaveCount(7)
+    expect($rows)->toHaveCount(8)
         ->and($rows->firstWhere('check', 'webhook_duplicates')['detail'] ?? null)->toBe('0 skipped in 7 days')
         ->and($rows->pluck('status')->unique()->all())->toBe(['green']);
 });
@@ -167,7 +167,7 @@ test('connector doctor records every run and lists only this tenants latest snap
         'measured_at' => now(),
     ]);
 
-    expect(DB::table('people_connector_connector_doctor_snapshots')->where('tenant_id', $tenantId)->count())->toBe(14)
+    expect(DB::table('people_connector_connector_doctor_snapshots')->where('tenant_id', $tenantId)->count())->toBe(16)
         ->and(DB::table('people_connector_connector_doctor_snapshots')
             ->where('tenant_id', $tenantId)
             ->pluck('check')
@@ -176,6 +176,7 @@ test('connector doctor records every run and lists only this tenants latest snap
             ->all())
         ->toBe([
             'adapter_conformance' => 2,
+            'delegation_secret_overlap' => 2,
             'identity_mappings' => 2,
             'reconciliation_drift' => 2,
             'webhook_deliveries' => 2,
@@ -190,8 +191,8 @@ test('connector doctor records every run and lists only this tenants latest snap
 
     expect(Artisan::call('connector:doctor', ['--tenant' => $tenantId, '--as' => $operator->id, '--history' => 1, '--json' => true]))->toBe(0);
     $history = collect(json_decode(trim(Artisan::output()), true, flags: JSON_THROW_ON_ERROR)['checks']);
-    expect($history)->toHaveCount(7)
-        ->and($history->pluck('check')->unique())->toHaveCount(7);
+    expect($history)->toHaveCount(8)
+        ->and($history->pluck('check')->unique())->toHaveCount(8);
 });
 
 test('connector snapshot retention removes only this tenants rows older than thirty days', function (): void {

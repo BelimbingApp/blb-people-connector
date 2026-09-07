@@ -74,6 +74,12 @@ return [
      */
     'delegation' => [
         'secret' => env('PEOPLE_CONNECTOR_DELEGATION_SECRET'),
+        // The outgoing secret of a rotation in progress, and the instant it
+        // stops being accepted (ISO-8601). Both null is the steady state and
+        // is byte-for-byte today's behaviour: only the current secret
+        // verifies. docs/security/delegated-authority.md holds the procedure.
+        'previous_secret' => env('PEOPLE_CONNECTOR_DELEGATION_PREVIOUS_SECRET'),
+        'previous_secret_expires_at' => env('PEOPLE_CONNECTOR_DELEGATION_PREVIOUS_SECRET_EXPIRES_AT'),
         'max_lifetime_seconds' => 300,
         // The name this service answers to. The wire checks the audience a
         // route was addressed on; the in-process port checks this (#185).
@@ -156,5 +162,11 @@ return [
         // so purge audit rows are themselves never purged.
         'people_connector_connector_retention_purge_audits' => ['days' => null],
         'people_connector_connector_operator_audits' => ['days' => null],
+
+        // File exchange ledger (#263): which bytes each connection received or
+        // produced, and whether they were accepted. Provenance is kept with
+        // the connection; the model refuses delete, so a finite window here
+        // would be a policy no purge could carry out.
+        'people_connector_connector_file_exchange_records' => ['days' => null],
     ],
 ];
