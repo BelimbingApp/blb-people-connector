@@ -61,6 +61,36 @@ function dryRunAuthz(array $tenantIds): void
     });
 }
 
+/** Allows everything and records each call with the tenant it was asked under. */
+function dryRunAuthzSpy(): object
+{
+    $spy = new class implements AuthorizationService
+    {
+        /** @var list<array{string, int|null}> */
+        public array $calls = [];
+
+        public function can(Actor $actor, string $capability, ?ResourceContext $resource = null, array $context = []): AuthorizationDecision
+        {
+            $this->calls[] = ['can', app(TenantContext::class)->currentTenantId()];
+
+            return AuthorizationDecision::allow();
+        }
+
+        public function authorize(Actor $actor, string $capability, ?ResourceContext $resource = null, array $context = []): void
+        {
+            $this->calls[] = ['authorize', app(TenantContext::class)->currentTenantId()];
+        }
+
+        public function filterAllowed(Actor $actor, string $capability, iterable $resources, array $context = []): Collection
+        {
+            return collect($resources);
+        }
+    };
+    app()->instance(AuthorizationService::class, $spy);
+
+    return $spy;
+}
+
 /** @return array{tenantId: int, operator: User, connection: int} */
 function dryRunTenant(string $name, string $provider): array
 {
@@ -220,4 +250,27 @@ test('a non-active identity on either side is not a collision', function (): voi
     expect(dryRunCall($source, $target, ['--json' => true]))->toBe(0);
     $report = json_decode(trim(Artisan::output()), true, flags: JSON_THROW_ON_ERROR);
     expect($report['collisions'])->toBe([])->and($report['blocked'])->toBeFalse();
+});
+
+test('an operator with no company is an invalid actor: refused before either tenant is asked, nothing written', function (): void {
+    $source = dryRunTenant('Move Source', 'test.move');
+    $target = dryRunTenant('Move Target', 'test.move');
+    $sibling = dryRunTenant('Move Sibling', 'test.move');
+    dryRunIdentity($source, 'test.move', 'EMP-100');
+    dryRunIdentity($sibling, 'test.move', 'EMP-100');
+    // The factory's default user has no company, so Actor::forUser() builds
+    // the actor validate() refuses: the shape the command meets in production.
+    $operator = User::factory()->create();
+    expect(Actor::forUser($operator)->validate())->not->toBeNull();
+    $spy = dryRunAuthzSpy();
+    $before = dryRunCounts();
+    $siblingBefore = ExternalIdentity::query()->forTenant($sibling['tenantId'])->pluck('external_id_hash', 'id')->all();
+
+    app(TenantContext::class)->clear();
+    expect(Artisan::call('connector:migrate:dry-run', ['source' => $source['tenantId'], '--to' => $target['tenantId'], '--as' => $operator->id]))->toBe(1)
+        ->and(Artisan::output())->toContain('valid operator')
+        ->and(Artisan::output())->not->toContain('Nothing was written')
+        ->and($spy->calls)->toBe([]);
+    expect(dryRunCounts())->toBe($before)
+        ->and(ExternalIdentity::query()->forTenant($sibling['tenantId'])->pluck('external_id_hash', 'id')->all())->toBe($siblingBefore);
 });
