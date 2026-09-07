@@ -24,12 +24,18 @@ use App\Domains\PeopleConnector\FirstPartyPeople\Services\WorkforceChangePort;
  * The first-party People provider, seen from the connector side.
  *
  * It declares exactly what the People Provider module publishes today —
- * company, organization-unit and employee reads over the two co-located
- * projection contracts — and nothing else. Positions, merges, writes,
+ * company, organization-unit, position and employee reads over the
+ * co-located projection contracts — and nothing else. Merges, writes,
  * reconciliation, service authentication, SSO hand-off and every Skill
  * operation are absent here because People publishes no contract for them;
  * an adapter that declared them would resolve no port and turn a missing
  * contract into a runtime failure instead of an honest capability answer.
+ *
+ * Positions have no PeopleCapability case of their own: a position is a
+ * node of the organization structure, so People's `ReadsWorkforcePositions`
+ * travels under OrganizationDirectory, on the bootstrap page beside the
+ * organization units (see WorkforceBootstrapPort). The capability register
+ * (docs/providers/capability-register.json) records the same placement.
  *
  * This adapter is co-located by construction: it calls People in-process
  * through the published contracts. Remote equivalence needs People-owned
