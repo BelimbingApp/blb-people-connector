@@ -18,6 +18,7 @@ enum OperatorAuditOperation: string
     case WebhookSecretRotated = 'webhook.secret_rotated';
     case SupportBundled = 'support.bundled';
     case FileExchangeRecorded = 'file_exchange.recorded';
+    case ConnectionResidueReported = 'connection.residue_reported';
 
     public function label(): string
     {
@@ -35,6 +36,7 @@ enum OperatorAuditOperation: string
             self::WebhookSecretRotated => 'Webhook signing secret rotated',
             self::SupportBundled => 'Support bundle written',
             self::FileExchangeRecorded => 'File exchange record written',
+            self::ConnectionResidueReported => 'Connection residue reported',
         };
     }
 }

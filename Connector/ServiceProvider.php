@@ -7,6 +7,7 @@ use App\Domains\People\Provider\Data\ExternalReference as PeopleExternalReferenc
 use App\Domains\PeopleConnector\Connector\Console\Commands\BenchSyncCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\CapabilityVerifyCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\ConnectionHealthCheckCommand;
+use App\Domains\PeopleConnector\Connector\Console\Commands\ConnectionResidueCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\ConnectorDoctorCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\CutoverRehearsalCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\Hr2000ImportDryRunCommand;
@@ -82,6 +83,7 @@ class ServiceProvider extends BaseServiceProvider
                 CutoverRehearsalCommand::class,
                 CapabilityVerifyCommand::class,
                 ConnectionHealthCheckCommand::class,
+                ConnectionResidueCommand::class,
                 ConnectorDoctorCommand::class,
                 Hr2000ImportDryRunCommand::class,
                 MigrateDryRunCommand::class,
