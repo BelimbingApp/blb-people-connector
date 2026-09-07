@@ -3,12 +3,12 @@
 namespace App\Domains\PeopleConnector\Connector\Console\Commands;
 
 use App\Base\Authz\DTO\Actor;
+use App\Base\Tenancy\Console\TenantScopedCommand;
 use App\Base\Tenancy\Contracts\TenantContext;
 use App\Core\User\Models\User;
 use App\Domains\PeopleConnector\Connector\Exceptions\ConnectorRecordNotFoundException;
 use App\Domains\PeopleConnector\Connector\Exceptions\ProviderAuthorizationException;
 use App\Domains\PeopleConnector\Connector\Services\CutoverRehearsalService;
-use Illuminate\Console\Command;
 
 /**
  * Rehearse a provider cutover and exit non-zero while anything blocks it.
@@ -17,12 +17,11 @@ use Illuminate\Console\Command;
  * the prose, so a rehearsal reporting blockers and exiting zero would be worse
  * than not running at all.
  */
-final class CutoverRehearsalCommand extends Command
+final class CutoverRehearsalCommand extends TenantScopedCommand
 {
     protected $signature = 'people-connector:cutover-rehearsal
                             {from : Connection being replaced}
                             {to : Connection taking over}
-                            {--tenant= : Tenant to rehearse in; defaults to the current tenant context}
                             {--as= : Id of the operator this rehearsal runs as}';
 
     protected $description = 'Report what a provider cutover would break, without changing anything';
@@ -43,12 +42,6 @@ final class CutoverRehearsalCommand extends Command
             $this->error("No user [{$operatorId}].");
 
             return self::FAILURE;
-        }
-
-        $tenantOption = $this->option('tenant');
-
-        if ($tenantOption !== null && $tenantOption !== '') {
-            $tenants->set((int) $tenantOption);
         }
 
         try {

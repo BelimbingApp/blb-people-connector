@@ -4,7 +4,7 @@ Before moving a tenant's connector-owned data to another tenant (plan 1011),
 see what the move would touch and whether anything blocks it:
 
 ```bash
-php artisan connector:migrate:dry-run 7 --to=9 --as=42
+php artisan connector:migrate:dry-run --tenant=7 --to=9 --as=42
 ```
 
 The report lists the source tenant's rows per connector-owned table (the

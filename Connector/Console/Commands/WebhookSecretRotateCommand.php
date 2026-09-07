@@ -4,25 +4,24 @@ namespace App\Domains\PeopleConnector\Connector\Console\Commands;
 
 use App\Base\Authz\DTO\Actor;
 use App\Base\Authz\Exceptions\AuthorizationDeniedException;
+use App\Base\Tenancy\Console\TenantScopedCommand;
 use App\Base\Tenancy\Contracts\TenantContext;
 use App\Core\User\Models\User;
 use App\Domains\PeopleConnector\Connector\Exceptions\ConnectorRecordNotFoundException;
 use App\Domains\PeopleConnector\Connector\Exceptions\InvalidProviderConfigurationException;
 use App\Domains\PeopleConnector\Connector\Exceptions\ProviderAuthorizationException;
 use App\Domains\PeopleConnector\Connector\Services\WebhookSecretRotator;
-use Illuminate\Console\Command;
 
 /**
  * Rotate a connection's webhook signing secret with an overlap window (#247).
  * Prints the new secret exactly once and the config entry list to paste;
  * writes nothing but the audit row.
  */
-final class WebhookSecretRotateCommand extends Command
+final class WebhookSecretRotateCommand extends TenantScopedCommand
 {
     protected $signature = 'connector:webhook:secret:rotate
                             {connection : Provider connection id}
                             {--overlap-minutes=60 : How long the previous secret keeps verifying deliveries}
-                            {--tenant= : Tenant the connection belongs to; defaults to the current tenant context}
                             {--as= : Id of the operator this rotation runs as}';
 
     protected $description = 'Generate a new webhook signing secret for a connection, keeping the previous one for an overlap window';
@@ -38,9 +37,6 @@ final class WebhookSecretRotateCommand extends Command
             $this->error("No user [{$operatorId}].");
 
             return self::FAILURE;
-        }
-        if (($tenantId = $this->option('tenant')) !== null && $tenantId !== '') {
-            $tenants->set((int) $tenantId);
         }
         $overlap = $this->option('overlap-minutes');
         if (! is_numeric($overlap) || (int) $overlap != $overlap) {
