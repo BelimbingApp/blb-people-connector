@@ -8,6 +8,7 @@ use App\Base\Authz\Enums\PrincipalType;
 use App\Base\Authz\Exceptions\AuthorizationDeniedException;
 use App\Base\Tenancy\Contracts\TenantContext;
 use App\Core\Employee\Models\Employee;
+use App\Domains\People\Settings\Models\PeopleReferenceEntry;
 use App\Domains\PeopleConnector\Connector\Contracts\AuthenticatesProvider;
 use App\Domains\PeopleConnector\Connector\Contracts\BootstrapsWorkforce;
 use App\Domains\PeopleConnector\Connector\Contracts\ProviderAdapter;
@@ -45,6 +46,7 @@ const PROVIDER_CONFORMANCE_CASES = [
     'cursor_round_trip',
     'refusal_semantics',
     'page_checksum',
+    'positions',
 ];
 
 /**
@@ -74,7 +76,7 @@ test('each adapter registers every shared conformance case', function (array $re
 
     $feedDisposition = $registration['cases']['bootstrap_paging'];
     expect($feedDisposition)->toBeIn(['supported', 'unsupported']);
-    foreach (['change_feed', 'cursor_round_trip', 'page_checksum'] as $case) {
+    foreach (['change_feed', 'cursor_round_trip', 'page_checksum', 'positions'] as $case) {
         expect($registration['cases'][$case])->toBe($feedDisposition);
     }
 })->with('provider adapter conformance registrations');
@@ -132,6 +134,13 @@ test('registered adapters satisfy paging cursor and checksum dispositions', func
         expect($page->checksum)->not->toBeNull()
             ->and($page->checksum)->toBe(WorkforcePageChecksum::of($page));
     }
+
+    // Positions ride the page that carries their company (#299): the first
+    // bootstrap page names the fixture's one, later pages carry none.
+    expect($registration['cases']['positions'])->toBe('supported')
+        ->and(array_map(static fn (object $position): string => $position->name, $bootstrapPages[0]->positions))->toBe([$fixture['position']->name])
+        ->and($bootstrapPages[0]->positions[0]->companyReference->externalId)->toBe((string) $fixture['position']->company_id)
+        ->and($bootstrapPages[1]->positions)->toBe([]);
 })->with('provider adapter conformance registrations');
 
 test('registered adapters preserve distinct unsupported unavailable and unauthorized refusals', function (array $registration): void {
@@ -200,17 +209,26 @@ test('registered adapters preserve distinct unsupported unavailable and unauthor
     ))->toThrow(ProviderCompatibilityException::class);
 })->with('provider adapter conformance registrations');
 
-/** @return array{employees: list<Employee>} */
+/** @return array{employees: list<Employee>, position: PeopleReferenceEntry} */
 function conformancePeopleFixture(): array
 {
     Carbon::setTestNow('2026-09-06 07:00:00 UTC');
     [$tenant, $company] = createTenantWithCompany(['name' => 'Adapter Conformance']);
     app(TenantContext::class)->set((int) $tenant->id);
 
-    return ['employees' => [
-        Employee::factory()->create(['company_id' => $company->id, 'employee_type' => 'full_time']),
-        Employee::factory()->create(['company_id' => $company->id, 'employee_type' => 'full_time']),
-    ]];
+    return [
+        'employees' => [
+            Employee::factory()->create(['company_id' => $company->id, 'employee_type' => 'full_time']),
+            Employee::factory()->create(['company_id' => $company->id, 'employee_type' => 'full_time']),
+        ],
+        'position' => PeopleReferenceEntry::query()->create([
+            'company_id' => $company->id,
+            'type' => PeopleReferenceEntry::TYPE_JOB_TITLE,
+            'code' => 'CONF',
+            'name' => 'Conformance Engineer',
+            'status' => PeopleReferenceEntry::STATUS_ACTIVE,
+        ]),
+    ];
 }
 
 /** @return list<object> */
@@ -261,6 +279,7 @@ function providerAdapterConformanceRegistrations(): array
                 'cursor_round_trip' => 'supported',
                 'refusal_semantics' => 'required',
                 'page_checksum' => 'supported',
+                'positions' => 'supported',
             ],
         ]],
         'HR2000 SBG undiscovered profile' => [[
@@ -272,6 +291,7 @@ function providerAdapterConformanceRegistrations(): array
                 'cursor_round_trip' => 'unsupported',
                 'refusal_semantics' => 'required',
                 'page_checksum' => 'unsupported',
+                'positions' => 'unsupported',
             ],
         ]],
     ];

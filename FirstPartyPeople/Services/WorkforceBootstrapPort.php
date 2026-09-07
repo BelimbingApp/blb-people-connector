@@ -4,10 +4,13 @@ namespace App\Domains\PeopleConnector\FirstPartyPeople\Services;
 
 use App\Base\Foundation\Exceptions\BlbDataContractException;
 use App\Domains\People\Provider\Contracts\ReadsWorkforceBootstrap;
+use App\Domains\People\Provider\Contracts\ReadsWorkforcePositions;
 use App\Domains\People\Provider\Data\WorkforceBootstrapRequest;
 use App\Domains\PeopleConnector\Connector\Contracts\BootstrapsWorkforce;
+use App\Domains\PeopleConnector\Connector\Data\WorkforceCompany;
 use App\Domains\PeopleConnector\Connector\Data\WorkforcePage;
 use App\Domains\PeopleConnector\Connector\Data\WorkforcePageRequest;
+use App\Domains\PeopleConnector\Connector\Data\WorkforcePosition;
 use App\Domains\PeopleConnector\Connector\Exceptions\ProviderValidationException;
 use App\Domains\PeopleConnector\Connector\Support\WorkforcePageChecksum;
 use App\Domains\PeopleConnector\FirstPartyPeople\Exceptions\ForeignProviderReferenceException;
@@ -19,11 +22,19 @@ use App\Domains\PeopleConnector\FirstPartyPeople\FirstPartyPeopleAdapter;
  * Page cursors cross this boundary untouched in both directions: they are
  * People's own encrypted, tenant-bound values, and the connector has no
  * business parsing, re-encoding, or reissuing one.
+ *
+ * Positions are not part of People's bootstrap page; People publishes them
+ * per company through `ReadsWorkforcePositions` (R1b). This port reads them
+ * for every company the page carries, so they travel on the same page as
+ * the companies they belong to — the first one, where the bootstrap reader
+ * puts companies — and are covered by that page's checksum. A page with no
+ * companies (every page after the first) therefore carries no positions.
  */
 final readonly class WorkforceBootstrapPort implements BootstrapsWorkforce
 {
     public function __construct(
         private ReadsWorkforceBootstrap $reader,
+        private ReadsWorkforcePositions $positions,
         private WorkforceRecordTranslator $translator,
     ) {}
 
@@ -35,14 +46,17 @@ final readonly class WorkforceBootstrapPort implements BootstrapsWorkforce
                 limit: $request->limit,
             ));
 
+            $companies = array_map($this->translator->company(...), $page->companies);
+
             $translated = new WorkforcePage(
                 employees: array_map($this->translator->employee(...), $page->employees),
                 asOf: $page->asOf,
                 nextPageCursor: $page->nextPageCursor,
                 resumeCursor: $page->resumeCursor,
                 complete: $page->complete,
-                companies: array_map($this->translator->company(...), $page->companies),
+                companies: $companies,
                 organizationUnits: array_map($this->translator->organizationUnit(...), $page->organizationUnits),
+                positions: $this->positionsOf($companies),
             );
 
             return new WorkforcePage(
@@ -72,5 +86,26 @@ final readonly class WorkforceBootstrapPort implements BootstrapsWorkforce
                 previous: $exception,
             );
         }
+    }
+
+    /**
+     * People keys a company by its stable id, which is the external id it
+     * stamps on the company's own reference; that id is already known to be
+     * ours by the time the company translated.
+     *
+     * @param  list<WorkforceCompany>  $companies
+     * @return list<WorkforcePosition>
+     */
+    private function positionsOf(array $companies): array
+    {
+        $positions = [];
+
+        foreach ($companies as $company) {
+            foreach ($this->positions->positions($company->reference->externalId) as $position) {
+                $positions[] = $this->translator->position($position);
+            }
+        }
+
+        return $positions;
     }
 }
