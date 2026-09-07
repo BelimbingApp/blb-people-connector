@@ -49,6 +49,9 @@ added without a row here (#300):
 | `webhook_duplicates` | never | informational: deliveries acknowledged as duplicates in seven days |
 | `webhook_secret_overlap` | never | yellow while a connection's previous signing secret is inside its rotation overlap (#247) |
 | `delegation_secret_overlap` | a previous delegation secret lapsed or has no usable expiry (#262) | yellow while the previous secret is still accepted |
+| `webhook_dead_letters` | a dead-lettered delivery has no replay pointing at it yet (#271) | count is unreplayed dead letters, detail names the oldest `failed_at` |
+| `sync_dead_letters` | an open reconciliation issue of kind `sync_dead_letter` parks a feed page (#271) | subset of `reconciliation_drift` that means a stuck feed |
+| `connection_maintenance` | never | yellow with the count of connections inside a planned maintenance window (#264) |
 
 The table reports adapter conformance for every configured provider, queued
 webhook-triggered syncs older than one hour, open reconciliation drift,
