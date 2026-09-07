@@ -37,7 +37,7 @@ final class WebhookReceiptLedger
         $key = ['tenant_id' => $tenantId, 'provider_id' => (string) $connection->provider_id, 'delivery_id' => $deliveryId];
 
         try {
-            $receipt = DB::transaction(fn (): WebhookReceipt => WebhookReceipt::query()->create([...$key, 'connection_id' => (int) $connection->id, 'first_seen_at' => now()]));
+            $receipt = WebhookReceipt::query()->create([...$key, 'connection_id' => (int) $connection->id, 'first_seen_at' => now()]);
         } catch (UniqueConstraintViolationException) {
             WebhookReceipt::query()->forTenant($tenantId)->where($key)
                 ->update(['duplicate_count' => DB::raw('duplicate_count + 1'), 'last_duplicate_at' => now()]);
