@@ -291,23 +291,23 @@ test('the command reconciles inside the tenant as a named operator, prints count
 
     expect(Artisan::call('connector:hr2000:import:dry-run', ['path' => $file->path, '--tenant' => $tenant['tenantId'], '--reconcile' => true, '--connection' => $connectionId, '--as' => $operatorId]))->toBe(0);
     $output = Artisan::output();
-    expect($output)->toContain("Reconciled against connection {$connectionId}", 'would_create: 1', 'would_update: 1', 'would_deactivate: 0', 'would_reactivate: 0', 'unchanged: 2', 'missing_from_file: 1', 'E1005', 'organization_reference')
-        ->and($output)->not->toContain('Sample')
+    expect($output)->not->toContain('Sample')
         ->and($output)->not->toContain('example.test')
-        ->and($output)->not->toContain('D-FIN');
+        ->and($output)->not->toContain('D-FIN')
+        ->and($output)->toContain("Reconciled against connection {$connectionId}", 'would_create: 1', 'would_update: 1', 'would_deactivate: 0', 'would_reactivate: 0', 'unchanged: 2', 'missing_from_file: 1', 'E1005', 'organization_reference');
 
     expect(Artisan::call('connector:hr2000:import:dry-run', ['path' => $file->path, '--tenant' => $tenant['tenantId'], '--reconcile' => true, '--connection' => $connectionId, '--as' => $operatorId, '--json' => true]))->toBe(0);
     $json = trim(Artisan::output());
     $report = json_decode($json, true, flags: JSON_THROW_ON_ERROR);
+    expect($json)->not->toContain('Sample')
+        ->and($json)->not->toContain('example.test')
+        ->and($json)->not->toContain('D-FIN');
     expect($report['written'])->toBe(0)
         ->and($report['reconciliation']['connection'])->toBe($connectionId)
         ->and($report['reconciliation']['counts'])->toBe(['would_create' => 1, 'would_update' => 1, 'would_deactivate' => 0, 'would_reactivate' => 0, 'unchanged' => 2, 'missing_from_file' => 1])
         ->and($report['reconciliation']['classes']['would_create'])->toBe([['employee_number' => 'E1005']])
         ->and($report['reconciliation']['classes']['would_update'])->toBe([['employee_number' => 'E1001', 'fields' => ['organization_reference']]])
-        ->and($report['reconciliation']['classes']['missing_from_file'])->toBe([['employee_number' => 'E1003']])
-        ->and($json)->not->toContain('Sample')
-        ->and($json)->not->toContain('example.test')
-        ->and($json)->not->toContain('D-FIN');
+        ->and($report['reconciliation']['classes']['missing_from_file'])->toBe([['employee_number' => 'E1003']]);
 
     expect(hr2000ReconcileCounts())->toBe($before);
 });
