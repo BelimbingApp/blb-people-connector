@@ -1,0 +1,5 @@
+EmpNo,Name,CompanyCode,Department,Position,Email,JoinDate,ResignDate,Status,ReportTo
+E1001,Sample Employee One,SBG01,D-OPS,P-CLERK,sample.one@example.test,03/01/2022,,A,E1003
+E1002,Sample Employee Two,SBG01,D-OPS,P-TECH,,15/06/2020,30/04/2024,R,E1003
+E1003,"Sample, Employee Three",SBG01,D-MGT,P-MGR,sample.three@example.test,01/02/2015,,A,
+E1004,Sample Employee Four,SBG02,,,,29/02/2024,,A,

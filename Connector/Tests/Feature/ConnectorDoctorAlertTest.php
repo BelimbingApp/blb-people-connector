@@ -17,6 +17,14 @@ use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\Queue;
 
 beforeEach(function (): void {
+    // Pin the clock past every hour these tests travel to, so the stale-webhook
+    // fixture below cannot be reverted to a wall-clock offset and still pass.
+    // Measured: with `now()->subSeconds(7200)` restored and the clock left
+    // free, this file is green on any machine whose real time of day is before
+    // 11:00 UTC on 2026-09-07 and red after it — which is how the defect
+    // reached `main` green and then took every open pull request down hours
+    // later (#291). With this pin, the same revert is red whatever the date.
+    Carbon::setTestNow('2030-01-01 00:00:00');
     config()->set('queue.default', 'database');
     config()->set('people-connector.doctor.alert_channel', 'database');
     Notification::fake();
@@ -36,7 +44,10 @@ beforeEach(function (): void {
     });
 });
 
-afterEach(fn () => app(TenantContext::class)->clear());
+afterEach(function (): void {
+    Carbon::setTestNow();
+    app(TenantContext::class)->clear();
+});
 
 /** @return array{0: int, 1: User} */
 function doctorAlertTenant(string $name): array
