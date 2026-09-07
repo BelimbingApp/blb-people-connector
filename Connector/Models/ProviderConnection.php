@@ -46,7 +46,7 @@ final class ProviderConnection extends TenantOwnedModel
         }
 
         if ($this->exists) {
-            static::query()->whereKey($this->getKey())->update(['maintenance_until' => null, 'maintenance_reason' => null]);
+            self::query()->whereKey($this->getKey())->update(['maintenance_until' => null, 'maintenance_reason' => null]);
         }
         $this->forceFill(['maintenance_until' => null, 'maintenance_reason' => null]);
         $this->syncOriginalAttributes('maintenance_until', 'maintenance_reason');
