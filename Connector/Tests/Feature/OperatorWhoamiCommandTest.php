@@ -63,7 +63,8 @@ test('an operator holding export and not import sees one allowed and one denied 
         ->and($rows['people-connector.identity.import']['reason'])->toBe(AuthorizationReasonCode::DENIED_MISSING_CAPABILITY->value)
         ->and($rows->where('allowed', true)->count())->toBe(1)
         ->and($rows->keys()->all())->toContain('people-connector.connection.list', 'people-connector.provider.employee-directory.read')
-        ->and($rows->keys()->all())->toBe($rows->keys()->sort()->values()->all());
+        ->and($rows->keys()->all())->toBe($rows->keys()->sort()->values()->all())
+        ->and($rows->keys()->every(fn (string $key): bool => str_starts_with($key, 'people-connector.')))->toBeTrue();
 
     expect(Artisan::call('connector:operator:whoami', ['--tenant' => $t['tenantId'], '--as' => $t['operator']->id]))->toBe(0)
         ->and(Artisan::output())->toContain("Operator {$t['operator']->id} (user) in tenant {$t['tenantId']}, company {$t['companyId']}.", 'people-connector.identity.export', 'allowed', 'people-connector.identity.import', 'denied');
