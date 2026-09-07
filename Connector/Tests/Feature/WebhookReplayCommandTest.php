@@ -157,7 +157,7 @@ test('a replay runs as a named operator inside the tenant', function (): void {
 test('a failed delivery on a retired connection is refused rather than re-sent to fail again', function (): void {
     $tenant = webhookReplayTenant('Replay Tenant');
     $failed = webhookReplayDelivery($tenant);
-    ProviderConnection::query()->whereKey($tenant['connection']->id)->update(['status' => ProviderConnection::STATUS_RETIRED]);
+    ProviderConnection::query()->whereKey($tenant['connection']->id)->update(['status' => ProviderConnection::STATUS_RETIRED, 'active_scope_key' => null]);
 
     expect(webhookReplayCall($tenant, $failed))->toBe(1)
         ->and(Artisan::output())->toContain("Provider connection {$tenant['connection']->id} is not active")
