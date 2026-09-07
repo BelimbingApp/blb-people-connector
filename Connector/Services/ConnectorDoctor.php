@@ -14,6 +14,7 @@ use App\Domains\PeopleConnector\Connector\Jobs\RunIncrementalWorkforceSync;
 use App\Domains\PeopleConnector\Connector\Models\ExternalIdentity;
 use App\Domains\PeopleConnector\Connector\Models\ProviderConnection;
 use App\Domains\PeopleConnector\Connector\Models\ReconciliationIssue;
+use App\Domains\PeopleConnector\Connector\Models\WebhookDelivery;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceEntity;
 use App\Domains\PeopleConnector\Connector\Testing\ProviderConformance;
 use Illuminate\Support\Facades\DB;
@@ -44,6 +45,12 @@ final class ConnectorDoctor
             $this->row('adapter_conformance', count($adapterViolations), count($adapterViolations).' violations across '.$adapterCount.' configured'.($adapterViolations === [] ? '' : ': '.implode(', ', $adapterViolations))),
             $this->row('webhook_deliveries', $stale, $staleDetail),
             $this->row('reconciliation_drift', $drift, "{$drift} open"),
+            // A delivery whose retry budget ended left the queue, so the row
+            // above gets greener as it fails (#271); this one counts it until
+            // an operator replays it. Parked pages are the subset of open
+            // issues that means a stuck feed, counted apart from the total.
+            $this->webhookDeadLetters($tenantId),
+            $this->syncDeadLetters($tenantId),
             $this->row('identity_mappings', $unresolved, "{$unresolved} unresolved"),
             // A receipt with no delivery behind it is a reservation whose enqueue
             // never ran; its retry is acknowledged as a duplicate, so this row is
@@ -182,6 +189,42 @@ final class ConnectorDoctor
         $job = @unserialize($command, ['allowed_classes' => [RunIncrementalWorkforceSync::class]]);
 
         return $job instanceof RunIncrementalWorkforceSync ? $job->tenantId : null;
+    }
+
+    /**
+     * Dead-lettered deliveries nobody has replayed yet. A replay keeps the
+     * original row and points at it through `replayed_from_id`, so the
+     * count drops when the replay is created, not when it completes: the
+     * new pass is watched by the queue-based `webhook_deliveries` row.
+     *
+     * @return array{check: string, status: string, count: int, detail: string}
+     */
+    private function webhookDeadLetters(int $tenantId): array
+    {
+        $deliveries = (new WebhookDelivery)->getTable();
+        $unreplayed = WebhookDelivery::query()->forTenant($tenantId)
+            ->where('status', WebhookDelivery::STATUS_DEAD_LETTERED)
+            ->whereNotExists(fn ($query) => $query->from("{$deliveries} as replay")
+                ->whereColumn('replay.replayed_from_id', "{$deliveries}.id")
+                ->whereColumn('replay.tenant_id', "{$deliveries}.tenant_id"));
+        $count = (clone $unreplayed)->count();
+        $oldest = $count === 0 ? null : $unreplayed->orderBy('failed_at')->orderBy('id')->first()?->failed_at;
+
+        return $this->row('webhook_dead_letters', $count, $count === 0
+            ? '0 dead-lettered'
+            : "{$count} dead-lettered, oldest failed_at ".($oldest?->format(DATE_ATOM) ?? 'unknown'));
+    }
+
+    /** @return array{check: string, status: string, count: int, detail: string} */
+    private function syncDeadLetters(int $tenantId): array
+    {
+        $parked = ReconciliationIssue::query()->forTenant($tenantId)
+            ->where('status', ReconciliationIssue::STATUS_OPEN)
+            ->where('kind', WorkforceSyncRunner::ISSUE_KIND_DEAD_LETTER);
+        $count = (clone $parked)->count();
+        $connections = $count === 0 ? 0 : (clone $parked)->distinct()->count('connection_id');
+
+        return $this->row('sync_dead_letters', $count, "{$count} parked pages across {$connections} connections");
     }
 
     private function unresolvedMappings(int $tenantId): int
