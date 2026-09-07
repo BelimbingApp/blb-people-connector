@@ -4,18 +4,17 @@ namespace App\Domains\PeopleConnector\Connector\Console\Commands;
 
 use App\Base\Authz\DTO\Actor;
 use App\Base\Authz\Exceptions\AuthorizationDeniedException;
+use App\Base\Tenancy\Console\TenantScopedCommand;
 use App\Base\Tenancy\Contracts\TenantContext;
 use App\Core\User\Models\User;
 use App\Domains\PeopleConnector\Connector\Exceptions\IdentityAuditTrailException;
 use App\Domains\PeopleConnector\Connector\Exceptions\ProviderAuthorizationException;
 use App\Domains\PeopleConnector\Connector\Services\IdentityAuditTrail;
-use Illuminate\Console\Command;
 
-final class IdentityAuditTrailCommand extends Command
+final class IdentityAuditTrailCommand extends TenantScopedCommand
 {
     protected $signature = 'connector:identity:audit-trail
                             {external-id : Exact provider external identifier}
-                            {--tenant= : Tenant containing the identity; defaults to the current tenant context}
                             {--as= : Id of the operator reading the trail}
                             {--json : Emit machine-readable result JSON}';
 
@@ -32,9 +31,6 @@ final class IdentityAuditTrailCommand extends Command
             $this->error("No user [{$operatorId}].");
 
             return self::FAILURE;
-        }
-        if (($tenantId = $this->option('tenant')) !== null && $tenantId !== '') {
-            $tenants->set((int) $tenantId);
         }
 
         try {

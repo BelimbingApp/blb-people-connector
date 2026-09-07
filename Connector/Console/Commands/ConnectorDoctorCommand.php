@@ -4,17 +4,16 @@ namespace App\Domains\PeopleConnector\Connector\Console\Commands;
 
 use App\Base\Authz\DTO\Actor;
 use App\Base\Authz\Exceptions\AuthorizationDeniedException;
+use App\Base\Tenancy\Console\TenantScopedCommand;
 use App\Base\Tenancy\Contracts\TenantContext;
 use App\Core\User\Models\User;
 use App\Domains\PeopleConnector\Connector\Exceptions\ProviderAuthorizationException;
 use App\Domains\PeopleConnector\Connector\Services\ConnectorDoctor;
 use App\Domains\PeopleConnector\Connector\Services\ConnectorDoctorAlerter;
-use Illuminate\Console\Command;
 
-final class ConnectorDoctorCommand extends Command
+final class ConnectorDoctorCommand extends TenantScopedCommand
 {
     protected $signature = 'connector:doctor
-                            {--tenant= : Tenant to inspect; defaults to the current tenant context}
                             {--as= : Id of the operator this inspection runs as}
                             {--record : Persist this run as a tenant-scoped health snapshot}
                             {--alert : Record, then alert the operator on checks red twice in a row, and on recovery}
@@ -34,9 +33,6 @@ final class ConnectorDoctorCommand extends Command
             $this->error("No user [{$operatorId}].");
 
             return self::FAILURE;
-        }
-        if (($tenantId = $this->option('tenant')) !== null && $tenantId !== '') {
-            $tenants->set((int) $tenantId);
         }
 
         $historyDays = $this->option('history');
