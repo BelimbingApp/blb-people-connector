@@ -65,4 +65,4 @@ checklists are superseded; they are not a connector implementation backlog.
 - [ ] Build dry-run, idempotent migration tooling with provenance and reconciliation.
 - [ ] Inventory and map SBG's legacy portal data and HR2000 export capability.
 - [ ] Pilot Production, Engineering, QAC/R&D, Planning, and IT with HR/HOD sign-off.
-- [ ] Prove privacy, recovery, performance, support, cutover, rollback, and retirement runbooks.
+- [ ] Prove privacy, recovery, performance, support, cutover, rollback ([replacement rollback](../operators/replacement-rollback.md), #270), and retirement runbooks.
