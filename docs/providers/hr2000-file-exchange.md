@@ -110,6 +110,35 @@ file, so no record is typed. The SHA-256 is streamed off disk, so an over-limit
 file still has the digest the ledger keys on. Either defect is a reason code:
 the report never carries the path or the size.
 
+### Dry-run reconciliation vocabulary
+
+`connector:hr2000:import:dry-run --reconcile --connection=<id> --as=<user id>`
+(#298) classifies every typed record against the named connection's current
+employee projections, matched by `EmpNo` through the connection's active
+external identities, and writes nothing. The operator needs
+`people-connector.connection.manage` in the connection's tenant. Each class is
+reported as a count and a table of `EmpNo` values; `would_update` also names
+the fields that differ. No field value (name, email, department code) is
+printed or carried in `--json`.
+
+| Class | Meaning |
+|---|---|
+| `would_create` | No projection on this connection carries the `EmpNo`. |
+| `would_update` | A projection exists with the same active state and at least one compared field differs: `display_name`, `employee_number`, `email`, `company_reference`, `organization_reference`, `position_reference`, `manager_reference`, `effective_at`. A changed `Department` is `organization_reference`. |
+| `would_deactivate` | The row is `Status = R` and the projection is active. |
+| `would_reactivate` | The row is `Status = A` and the projection is inactive (a re-hire). |
+| `unchanged` | A projection exists with the same active state and every compared field equal. |
+| `missing_from_file` | An active projection on this connection whose `EmpNo` no accepted row carries. |
+
+`missing_from_file` is an observation, not a plan: no deactivation is implied
+until an approved import policy for this deployment supplies complete-snapshot
+and deactivation semantics (step 5 above). A partial export, a filtered report
+or a row rejected for a defect all produce it, because a defective row has no
+typed record and therefore no `EmpNo` to match. Rows with defects are excluded
+from the classification, still reported, and the file still exits non-zero.
+Projections of a sibling connection in the same tenant, and of any other
+tenant, are neither compared nor listed.
+
 A file-level rejection produces no authoritative import. An accepted file may
 contain row rejections only when its verified schema defines that behavior and
 the result reports matching accepted/rejected counts and rejection details, as
