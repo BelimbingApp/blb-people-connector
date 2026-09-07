@@ -208,7 +208,9 @@ function maintCheckpoint(int $connectionId): array
     return [
         'version' => $checkpoint === null ? null : (int) $checkpoint->version,
         'cursor' => $checkpoint?->resume_cursor,
-        'events' => SyncCheckpointEvent::query()->where('connection_id', $connectionId)->count(),
+        // Events hang off the checkpoint, not the connection: SQLite tolerated
+        // the wrong column at first, PostgreSQL did not.
+        'events' => SyncCheckpointEvent::query()->whereIn('checkpoint_id', SyncCheckpoint::query()->where('connection_id', $connectionId)->pluck('id'))->count(),
     ];
 }
 
