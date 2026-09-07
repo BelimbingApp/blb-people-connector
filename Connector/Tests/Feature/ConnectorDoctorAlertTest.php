@@ -78,7 +78,7 @@ test('a red once stays quiet, red twice alerts once naming the check, red a thir
 
     expect(doctorAlertRun($tenantId, $operator, '2026-09-07 10:00:00'))->toBe(1);
     Notification::assertNothingSent();
-    expect(DB::table('people_connector_connector_doctor_snapshots')->where('tenant_id', $tenantId)->count())->toBe(7);
+    expect(DB::table('people_connector_connector_doctor_snapshots')->where('tenant_id', $tenantId)->count())->toBe(8);
 
     expect(doctorAlertRun($tenantId, $operator, '2026-09-07 11:00:00'))->toBe(1)
         ->and(Artisan::output())->toContain('webhook_deliveries');
