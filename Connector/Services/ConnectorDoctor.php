@@ -45,9 +45,13 @@ final class ConnectorDoctor
             $this->row('webhook_deliveries', $stale, $staleDetail),
             $this->row('reconciliation_drift', $drift, "{$drift} open"),
             $this->row('identity_mappings', $unresolved, "{$unresolved} unresolved"),
+            // A receipt with no delivery behind it is a reservation whose enqueue
+            // never ran; its retry is acknowledged as a duplicate, so this row is
+            // the only place the lost sync shows (#227).
+            $this->row('webhook_stuck_reservations', $stuck = $this->receipts->stuckReservations($tenantId), "{$stuck} stuck"),
             // Informational (#227): a duplicate acknowledged is a retry that did
             // no harm, so the row never turns the doctor red.
-            ['check' => 'webhook_duplicates', 'status' => 'green', 'detail' => $this->receipts->duplicatesSkipped($tenantId).' skipped in 7 days'],
+            ['check' => 'webhook_duplicates', 'status' => 'green', 'count' => $duplicates = $this->receipts->duplicatesSkipped($tenantId), 'detail' => "{$duplicates} skipped in 7 days"],
         ]);
     }
 

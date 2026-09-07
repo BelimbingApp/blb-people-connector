@@ -3,6 +3,7 @@
 namespace App\Domains\PeopleConnector\Connector\Services;
 
 use App\Domains\PeopleConnector\Connector\Models\ProviderConnection;
+use App\Domains\PeopleConnector\Connector\Models\WebhookDelivery;
 use App\Domains\PeopleConnector\Connector\Models\WebhookReceipt;
 use Closure;
 use Illuminate\Database\UniqueConstraintViolationException;
@@ -14,10 +15,16 @@ use Throwable;
  *
  * The receipt insert is the reservation: the database's unique key decides
  * who arrived first, so two concurrent arrivals of one delivery cannot both
- * enqueue. The insert runs outside the work's transaction on purpose: a
- * unique violation inside a transaction poisons it on PostgreSQL. If the
- * work then fails, the receipt is released so the provider's retry is
+ * enqueue. The insert runs in its own (nested: savepoint) transaction and
+ * before the work's: a unique violation poisons the PostgreSQL transaction
+ * it happens in, so it must be one that is rolled back and nothing else. If
+ * the work then fails, the receipt is released so the provider's retry is
  * processed rather than acknowledged as a duplicate.
+ *
+ * A process that dies between the two steps leaves a receipt with no
+ * delivery: a stuck reservation, which the retry would read as a duplicate.
+ * stuckReservations() makes that visible in connector:doctor (review on
+ * #228); the ledger does not reclaim it on its own.
  */
 final class WebhookReceiptLedger
 {
@@ -30,7 +37,7 @@ final class WebhookReceiptLedger
         $key = ['tenant_id' => $tenantId, 'provider_id' => (string) $connection->provider_id, 'delivery_id' => $deliveryId];
 
         try {
-            $receipt = WebhookReceipt::query()->create([...$key, 'connection_id' => (int) $connection->id, 'first_seen_at' => now()]);
+            $receipt = DB::transaction(fn (): WebhookReceipt => WebhookReceipt::query()->create([...$key, 'connection_id' => (int) $connection->id, 'first_seen_at' => now()]));
         } catch (UniqueConstraintViolationException) {
             WebhookReceipt::query()->forTenant($tenantId)->where($key)
                 ->update(['duplicate_count' => DB::raw('duplicate_count + 1'), 'last_duplicate_at' => now()]);
@@ -47,6 +54,24 @@ final class WebhookReceiptLedger
         }
 
         return true;
+    }
+
+    /**
+     * Receipts older than the grace window with no delivery row behind them:
+     * reservations whose enqueue never happened. The retry of such a delivery
+     * is acknowledged as a duplicate, so without this count the loss is silent.
+     */
+    public function stuckReservations(int $tenantId, int $graceMinutes = 5): int
+    {
+        return WebhookReceipt::query()->forTenant($tenantId)
+            ->where('first_seen_at', '<', now()->subMinutes($graceMinutes))
+            ->whereNotExists(function ($query) use ($tenantId): void {
+                $query->from((new WebhookDelivery)->getTable(), 'd')
+                    ->whereColumn('d.connection_id', 'people_connector_connector_webhook_receipts.connection_id')
+                    ->whereColumn('d.delivery_id', 'people_connector_connector_webhook_receipts.delivery_id')
+                    ->where('d.tenant_id', $tenantId);
+            })
+            ->count();
     }
 
     /** Deliveries acknowledged as duplicates for this tenant in the last $days days. */

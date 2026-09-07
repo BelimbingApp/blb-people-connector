@@ -34,7 +34,10 @@ the same signed delivery within that window is acknowledged with `200`
 (`{"acknowledged": true, "skipped": "duplicate_delivery"}`) and not run
 again; the count of such duplicates is the `webhook_duplicates` row of
 `connector:doctor`. The same delivery id sent to another tenant's connection
-is that tenant's own first delivery.
+is that tenant's own first delivery. A request that dies after recording the
+receipt and before queuing the pass leaves a stuck reservation whose retry
+is acknowledged as a duplicate; `connector:doctor` reports those red as
+`webhook_stuck_reservations` after a five-minute grace window.
 
 A valid request returns `202` and queues the ordinary incremental workforce
 pass for that connection. The job receives only the tenant and connection ids;

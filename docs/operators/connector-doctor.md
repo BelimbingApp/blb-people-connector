@@ -20,8 +20,12 @@ than 30 days; another tenant's snapshots are never read or purged.
 The table reports adapter conformance for every configured provider, queued
 webhook-triggered syncs older than one hour, open reconciliation drift,
 active identity mappings that no longer join to a compatible current entity
-and connection, plus an informational `webhook_duplicates` row: inbound
-deliveries acknowledged as duplicates in the last seven days (#227), never red. A provider without an active connection is red because its
+and connection, plus two webhook ledger rows (#227): `webhook_stuck_reservations`,
+red when a receipt older than five minutes has no delivery behind it (the
+request died between reserving the delivery id and queuing the pass; its
+retry is acknowledged as a duplicate, so this row is where the lost sync
+shows), and the informational `webhook_duplicates`: deliveries acknowledged
+as duplicates in the last seven days, never red. A provider without an active connection is red because its
 ports cannot be exercised. Any red row makes the command exit non-zero. Use
 `--json` for automation.
 
