@@ -53,14 +53,17 @@ final class WebhookDeliveryReplayer
         $original = WebhookDelivery::query()->forTenant($tenantId)->find($deliveryId)
             ?? throw new ConnectorRecordNotFoundException('The webhook delivery was not found in the current tenant.');
 
-        if (! in_array($original->status, [WebhookDelivery::STATUS_FAILED, WebhookDelivery::STATUS_DEAD_LETTERED], true)) {
-            throw new WebhookRefusal('not_replayable', "Webhook delivery {$original->id} is {$original->status}; only a failed or dead-lettered delivery can be replayed.");
+        if (! in_array($original->status, WebhookDelivery::replayableStatuses(), true)) {
+            throw new WebhookRefusal('not_replayable', "Webhook delivery {$original->id} is {$original->status}; only a failed, dead-lettered or deferred delivery can be replayed.");
         }
 
         $connection = $this->connections->get((int) $original->connection_id);
 
         if ($connection->status !== ProviderConnection::STATUS_ACTIVE) {
             throw new WebhookRefusal('inactive_connection', "Provider connection {$connection->id} is not active; a replay would only fail again.");
+        }
+        if ($connection->inMaintenance()) {
+            throw new WebhookRefusal('in_maintenance', "Provider connection {$connection->id} is in maintenance until {$connection->maintenance_until->format(DATE_ATOM)}; a replay would only be deferred again.");
         }
 
         return new WebhookReplayPlan($original, $tenantId, (int) $connection->id);

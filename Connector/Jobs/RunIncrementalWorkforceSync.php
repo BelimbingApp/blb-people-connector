@@ -88,6 +88,14 @@ final class RunIncrementalWorkforceSync implements ShouldQueue
 
         try {
             $connection = $connections->get($this->connectionId);
+            // A maintenance window (#264) is not a failure: the delivery is
+            // held, no attempt is spent, and connector:webhook:replay sends it
+            // again once the window is over.
+            if ($connection->inMaintenance()) {
+                $this->delivery()?->markDeferred();
+
+                return;
+            }
             if ($connection->status !== ProviderConnection::STATUS_ACTIVE) {
                 throw new WorkforceSyncException("Provider connection {$this->connectionId} is not active.");
             }

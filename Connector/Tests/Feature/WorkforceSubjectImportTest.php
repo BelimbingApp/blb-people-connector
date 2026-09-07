@@ -95,6 +95,8 @@ test('an operator imports one exported identity history into the current tenant 
         '--json' => true,
     ]))->toBe(0);
     $result = json_decode(trim(Artisan::output()), true, flags: JSON_THROW_ON_ERROR);
+    // TenantScopedCommand clears the tenant it bound when the command ends (#249).
+    app(TenantContext::class)->set($target['tenant']);
 
     expect(WorkforceEntity::query()->forTenant($target['tenant'])->whereKey($result['workforce_entity_id'])->exists())->toBeTrue()
         ->and(ExternalIdentity::query()->forTenant($target['tenant'])->where('external_id', 'IMPORT-EMP')->value('workforce_entity_id'))->toBe($result['workforce_entity_id'])

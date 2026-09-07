@@ -18,14 +18,9 @@ use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\Queue;
 
 beforeEach(function (): void {
-    // Pin the clock past every hour these tests travel to, so the stale-webhook
-    // fixture below cannot be reverted to a wall-clock offset and still pass.
-    // Measured: with `now()->subSeconds(7200)` restored and the clock left
-    // free, this file is green on any machine whose real time of day is before
-    // 11:00 UTC on 2026-09-07 and red after it — which is how the defect
-    // reached `main` green and then took every open pull request down hours
-    // later (#291). With this pin, the same revert is red whatever the date.
-    Carbon::setTestNow('2030-01-01 00:00:00');
+    // Pin the wall clock past every travelled instant below, so the fixed
+    // fixture times cannot drift into the future on a slow or late machine.
+    Carbon::setTestNow('2030-01-01 12:00:00');
     config()->set('queue.default', 'database');
     config()->set('people-connector.doctor.alert_channel', 'database');
     Notification::fake();
@@ -46,8 +41,8 @@ beforeEach(function (): void {
 });
 
 afterEach(function (): void {
-    Carbon::setTestNow();
     app(TenantContext::class)->clear();
+    Carbon::setTestNow();
 });
 
 /** @return array{0: int, 1: User} */
@@ -81,11 +76,15 @@ function doctorAlertCheckNames(int $tenantId, User $operator): array
     return array_column(app(ConnectorDoctor::class)->inspect(Actor::forUser($operator))->checks, 'check');
 }
 
-function doctorAlertRun(int $tenantId, User $operator, string $at): int
+function doctorAlertRun(int $tenantId, User $operator, string $at, bool $record = true): int
 {
     test()->travelTo($at);
+    $arguments = ['--tenant' => $tenantId, '--as' => $operator->id, '--alert' => true];
+    if ($record) {
+        $arguments['--record'] = true;
+    }
 
-    return Artisan::call('connector:doctor', ['--tenant' => $tenantId, '--as' => $operator->id, '--record' => true, '--alert' => true]);
+    return Artisan::call('connector:doctor', $arguments);
 }
 
 /** @return list<array<string, mixed>> the alert payloads this operator received, in order */
@@ -192,4 +191,44 @@ test('a null alert channel exits zero, sends nothing, and says alerts are disabl
         ->and(Artisan::output())->toContain('alerts are disabled');
     Notification::assertNothingSent();
     expect(ConnectorDoctorAlert::query()->count())->toBe(0);
+});
+
+test('another tenant\'s announced incident with the same check and first-red timestamp does not turn this tenant\'s transient red into a recovery', function (): void {
+    [$tenantId, $operator] = doctorAlertTenant('Doctor Announced Tenant A');
+    [$otherTenantId, $otherOperator] = doctorAlertTenant('Doctor Announced Tenant B');
+
+    // Tenant A: red at 10:00 and 11:00, one announced incident with first_red_at 10:00.
+    doctorAlertStaleWebhook($tenantId);
+    doctorAlertRun($tenantId, $operator, '2026-09-07 10:00:00');
+    doctorAlertRun($tenantId, $operator, '2026-09-07 11:00:00');
+    Notification::assertSentToTimes($operator, ConnectorDoctorAlertNotification::class, 1);
+
+    // Tenant B: red once at 10:00 (never announced), then green at 11:00 and 12:00.
+    // Its transient red shares A's check and first_red_at; only A's incident was announced.
+    DB::table('jobs')->delete();
+    doctorAlertStaleWebhook($otherTenantId);
+    doctorAlertRun($otherTenantId, $otherOperator, '2026-09-07 10:00:00');
+    DB::table('jobs')->delete();
+    doctorAlertRun($otherTenantId, $otherOperator, '2026-09-07 11:00:00');
+    doctorAlertRun($otherTenantId, $otherOperator, '2026-09-07 12:00:00');
+
+    Notification::assertNotSentTo($otherOperator, ConnectorDoctorAlertNotification::class);
+    Notification::assertSentToTimes($operator, ConnectorDoctorAlertNotification::class, 1);
+    expect(ConnectorDoctorAlert::query()->forTenant($otherTenantId)->count())->toBe(0);
+});
+
+test('--alert alone records the run, so two red runs without --record still alert once', function (): void {
+    [$tenantId, $operator] = doctorAlertTenant('Doctor Alert Only Tenant');
+    doctorAlertStaleWebhook($tenantId);
+    $snapshots = DB::table('people_connector_connector_doctor_snapshots')->where('tenant_id', $tenantId);
+
+    expect(doctorAlertRun($tenantId, $operator, '2026-09-07 10:00:00', record: false))->toBe(1);
+    $checks = (clone $snapshots)->distinct()->count('check');
+    expect($checks)->toBeGreaterThan(0)
+        ->and((clone $snapshots)->count())->toBe($checks);
+    Notification::assertNothingSent();
+
+    expect(doctorAlertRun($tenantId, $operator, '2026-09-07 11:00:00', record: false))->toBe(1);
+    expect((clone $snapshots)->count())->toBe($checks * 2);
+    Notification::assertSentToTimes($operator, ConnectorDoctorAlertNotification::class, 1);
 });

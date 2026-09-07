@@ -25,6 +25,11 @@ use App\Domains\PeopleConnector\Connector\Providers\Hr2000Adapter;
  * Every defect is a reason code bound to a row and column, never a cell value.
  * Every accepted row carries provenance bound to the file hash and to the
  * SHA-256 of that row's exact bytes.
+ *
+ * Bounded (#301): a file over people-connector.file_exchange.max_bytes is
+ * refused before its bytes are read (file_too_large) and a file with more than
+ * max_rows data rows stops at row max_rows + 1 (row_limit_exceeded). Both are
+ * file-level defects, so no record is typed.
  */
 final class Hr2000EmployeeCsvParser
 {
@@ -38,9 +43,16 @@ final class Hr2000EmployeeCsvParser
 
     private const STATUS_RESIGNED = 'R';
 
-    public function parse(ProviderFile $file, \DateTimeImmutable $observedAt, ?string $bytes = null): Hr2000ImportDryRun
+    public function parse(ProviderFile $file, \DateTimeImmutable $observedAt): Hr2000ImportDryRun
     {
-        $bytes ??= @file_get_contents($file->path);
+        $sizeBytes = $file->sizeBytes ?? (is_file($file->path) ? @filesize($file->path) : false);
+        if ($sizeBytes === false) {
+            return $this->fileLevel($file, 'file_unreadable');
+        }
+        if ($sizeBytes > $this->limit('max_bytes', 52428800)) {
+            return $this->fileLevel($file, 'file_too_large');
+        }
+        $bytes = @file_get_contents($file->path);
         if ($bytes === false) {
             return $this->fileLevel($file, 'file_unreadable');
         }
@@ -54,12 +66,18 @@ final class Hr2000EmployeeCsvParser
             $bytes = substr($bytes, 3);
         }
 
-        $lines = preg_split('/\r\n|\n|\r/', $bytes) ?: [];
+        // Header + max_rows rows + one remainder piece: a non-blank remainder is row max_rows + 1, where reading stops.
+        $maxRows = $this->limit('max_rows', 100000);
+        $lines = preg_split('/\r\n|\n|\r/', $bytes, $maxRows + 2) ?: [];
+        unset($bytes);
         while ($lines !== [] && trim((string) end($lines)) === '') {
             array_pop($lines);
         }
         if ($lines === [] || str_getcsv($lines[0], ',', '"', '') !== self::COLUMNS) {
             return $this->fileLevel($file, 'column_layout_unknown');
+        }
+        if (count($lines) - 1 > $maxRows) {
+            return $this->fileLevel($file, 'row_limit_exceeded', $maxRows + 1);
         }
 
         $records = [];
@@ -157,8 +175,16 @@ final class Hr2000EmployeeCsvParser
         return $date !== false && $date->format('d/m/Y') === $value ? $date : null;
     }
 
-    private function fileLevel(ProviderFile $file, string $code): Hr2000ImportDryRun
+    private function fileLevel(ProviderFile $file, string $code, int $rowsRead = 0): Hr2000ImportDryRun
     {
-        return new Hr2000ImportDryRun($file, self::SCHEMA_VERSION, 0, [], [new Hr2000ImportDefect(null, $code)]);
+        return new Hr2000ImportDryRun($file, self::SCHEMA_VERSION, $rowsRead, [], [new Hr2000ImportDefect(null, $code)]);
+    }
+
+    /** A bound from people-connector.file_exchange; a non-positive or missing value falls back to the default. */
+    private function limit(string $key, int $default): int
+    {
+        $value = (int) config('people-connector.file_exchange.'.$key, $default);
+
+        return $value > 0 ? $value : $default;
     }
 }
