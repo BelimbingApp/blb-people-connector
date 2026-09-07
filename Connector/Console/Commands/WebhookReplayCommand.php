@@ -4,13 +4,13 @@ namespace App\Domains\PeopleConnector\Connector\Console\Commands;
 
 use App\Base\Authz\DTO\Actor;
 use App\Base\Authz\Exceptions\AuthorizationDeniedException;
+use App\Base\Tenancy\Console\TenantScopedCommand;
 use App\Base\Tenancy\Contracts\TenantContext;
 use App\Core\User\Models\User;
 use App\Domains\PeopleConnector\Connector\Exceptions\ConnectorRecordNotFoundException;
 use App\Domains\PeopleConnector\Connector\Exceptions\ProviderAuthorizationException;
 use App\Domains\PeopleConnector\Connector\Exceptions\WebhookRefusal;
 use App\Domains\PeopleConnector\Connector\Services\WebhookDeliveryReplayer;
-use Illuminate\Console\Command;
 
 /**
  * Re-dispatch one failed webhook delivery by id (#223).
@@ -18,11 +18,10 @@ use Illuminate\Console\Command;
  * Exits non-zero whenever nothing was sent, so a runbook step that replays a
  * delivery cannot report success for a refusal.
  */
-final class WebhookReplayCommand extends Command
+final class WebhookReplayCommand extends TenantScopedCommand
 {
     protected $signature = 'connector:webhook:replay
                             {delivery : Id of the webhook delivery to replay}
-                            {--tenant= : Tenant the delivery belongs to; defaults to the current tenant context}
                             {--as= : Id of the operator this replay runs as}
                             {--dry-run : Print what would be sent without sending or recording anything}';
 
@@ -39,9 +38,6 @@ final class WebhookReplayCommand extends Command
             $this->error("No user [{$operatorId}].");
 
             return self::FAILURE;
-        }
-        if (($tenantId = $this->option('tenant')) !== null && $tenantId !== '') {
-            $tenants->set((int) $tenantId);
         }
 
         $actor = Actor::forUser($operator);

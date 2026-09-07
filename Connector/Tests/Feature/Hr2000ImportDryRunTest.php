@@ -41,6 +41,20 @@ function hr2000DryRunFile(string $bytes, ?string $sha256 = null): ProviderFile
     return new ProviderFile(basename($path), $sha256 ?? hash('sha256', $bytes), $path);
 }
 
+/** Writes unique rows until the file holds at least $bytes bytes, never holding the file in memory; sized and hashed off disk (#301). */
+function hr2000DryRunFileOfSize(int $bytes): ProviderFile
+{
+    $path = tempnam(sys_get_temp_dir(), 'hr2000-dry-run-');
+    $handle = fopen($path, 'wb');
+    fwrite($handle, implode(',', Hr2000EmployeeCsvParser::COLUMNS)."\r\n");
+    for ($i = 0; ftell($handle) < $bytes; $i++) {
+        fwrite($handle, sprintf('E%06d,Sample Employee,SBG01,D-OPS,P-CLERK,,03/01/2022,,A,', $i)."\r\n");
+    }
+    fclose($handle);
+
+    return new ProviderFile(basename($path), (string) hash_file('sha256', $path), $path, (int) filesize($path));
+}
+
 function hr2000DryRunParse(ProviderFile $file): Hr2000ImportDryRun
 {
     return app(Hr2000EmployeeCsvParser::class)->parse($file, new DateTimeImmutable('2026-09-07T01:00:00Z'));
@@ -183,6 +197,81 @@ test('the dry-run command runs inside one tenant, prints counts and reason codes
 
     expect(Artisan::call('connector:hr2000:import:dry-run', ['path' => sys_get_temp_dir().'/hr2000-dry-run-missing.csv', '--tenant' => $tenantId]))->toBe(1)
         ->and(Artisan::output())->toContain('file_unreadable');
+
+    expect(hr2000DryRunCounts())->toBe($before);
+});
+
+test('a file over max_bytes is refused as file_too_large before its bytes are read: no row, no record, and the parse never holds the file', function (): void {
+    $maxBytes = 4 * 1024 * 1024;
+    config()->set('people-connector.file_exchange.max_bytes', $maxBytes);
+    $file = hr2000DryRunFileOfSize($maxBytes + 1);
+    expect($file->sizeBytes)->toBeGreaterThan($maxBytes);
+
+    memory_reset_peak_usage();
+    $before = memory_get_peak_usage();
+    $run = hr2000DryRunParse($file);
+    $delta = memory_get_peak_usage() - $before;
+
+    expect(hr2000DryRunDefects($run))->toBe([['row' => null, 'code' => 'file_too_large', 'field' => null]])
+        ->and($run->rowsRead)->toBe(0)
+        ->and($run->records)->toBe([])
+        ->and($run->inspection()->accepted)->toBeFalse()
+        ->and($delta)->toBeLessThan($file->sizeBytes);
+
+    // A caller that did not measure the file is bounded by the size on disk, not trusted.
+    $unsized = hr2000DryRunParse(new ProviderFile($file->name, $file->sha256, $file->path));
+    expect(hr2000DryRunDefects($unsized))->toBe([['row' => null, 'code' => 'file_too_large', 'field' => null]]);
+});
+
+test('a file with more than max_rows data rows stops at row max_rows + 1 as row_limit_exceeded, and parses once the limit allows it', function (): void {
+    // The sample's four rows plus trailing blank lines: blank lines are not rows.
+    $file = hr2000DryRunFile((string) file_get_contents(HR2000_DRY_RUN_FIXTURE)."\r\n\r\n");
+
+    config()->set('people-connector.file_exchange.max_rows', 3);
+    $run = hr2000DryRunParse($file);
+    expect(hr2000DryRunDefects($run))->toBe([['row' => null, 'code' => 'row_limit_exceeded', 'field' => null]])
+        ->and($run->rowsRead)->toBe(4)
+        ->and($run->records)->toBe([])
+        ->and($run->inspection()->accepted)->toBeFalse();
+
+    config()->set('people-connector.file_exchange.max_rows', 4);
+    $run = hr2000DryRunParse($file);
+    expect($run->defects)->toBe([])
+        ->and($run->rowsRead)->toBe(4)
+        ->and(array_map(static fn (Hr2000ImportRecord $r): int => $r->row, $run->records))->toBe([2, 3, 4, 5]);
+});
+
+test('the dry-run command streams the digest the ledger keys on and reports an oversized file as a code, never a path or a size', function (): void {
+    [$tenant] = createTenantWithCompany(['name' => 'HR2000 bounds']);
+    $tenantId = (int) $tenant->id;
+    $before = hr2000DryRunCounts();
+
+    expect(Artisan::call('connector:hr2000:import:dry-run', ['path' => HR2000_DRY_RUN_FIXTURE, '--tenant' => $tenantId]))->toBe(0)
+        ->and(Artisan::output())->toContain('sha256 '.hash_file('sha256', HR2000_DRY_RUN_FIXTURE));
+
+    config()->set('people-connector.file_exchange.max_bytes', 1024);
+    $large = hr2000DryRunFileOfSize(1025);
+
+    // Tenant scope is unchanged: another tenant is refused before the file is opened.
+    expect(Artisan::call('connector:hr2000:import:dry-run', ['path' => $large->path, '--tenant' => $tenantId + 1000]))->toBe(1);
+    $refused = Artisan::output();
+    expect($refused)->not->toContain('file_too_large')
+        ->and($refused)->not->toContain('Rows read');
+
+    expect(Artisan::call('connector:hr2000:import:dry-run', ['path' => $large->path, '--tenant' => $tenantId]))->toBe(1);
+    $output = Artisan::output();
+    expect($output)->toContain('sha256 '.$large->sha256, 'Rows read: 0', 'Typed records: 0', 'Defects: 1', 'file_too_large')
+        ->and($output)->not->toContain(dirname($large->path));
+
+    expect(Artisan::call('connector:hr2000:import:dry-run', ['path' => $large->path, '--json' => true, '--tenant' => $tenantId]))->toBe(1);
+    $report = json_decode(trim(Artisan::output()), true, flags: JSON_THROW_ON_ERROR);
+    expect(array_keys($report))->toBe(['file', 'sha256', 'schema_version', 'accepted_by_inspection', 'rows_read', 'records', 'rejected_rows', 'defects', 'written'])
+        ->and($report['file'])->toBe($large->name)
+        ->and($report['sha256'])->toBe($large->sha256)
+        ->and($report['rows_read'])->toBe(0)
+        ->and($report['records'])->toBe(0)
+        ->and($report['defects'])->toBe([['row' => null, 'code' => 'file_too_large', 'field' => null]])
+        ->and(in_array($large->sizeBytes, $report, true))->toBeFalse();
 
     expect(hr2000DryRunCounts())->toBe($before);
 });

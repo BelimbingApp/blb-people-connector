@@ -3,18 +3,17 @@
 namespace App\Domains\PeopleConnector\Connector\Console\Commands;
 
 use App\Base\Authz\DTO\Actor;
+use App\Base\Tenancy\Console\TenantScopedCommand;
 use App\Base\Tenancy\Contracts\TenantContext;
 use App\Core\User\Models\User;
 use App\Domains\PeopleConnector\Connector\Exceptions\ProviderAuthorizationException;
 use App\Domains\PeopleConnector\Connector\Exceptions\RetentionPolicyException;
 use App\Domains\PeopleConnector\Connector\Services\RetentionPolicy;
 use App\Domains\PeopleConnector\Connector\Services\RetentionPurger;
-use Illuminate\Console\Command;
 
-final class RetentionPurgeCommand extends Command
+final class RetentionPurgeCommand extends TenantScopedCommand
 {
     protected $signature = 'people-connector:retention-purge
-                            {--tenant= : Tenant to purge; defaults to the current tenant context}
                             {--as= : Id of the operator this purge runs as}
                             {--yes : Confirm the displayed report non-interactively}';
 
@@ -34,11 +33,6 @@ final class RetentionPurgeCommand extends Command
             $this->error("No user [{$operatorId}].");
 
             return self::FAILURE;
-        }
-
-        $tenantOption = $this->option('tenant');
-        if ($tenantOption !== null && $tenantOption !== '') {
-            $tenants->set((int) $tenantOption);
         }
 
         try {

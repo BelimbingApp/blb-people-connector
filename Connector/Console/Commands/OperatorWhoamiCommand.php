@@ -3,17 +3,16 @@
 namespace App\Domains\PeopleConnector\Connector\Console\Commands;
 
 use App\Base\Authz\DTO\Actor;
+use App\Base\Tenancy\Console\TenantScopedCommand;
 use App\Base\Tenancy\Contracts\TenantContext;
 use App\Core\User\Models\User;
 use App\Domains\PeopleConnector\Connector\Exceptions\ProviderAuthorizationException;
 use App\Domains\PeopleConnector\Connector\Services\OperatorIdentityReader;
-use Illuminate\Console\Command;
 
 /** Print the acting operator's tenant, company and connector capabilities (#235). Read-only. */
-final class OperatorWhoamiCommand extends Command
+final class OperatorWhoamiCommand extends TenantScopedCommand
 {
     protected $signature = 'connector:operator:whoami
-                            {--tenant= : Tenant to answer for; defaults to the current tenant context}
                             {--as= : Id of the operator to describe (only inside the tenant)}
                             {--json : Emit machine-readable result JSON}';
 
@@ -30,9 +29,6 @@ final class OperatorWhoamiCommand extends Command
             $this->error("No user [{$operatorId}].");
 
             return self::FAILURE;
-        }
-        if (($tenantId = $this->option('tenant')) !== null && $tenantId !== '') {
-            $tenants->set((int) $tenantId);
         }
 
         try {
