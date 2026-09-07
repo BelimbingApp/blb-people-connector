@@ -19,6 +19,9 @@ final readonly class WorkforceFreshness
 
     public const REASON_CONNECTION_INACTIVE = 'connection_inactive';
 
+    /** Stale, and the connection is inside a planned maintenance window (#264): expected, not a new fault. */
+    public const REASON_MAINTENANCE = 'maintenance';
+
     public function __construct(
         public int $connectionId,
         public string $stream,
@@ -34,6 +37,7 @@ final readonly class WorkforceFreshness
             self::REASON_NEVER_SYNCHRONIZED,
             self::REASON_EXCEEDED_MAX_AGE,
             self::REASON_CONNECTION_INACTIVE,
+            self::REASON_MAINTENANCE,
         ], true)) {
             throw new \InvalidArgumentException('Unknown workforce staleness reason.');
         }
@@ -63,6 +67,7 @@ final readonly class WorkforceFreshness
         throw new StaleWorkforceStateException(match ($this->staleReason) {
             self::REASON_NEVER_SYNCHRONIZED => "Workforce projections for connection {$this->connectionId} have never been synchronised.",
             self::REASON_CONNECTION_INACTIVE => "Provider connection {$this->connectionId} is inactive; its workforce projections cannot be relied on.",
+            self::REASON_MAINTENANCE => "Workforce projections for connection {$this->connectionId} are stale (maintenance); the connection is in a maintenance window.",
             default => "Workforce projections for connection {$this->connectionId} are {$this->ageMinutes()} minutes old; the maximum is {$this->maxAgeMinutes}.",
         });
     }

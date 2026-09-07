@@ -3,7 +3,10 @@
 Every verified provider callback is recorded as a webhook delivery: the
 tenant and connection it arrived for, the provider's delivery id, and the
 fate of the incremental sync pass it triggered (`accepted` while queued,
-`delivered` when the pass completed, `failed` when its last attempt threw).
+`delivered` when the pass completed, `failed` when its last attempt threw,
+`deferred` when the connection was in a maintenance window so the pass was
+held without spending an attempt, see
+[connection-maintenance.md](connection-maintenance.md)).
 A failure is kept as a reason code (`page_corrupt`, `sync_refused`,
 `provider_refused`, `provider_unavailable`, `answer_lost`, `provider_failed`,
 `unexpected`) and the exception class, never the exception message, which
@@ -25,9 +28,11 @@ connection, both delivery ids and the failure reason code. The audit
 summary carries no exception text and no payload.
 
 The command refuses, exits non-zero and sends nothing when the delivery is
-not in the acting operator's tenant, when it is not `failed` (an already
-delivered or still queued delivery is not replayed), when its connection is
-no longer active, or when the operator is outside the tenant or lacks
+not in the acting operator's tenant, when it is not `failed`, `dead_lettered`
+or `deferred` (an already delivered or still queued delivery is not
+replayed), when its connection is no longer active, when the connection is
+still inside a maintenance window (`in_maintenance`: the replay would only be
+deferred again), or when the operator is outside the tenant or lacks
 `people-connector.connection.manage`.
 
 `--dry-run` prints what would be sent (delivery, provider delivery id,

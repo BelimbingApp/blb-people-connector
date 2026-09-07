@@ -68,6 +68,9 @@ final class ConnectorDoctor
             // a rotation nobody finished is invisible until tokens minted
             // before it start being refused.
             $this->delegationSecretOverlap(),
+            // Yellow while a connection is inside a planned maintenance window
+            // (#264): the pause is an operator's decision, not a fault.
+            $this->maintenance($tenantId),
         ]);
     }
 
@@ -298,6 +301,24 @@ final class ConnectorDoctor
         return DelegationPolicy::previousSecretAcceptedAt(\DateTimeImmutable::createFromInterface(now()))
             ? $row('yellow', 1, 'previous delegation secret accepted until '.$expiresAt->format(DATE_ATOM))
             : $row('red', 1, 'previous delegation secret lapsed at '.$expiresAt->format(DATE_ATOM));
+    }
+
+    /** @return array{check: string, status: string, count: int, detail: string} */
+    private function maintenance(int $tenantId): array
+    {
+        $windows = ProviderConnection::query()->forTenant($tenantId)
+            ->where('maintenance_until', '>', now())
+            ->orderByDesc('maintenance_until')
+            ->get(['id', 'maintenance_until']);
+        $count = $windows->count();
+        $latest = $windows->first()?->maintenance_until;
+
+        return [
+            'check' => 'connection_maintenance',
+            'status' => $count === 0 ? 'green' : 'yellow',
+            'count' => $count,
+            'detail' => $count === 0 ? '0 in maintenance' : "{$count} in maintenance, latest window ends {$latest->format(DATE_ATOM)}",
+        ];
     }
 
     private function row(string $check, int $failures, string $detail): array

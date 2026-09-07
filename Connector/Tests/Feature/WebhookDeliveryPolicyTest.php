@@ -88,7 +88,7 @@ test('a connection without an override stores the safe delivery policy', functio
 test('a connection delivery policy dead letters the final failed attempt instead of retrying forever', function (): void {
     $fixture = deliveryPolicyTenant('Delivery Policy Tenant', new WebhookDeliveryPolicy(2, [17]));
     $delivery = policyDelivery($fixture, 'policy-attempts');
-    ProviderConnection::query()->whereKey($fixture['connection']->id)->update(['status' => ProviderConnection::STATUS_RETIRED]);
+    ProviderConnection::query()->whereKey($fixture['connection']->id)->update(['status' => ProviderConnection::STATUS_RETIRED, 'active_scope_key' => null]);
 
     $first = RunIncrementalWorkforceSync::forDelivery($fixture['connection'], (int) $delivery->id);
     $first->withFakeQueueInteractions();

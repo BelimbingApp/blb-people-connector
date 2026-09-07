@@ -70,6 +70,11 @@ than a merge under review. No console command requeues a parked page: an
 operator re-queues it from the reconciliation page, which goes through
 `DeadLetterService::requeue()` with a review reference and resolves the issue
 (see the `sync_dead_letter` row of [reconciliation-runbook.md](reconciliation-runbook.md)).
+
+`connection_maintenance` (#264) is yellow with the count of connections
+inside a planned maintenance window and the latest `maintenance_until`, green
+with count 0 otherwise, never red: the pause is an operator's decision, see
+[connection-maintenance.md](connection-maintenance.md).
 Yellow does not fail the doctor; only red does. A provider without an active connection is red because its
 ports cannot be exercised. Any red row makes the command exit non-zero. Use
 `--json` for automation.
