@@ -9,6 +9,7 @@ use App\Domains\PeopleConnector\Connector\Console\Commands\ConnectionHealthCheck
 use App\Domains\PeopleConnector\Connector\Console\Commands\ConnectorDoctorCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\CutoverRehearsalCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\IdentityAuditTrailCommand;
+use App\Domains\PeopleConnector\Connector\Console\Commands\OperatorWhoamiCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\RetentionPurgeCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\RetentionReportCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\SyncWorkforceCommand;
@@ -76,6 +77,7 @@ class ServiceProvider extends BaseServiceProvider
                 CapabilityVerifyCommand::class,
                 ConnectionHealthCheckCommand::class,
                 ConnectorDoctorCommand::class,
+                OperatorWhoamiCommand::class,
                 IdentityAuditTrailCommand::class,
                 RetentionPurgeCommand::class,
                 RetentionReportCommand::class,
