@@ -74,6 +74,12 @@ return [
      */
     'delegation' => [
         'secret' => env('PEOPLE_CONNECTOR_DELEGATION_SECRET'),
+        // The outgoing secret of a rotation in progress, and the instant it
+        // stops being accepted (ISO-8601). Both null is the steady state and
+        // is byte-for-byte today's behaviour: only the current secret
+        // verifies. docs/security/delegated-authority.md holds the procedure.
+        'previous_secret' => env('PEOPLE_CONNECTOR_DELEGATION_PREVIOUS_SECRET'),
+        'previous_secret_expires_at' => env('PEOPLE_CONNECTOR_DELEGATION_PREVIOUS_SECRET_EXPIRES_AT'),
         'max_lifetime_seconds' => 300,
         // The name this service answers to. The wire checks the audience a
         // route was addressed on; the in-process port checks this (#185).
@@ -89,6 +95,13 @@ return [
      * connector:health:check reports adapter declarations that drift from it.
      */
     'capability_register' => env('PEOPLE_CONNECTOR_CAPABILITY_REGISTER', __DIR__.'/../../docs/providers/capability-register.json'),
+
+    'doctor' => [
+        // Laravel notification channel connector:doctor --alert sends through
+        // (#257), e.g. database or mail. Null disables alerting: the command
+        // says so and carries on.
+        'alert_channel' => env('PEOPLE_CONNECTOR_DOCTOR_ALERT_CHANNEL'),
+    ],
 
     'retention' => [
         // Progress logs: how far a sync got is operationally useful for a
@@ -111,6 +124,10 @@ return [
         // Scheduled operator health is deliberately short-lived. It is trend
         // context, not an audit log; durable operator actions live elsewhere.
         'people_connector_connector_doctor_snapshots' => ['days' => 30, 'column' => 'measured_at'],
+
+        // Doctor alerts (#257): the sent ledger that keeps an incident from
+        // alerting twice. Kept as long as the snapshots it is derived from.
+        'people_connector_connector_doctor_alerts' => ['days' => 30, 'column' => 'sent_at'],
 
         // Reconciliation issues age out from when they were resolved, so an
         // issue still open is never past retention however old it is.
