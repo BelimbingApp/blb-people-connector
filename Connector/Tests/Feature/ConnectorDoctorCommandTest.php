@@ -13,6 +13,7 @@ use App\Domains\PeopleConnector\Connector\Jobs\RunIncrementalWorkforceSync;
 use App\Domains\PeopleConnector\Connector\Models\WebhookDelivery;
 use App\Domains\PeopleConnector\Connector\Models\WebhookReceipt;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceEntity;
+use App\Domains\PeopleConnector\Connector\Services\ConnectorDoctor;
 use App\Domains\PeopleConnector\Connector\Services\ProviderConnectionStore;
 use App\Domains\PeopleConnector\Connector\Services\ProviderRegistry;
 use App\Domains\PeopleConnector\Connector\Services\WorkforceIdentityStore;
@@ -47,6 +48,19 @@ function doctorTenant(string $name): array
     [$tenant, $company] = createTenantWithCompany(['name' => $name]);
 
     return [(int) $tenant->id, (int) $company->id, User::factory()->create(['company_id' => $company->id])];
+}
+
+/**
+ * The check names the doctor returns for this tenant, measured rather than
+ * pinned, so a lane that adds a row does not have to re-pin a literal here (#300).
+ *
+ * @return list<string>
+ */
+function doctorCheckNames(int $tenantId, User $operator): array
+{
+    app(TenantContext::class)->set($tenantId);
+
+    return array_column(app(ConnectorDoctor::class)->inspect(Actor::forUser($operator))->checks, 'check');
 }
 
 function queueDoctorWebhook(int $tenantId, int $ageSeconds): void
@@ -86,7 +100,7 @@ test('connector doctor reports only this tenants stale webhook delivery and exit
     DB::table('jobs')->delete();
     expect(Artisan::call('connector:doctor', ['--tenant' => $tenantId, '--as' => $operator->id, '--json' => true]))->toBe(0);
     $rows = collect(json_decode(trim(Artisan::output()), true, flags: JSON_THROW_ON_ERROR)['checks']);
-    expect($rows)->toHaveCount(8)
+    expect($rows->pluck('check')->all())->toBe(doctorCheckNames($tenantId, $operator))
         ->and($rows->firstWhere('check', 'webhook_duplicates')['detail'] ?? null)->toBe('0 skipped in 7 days')
         ->and($rows->pluck('status')->unique()->all())->toBe(['green']);
 });
@@ -167,23 +181,18 @@ test('connector doctor records every run and lists only this tenants latest snap
         'measured_at' => now(),
     ]);
 
-    expect(DB::table('people_connector_connector_doctor_snapshots')->where('tenant_id', $tenantId)->count())->toBe(16)
+    // Two runs, one snapshot per check per run, no row for a check the doctor
+    // did not return, and the foreign row above never counted.
+    $checks = doctorCheckNames($tenantId, $operator);
+    expect($checks)->not->toBeEmpty()
+        ->and(DB::table('people_connector_connector_doctor_snapshots')->where('tenant_id', $tenantId)->count())->toBe(2 * count($checks))
         ->and(DB::table('people_connector_connector_doctor_snapshots')
             ->where('tenant_id', $tenantId)
             ->pluck('check')
             ->countBy()
             ->sortKeys()
             ->all())
-        ->toBe([
-            'adapter_conformance' => 2,
-            'delegation_secret_overlap' => 2,
-            'identity_mappings' => 2,
-            'reconciliation_drift' => 2,
-            'webhook_deliveries' => 2,
-            'webhook_duplicates' => 2,
-            'webhook_secret_overlap' => 2,
-            'webhook_stuck_reservations' => 2,
-        ]);
+        ->toBe(collect($checks)->sort()->mapWithKeys(fn (string $check): array => [$check => 2])->all());
 
     expect(Artisan::call('connector:doctor', ['--tenant' => $tenantId, '--as' => $operator->id, '--history' => 1]))->toBe(0)
         ->and(Artisan::output())->toContain('webhook_deliveries', 'red', '1')
@@ -191,8 +200,19 @@ test('connector doctor records every run and lists only this tenants latest snap
 
     expect(Artisan::call('connector:doctor', ['--tenant' => $tenantId, '--as' => $operator->id, '--history' => 1, '--json' => true]))->toBe(0);
     $history = collect(json_decode(trim(Artisan::output()), true, flags: JSON_THROW_ON_ERROR)['checks']);
-    expect($history)->toHaveCount(8)
-        ->and($history->pluck('check')->unique())->toHaveCount(8);
+    expect($history->pluck('check')->sort()->values()->all())->toBe(collect($checks)->sort()->values()->all());
+});
+
+test('every check the doctor returns has a row in the operator doc', function (): void {
+    [$tenantId, , $operator] = doctorTenant('Doctor Doc Tenant');
+    $doc = file_get_contents(dirname(__DIR__, 3).'/docs/operators/connector-doctor.md');
+    expect($doc)->toBeString();
+
+    // Freshness rows are keyed by prefix (`freshness:<source>`): the doc describes the prefix.
+    $keys = collect(doctorCheckNames($tenantId, $operator))->map(fn (string $check): string => strstr($check, ':', true) ?: $check)->unique();
+    expect($keys)->not->toBeEmpty();
+    $undocumented = $keys->reject(fn (string $key): bool => preg_match('/^\| `'.preg_quote($key, '/').'` \|/m', $doc) === 1)->values()->all();
+    expect($undocumented)->toBe([]);
 });
 
 test('connector snapshot retention removes only this tenants rows older than thirty days', function (): void {

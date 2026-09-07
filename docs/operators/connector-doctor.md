@@ -36,6 +36,20 @@ informational line, never an error. The exit code is still the doctor's own.
 Sent alerts live in `people_connector_connector_doctor_alerts`, purged with
 the snapshots after 30 days.
 
+Every row the doctor returns, by `check` key. A test fails when a check is
+added without a row here (#300):
+
+| check | red when | notes |
+|---|---|---|
+| `adapter_conformance` | a configured provider has no active connection or fails a conformance probe | count is violations across configured providers |
+| `webhook_deliveries` | a queued webhook-triggered sync is older than one hour | red on an opaque queue backend rather than guessed healthy |
+| `reconciliation_drift` | any reconciliation issue is open | |
+| `identity_mappings` | an active identity no longer joins to a compatible current entity and connection | |
+| `webhook_stuck_reservations` | a receipt older than five minutes has no delivery behind it (#227) | |
+| `webhook_duplicates` | never | informational: deliveries acknowledged as duplicates in seven days |
+| `webhook_secret_overlap` | never | yellow while a connection's previous signing secret is inside its rotation overlap (#247) |
+| `delegation_secret_overlap` | a previous delegation secret lapsed or has no usable expiry (#262) | yellow while the previous secret is still accepted |
+
 The table reports adapter conformance for every configured provider, queued
 webhook-triggered syncs older than one hour, open reconciliation drift,
 active identity mappings that no longer join to a compatible current entity
