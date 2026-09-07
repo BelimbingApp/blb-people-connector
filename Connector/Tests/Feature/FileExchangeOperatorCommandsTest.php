@@ -248,6 +248,23 @@ test('a reason longer than 190 characters is refused before any write', function
         ->and(OperatorAudit::query()->count())->toBe($auditsBefore);
 });
 
+test('an empty --reason is refused before any write', function (): void {
+    $f = fxOpFixture('FX Op Empty Reason', 'test.fx-op-empty-reason');
+    $record = fxOpRecord($f, 'no-reason.csv', "n,1\n");
+    $auditsBefore = OperatorAudit::query()->count();
+
+    $result = fxOpCall('connector:file-exchange:quarantine', $f, [
+        'record' => $record->id,
+        '--reason' => '   ',
+    ]);
+
+    expect($result['status'])->toBe(1)
+        ->and($result['output'])->toContain('Pass --reason=')
+        ->and(DB::table(FX_OP_TABLE)->where('id', $record->id)->value('status'))->toBe('recorded')
+        ->and(DB::table(FX_OP_TABLE)->where('id', $record->id)->value('status_reason'))->toBeNull()
+        ->and(OperatorAudit::query()->count())->toBe($auditsBefore);
+});
+
 test('each command refuses to run without a tenant scope', function (string $command, array $extra): void {
     $f = fxOpFixture('FX Op No Tenant', 'test.fx-op-no-tenant');
     $record = fxOpRecord($f, 'need-tenant.csv', "t,1\n");
