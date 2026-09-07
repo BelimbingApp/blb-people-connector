@@ -17,6 +17,25 @@ History shows the latest snapshot per check inside the requested window. The
 existing `people-connector:retention-purge` command removes snapshots older
 than 30 days; another tenant's snapshots are never read or purged.
 
+Alert on what the snapshots show (#257):
+
+```bash
+php artisan connector:doctor --tenant=7 --as=42 --alert
+```
+
+`--alert` records the run, then compares each check with the tenant's
+previous snapshot. A check red on two consecutive snapshots sends one alert
+naming the check, its count and detail, and the first red timestamp; a single
+transient red stays quiet. Green after such an incident sends one recovery
+alert. An incident is (tenant, check, first red at) and each of its two alerts
+goes out once, so a rerun while still red repeats nothing. Alerts go to the
+`--as` operator through the Laravel notification channel named by
+`people-connector.doctor.alert_channel` (`PEOPLE_CONNECTOR_DOCTOR_ALERT_CHANNEL`,
+for example `database` or `mail`); a null channel disables alerting with an
+informational line, never an error. The exit code is still the doctor's own.
+Sent alerts live in `people_connector_connector_doctor_alerts`, purged with
+the snapshots after 30 days.
+
 The table reports adapter conformance for every configured provider, queued
 webhook-triggered syncs older than one hour, open reconciliation drift,
 active identity mappings that no longer join to a compatible current entity
@@ -27,8 +46,15 @@ retry is acknowledged as a duplicate, so this row is where the lost sync
 shows), and the informational `webhook_duplicates`: deliveries acknowledged
 as duplicates in the last seven days, never red; and `webhook_secret_overlap`
 (#247), yellow while a connection's previous signing secret is still inside
-its rotation overlap, with the count and the earliest expiry. Yellow does not
-fail the doctor; only red does. A provider without an active connection is red because its
+its rotation overlap, with the count and the earliest expiry, and
+`delegation_secret_overlap` (#262), the same shape for the deployment-wide
+delegated-authority signing key: yellow with the expiry while a previous secret
+is still accepted, red once that window has lapsed or when a previous secret is
+configured without a usable expiry, which is a rotation nobody finished. It
+names the expiry and never the key, and every tenant is told the same answer
+because the key is not tenant-scoped; the procedure is in
+[../security/delegated-authority.md](../security/delegated-authority.md).
+Yellow does not fail the doctor; only red does. A provider without an active connection is red because its
 ports cannot be exercised. Any red row makes the command exit non-zero. Use
 `--json` for automation.
 

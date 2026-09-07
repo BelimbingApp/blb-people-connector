@@ -8,6 +8,7 @@ use App\Base\Tenancy\Contracts\TenantContext;
 use App\Core\User\Models\User;
 use App\Domains\PeopleConnector\Connector\Exceptions\ProviderAuthorizationException;
 use App\Domains\PeopleConnector\Connector\Services\ConnectorDoctor;
+use App\Domains\PeopleConnector\Connector\Services\ConnectorDoctorAlerter;
 use Illuminate\Console\Command;
 
 final class ConnectorDoctorCommand extends Command
@@ -16,12 +17,13 @@ final class ConnectorDoctorCommand extends Command
                             {--tenant= : Tenant to inspect; defaults to the current tenant context}
                             {--as= : Id of the operator this inspection runs as}
                             {--record : Persist this run as a tenant-scoped health snapshot}
+                            {--alert : Record, then alert the operator on checks red twice in a row, and on recovery}
                             {--history= : List the latest recorded snapshot per check within this many days}
                             {--json : Emit machine-readable result JSON}';
 
     protected $description = 'Run the tenant-scoped connector operator health checks';
 
-    public function handle(TenantContext $tenants, ConnectorDoctor $doctor): int
+    public function handle(TenantContext $tenants, ConnectorDoctor $doctor, ConnectorDoctorAlerter $alerter): int
     {
         if (($operatorId = $this->option('as')) === null || $operatorId === '') {
             $this->error('Connector doctor runs as a named operator: pass --as=<user id>.');
@@ -38,8 +40,9 @@ final class ConnectorDoctorCommand extends Command
         }
 
         $historyDays = $this->option('history');
-        if ($this->option('record') && $historyDays !== null) {
-            $this->error('--record and --history cannot be used together.');
+        $record = $this->option('record') || $this->option('alert');
+        if ($record && $historyDays !== null) {
+            $this->error('--record, --alert and --history cannot be used together.');
 
             return self::FAILURE;
         }
@@ -62,7 +65,8 @@ final class ConnectorDoctorCommand extends Command
                 return self::SUCCESS;
             }
 
-            $report = $this->option('record') ? $doctor->record($actor) : $doctor->inspect($actor);
+            $report = $record ? $doctor->record($actor) : $doctor->inspect($actor);
+            $alerts = $this->option('alert') ? $alerter->alert($tenants->requireTenantId(), $report, $operator) : [];
         } catch (AuthorizationDeniedException|ProviderAuthorizationException $refusal) {
             $this->error($refusal->getMessage());
 
@@ -70,9 +74,12 @@ final class ConnectorDoctorCommand extends Command
         }
 
         if ($this->option('json')) {
-            $this->line(json_encode($report->toArray(), JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
+            $this->line(json_encode($report->toArray() + ($this->option('alert') ? ['alerts' => $alerts] : []), JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
         } else {
             $this->table(['check', 'status', 'detail'], $report->checks);
+            foreach ($alerts as $line) {
+                $this->line($line);
+            }
         }
 
         return $report->healthy() ? self::SUCCESS : self::FAILURE;

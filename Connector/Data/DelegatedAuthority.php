@@ -4,6 +4,7 @@ namespace App\Domains\PeopleConnector\Connector\Data;
 
 use App\Domains\PeopleConnector\Connector\Enums\DelegatedAuthorityRefusal;
 use App\Domains\PeopleConnector\Connector\Exceptions\DelegatedAuthorityException;
+use App\Domains\PeopleConnector\Connector\Services\DelegationPolicy;
 
 /**
  * Permission to do one thing, for one subject, at one service, for a short
@@ -16,6 +17,14 @@ use App\Domains\PeopleConnector\Connector\Exceptions\DelegatedAuthorityException
  */
 final readonly class DelegatedAuthority
 {
+    /**
+     * The token's own identity (`jti`). A random one is minted unless the
+     * caller supplies one; it is what the spend ledger keys on, so a token
+     * presented twice is recognisable as the same token and not merely as
+     * two tokens that happen to say the same thing.
+     */
+    public string $id;
+
     public function __construct(
         public string $subject,
         public int $tenantId,
@@ -24,11 +33,18 @@ final readonly class DelegatedAuthority
         public string $audience,
         public \DateTimeImmutable $issuedAt,
         public \DateTimeImmutable $expiresAt,
+        ?string $id = null,
     ) {
+        $this->id = $id ?? bin2hex(random_bytes(16));
+
         foreach (['subject' => $subject, 'operation' => $operation, 'audience' => $audience] as $field => $value) {
             if (trim($value) === '' || strlen($value) > 191) {
                 throw new DelegatedAuthorityException("A delegated authority {$field} must be a non-empty identifier under 192 bytes.");
             }
+        }
+
+        if (trim($this->id) === '' || strlen($this->id) > 64) {
+            throw new DelegatedAuthorityException('A delegated authority id must be a non-empty identifier under 65 bytes.');
         }
 
         if ($tenantId < 1) {
@@ -51,6 +67,7 @@ final readonly class DelegatedAuthority
     public function assertUsableBy(int $tenantId, string $operation, ?\DateTimeImmutable $now = null): void
     {
         $now ??= new \DateTimeImmutable;
+        $skew = DelegationPolicy::clockSkewSeconds();
 
         if ($this->tenantId !== $tenantId) {
             throw new DelegatedAuthorityException(
@@ -66,7 +83,11 @@ final readonly class DelegatedAuthority
             );
         }
 
-        if ($now > $this->expiresAt) {
+        // The issuer's clock and ours need not agree to the second; a bounded
+        // tolerance keeps a token minted at the top of the minute from dying
+        // early on a host that runs a little ahead. Unbounded it would be a
+        // longer lifetime by another name, which is why the bound is config.
+        if ($now > $this->expiresAt->modify("+{$skew} seconds")) {
             throw new DelegatedAuthorityException('This authority has expired.', DelegatedAuthorityRefusal::Expired);
         }
     }
@@ -82,13 +103,14 @@ final readonly class DelegatedAuthority
             'aud' => $this->audience,
             'iat' => $this->issuedAt->format(DATE_ATOM),
             'exp' => $this->expiresAt->format(DATE_ATOM),
+            'jti' => $this->id,
         ];
     }
 
     /** @param array<string, mixed> $claims */
     public static function fromClaims(array $claims): self
     {
-        foreach (['sub', 'tenant_id', 'op', 'aud', 'iat', 'exp'] as $required) {
+        foreach (['sub', 'tenant_id', 'op', 'aud', 'iat', 'exp', 'jti'] as $required) {
             if (! array_key_exists($required, $claims)) {
                 throw new DelegatedAuthorityException("A delegated authority is missing its [{$required}] claim.");
             }
@@ -102,6 +124,7 @@ final readonly class DelegatedAuthority
             audience: (string) $claims['aud'],
             issuedAt: new \DateTimeImmutable((string) $claims['iat']),
             expiresAt: new \DateTimeImmutable((string) $claims['exp']),
+            id: (string) $claims['jti'],
         );
     }
 }
