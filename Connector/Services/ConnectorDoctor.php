@@ -281,6 +281,8 @@ final class ConnectorDoctor
             'count' => $count,
             'detail' => $count === 0 ? '0 in maintenance' : "{$count} in maintenance, latest window ends {$latest->format(DATE_ATOM)}",
         ];
+    }
+
     /**
      * Workforce freshness per active connection, keyed `workforce_freshness:<id>`.
      *
