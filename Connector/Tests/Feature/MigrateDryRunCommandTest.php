@@ -267,7 +267,7 @@ test('an operator with no company is an invalid actor: refused before either ten
     $siblingBefore = ExternalIdentity::query()->forTenant($sibling['tenantId'])->pluck('external_id_hash', 'id')->all();
 
     app(TenantContext::class)->clear();
-    expect(Artisan::call('connector:migrate:dry-run', ['source' => $source['tenantId'], '--to' => $target['tenantId'], '--as' => $operator->id]))->toBe(1)
+    expect(Artisan::call('connector:migrate:dry-run', ['--tenant' => $source['tenantId'], '--to' => $target['tenantId'], '--as' => $operator->id]))->toBe(1)
         ->and(Artisan::output())->toContain('valid operator')
         ->and(Artisan::output())->not->toContain('Nothing was written')
         ->and($spy->calls)->toBe([]);
