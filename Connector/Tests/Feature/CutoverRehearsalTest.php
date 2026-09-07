@@ -15,9 +15,13 @@ use App\Domains\PeopleConnector\Connector\Data\ReconciliationIssueDetails;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceChangePage;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceCompany;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceEmployee;
+use App\Domains\PeopleConnector\Connector\Data\WorkforceFreshness;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceProvenance;
 use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
+use App\Domains\PeopleConnector\Connector\Exceptions\ConnectorRecordNotFoundException;
 use App\Domains\PeopleConnector\Connector\Exceptions\ProviderAuthorizationException;
+use App\Domains\PeopleConnector\Connector\Models\OperatorAudit;
+use App\Domains\PeopleConnector\Connector\Services\ConnectionRetirementService;
 use App\Domains\PeopleConnector\Connector\Services\CutoverRehearsalService;
 use App\Domains\PeopleConnector\Connector\Services\ProviderConnectionStore;
 use App\Domains\PeopleConnector\Connector\Services\ProviderReplacementService;
@@ -249,6 +253,49 @@ test('a rehearsal by an actor from another tenant is refused', function (): void
 
     expect(fn () => app(CutoverRehearsalService::class)->rehearse($outsider, $f['oldId'], $f['newId']))
         ->toThrow(ProviderAuthorizationException::class);
+});
+
+test('a rehearsal naming another tenant\'s connection as the source is refused', function (): void {
+    $foreign = cutoverFixture('Cutover Foreign Source Tenant');
+    $f = cutoverFixture('Cutover Own Target Tenant');
+    cutoverAuthz(true);
+
+    // The actor is inside the current tenant; the request is not. A rehearsal
+    // that read the other tenant's identities would report their cutover, and
+    // the tenant filters below the locator would make it look clean instead.
+    expect(fn () => app(CutoverRehearsalService::class)->rehearse($f['actor'], $foreign['oldId'], $f['newId']))
+        ->toThrow(ConnectorRecordNotFoundException::class);
+
+    expect(OperatorAudit::query()->forTenant($f['tenantId'])->count())->toBe(0);
+});
+
+test('a rehearsal naming another tenant\'s connection as the target is refused', function (): void {
+    $foreign = cutoverFixture('Cutover Foreign Target Tenant');
+    $f = cutoverFixture('Cutover Own Source Tenant');
+    cutoverAuthz(true);
+
+    expect(fn () => app(CutoverRehearsalService::class)->rehearse($f['actor'], $f['oldId'], $foreign['newId']))
+        ->toThrow(ConnectorRecordNotFoundException::class);
+
+    expect(OperatorAudit::query()->forTenant($f['tenantId'])->count())->toBe(0);
+});
+
+test('a rehearsal against a retired target reports the retirement as a blocker', function (): void {
+    $f = cutoverFixture('Cutover Retired Target Tenant');
+    cutoverAuthz(true);
+    cutoverMapAll($f);
+    cutoverSyncTarget($f);
+    app(ConnectionRetirementService::class)->retire($f['actor'], $f['newId'], 'cutover-retire-2026-09-07');
+
+    $report = app(CutoverRehearsalService::class)->rehearse($f['actor'], $f['oldId'], $f['newId']);
+
+    // Everything is mapped and the target synced once before it was retired,
+    // so on the watermark alone this cutover looks clear. A retired connection
+    // can never refresh what it would take over; that is the blocker.
+    expect($report->targetStale)->toBeTrue()
+        ->and($report->targetStaleReason)->toBe(WorkforceFreshness::REASON_CONNECTION_INACTIVE)
+        ->and($report->blocked())->toBeTrue()
+        ->and($report->blockers())->toContain('the target connection is stale (connection_inactive)');
 });
 
 test('the command exits non-zero while a blocker stands and zero once it is clear', function (): void {

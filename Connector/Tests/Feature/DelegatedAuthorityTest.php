@@ -63,7 +63,9 @@ test('an expired authority is refused', function (): void {
     $signer = app(DelegatedAuthoritySigner::class);
     $token = $signer->sign(delegationAuthority());
 
-    expect(fn () => $signer->verify($token, DELEGATION_AUDIENCE, new DateTimeImmutable('2026-09-06T12:02:01+00:00')))
+    // One minute past expiry: outside the default 30-second skew tolerance
+    // (#185). The exact boundary is DelegatedAuthorityHardeningTest's.
+    expect(fn () => $signer->verify($token, DELEGATION_AUDIENCE, new DateTimeImmutable('2026-09-06T12:03:00+00:00')))
         ->toThrow(DelegatedAuthorityException::class);
 });
 
@@ -164,8 +166,12 @@ function delegationBothPaths(DelegatedAuthority $authority, string $audience, st
         $inProcess = false;
     }
 
+    // Same claims, its own jti: the in-process spend above consumed the
+    // first token, and a replay refusal here would be the ledger talking,
+    // not the transport under comparison (#185).
+    $twin = DelegatedAuthority::fromClaims([...$authority->claims(), 'jti' => $authority->id.'-http']);
     $request = Request::create('/delegated', 'POST');
-    $request->headers->set(DelegatedCommandController::AUTHORITY_HEADER, $signer->sign($authority));
+    $request->headers->set(DelegatedCommandController::AUTHORITY_HEADER, $signer->sign($twin));
     $response = app(DelegatedCommandController::class)($request, $audience, $operation);
 
     return ['inProcess' => $inProcess, 'http' => $response->getStatusCode() === 200];
