@@ -13,6 +13,7 @@ use App\Domains\PeopleConnector\Connector\Console\Commands\MigrateDryRunCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\OperatorWhoamiCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\RetentionPurgeCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\RetentionReportCommand;
+use App\Domains\PeopleConnector\Connector\Console\Commands\SupportBundleCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\SyncWorkforceCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\WebhookDeadLettersCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\WebhookReplayCommand;
@@ -83,6 +84,7 @@ class ServiceProvider extends BaseServiceProvider
                 IdentityAuditTrailCommand::class,
                 RetentionPurgeCommand::class,
                 RetentionReportCommand::class,
+                SupportBundleCommand::class,
                 SyncWorkforceCommand::class,
                 WebhookDeadLettersCommand::class,
                 WebhookReplayCommand::class,
