@@ -660,3 +660,32 @@ test('a privacy tombstone excludes a row even where nothing deactivated it', fun
 
     expect(cutoverCounts($report))->toBe(['employee:'.cutoverCompanyEntityId($f) => ['source' => 1, 'target' => 1]]);
 });
+
+test('a target identity marked as replaced does not count even where nothing closed it', function (): void {
+    $f = cutoverFixture('Cutover Counts Half Remapped Tenant');
+    cutoverAuthz(true);
+    cutoverMapAll($f);
+    cutoverSyncTarget($f);
+
+    $sourceIdentityId = (int) ExternalIdentity::query()->forTenant($f['tenantId'])
+        ->where('connection_id', $f['oldId'])
+        ->where('external_id', 'CUT-EMP-2')
+        ->value('id');
+
+    // A remap closes an identity and names its successor in the same write, so
+    // the two halves of the live rule always agree and neither can be shown to
+    // matter on its own. The store is not the only write path: this is the
+    // half-written remap a crash between the two updates would leave, and an
+    // identity with a successor is one the target has stopped speaking for
+    // whatever its `effective_to` still says.
+    DB::table('people_connector_connector_external_identities')
+        ->where('tenant_id', $f['tenantId'])
+        ->where('connection_id', $f['newId'])
+        ->where('external_id', 'NEW-EMP-2')
+        ->update(['replaced_by_identity_id' => $sourceIdentityId, 'effective_to' => null]);
+
+    $report = app(CutoverRehearsalService::class)->rehearse($f['actor'], $f['oldId'], $f['newId']);
+
+    expect(cutoverCounts($report))->toBe(['employee:'.cutoverCompanyEntityId($f) => ['source' => 2, 'target' => 1]])
+        ->and($report->countMismatches())->toBe(1);
+});
