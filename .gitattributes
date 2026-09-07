@@ -1,1 +1,3 @@
 * text=auto eol=lf
+# HR2000 export samples are Windows CRLF byte-for-byte: row provenance hashes the row bytes (#161).
+Connector/Tests/Fixtures/*.csv -text
