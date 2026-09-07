@@ -17,6 +17,9 @@ use Illuminate\Support\Facades\Notification;
 use Illuminate\Support\Facades\Queue;
 
 beforeEach(function (): void {
+    // Pin the wall clock past every travelled instant below, so the fixed
+    // fixture times cannot drift into the future on a slow or late machine.
+    Carbon::setTestNow('2030-01-01 12:00:00');
     config()->set('queue.default', 'database');
     config()->set('people-connector.doctor.alert_channel', 'database');
     Notification::fake();
@@ -36,7 +39,10 @@ beforeEach(function (): void {
     });
 });
 
-afterEach(fn () => app(TenantContext::class)->clear());
+afterEach(function (): void {
+    app(TenantContext::class)->clear();
+    Carbon::setTestNow();
+});
 
 /** @return array{0: int, 1: User} */
 function doctorAlertTenant(string $name): array
