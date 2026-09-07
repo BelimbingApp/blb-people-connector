@@ -12,6 +12,7 @@ use App\Domains\PeopleConnector\Connector\Data\ProviderScope;
 use App\Domains\PeopleConnector\Connector\Data\ReconciliationIssueDetails;
 use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
 use App\Domains\PeopleConnector\Connector\Exceptions\ProviderAuthorizationException;
+use App\Domains\PeopleConnector\Connector\Models\ReconciliationIssue;
 use App\Domains\PeopleConnector\Connector\Models\WebhookDelivery;
 use App\Domains\PeopleConnector\Connector\Services\ProviderConnectionStore;
 use App\Domains\PeopleConnector\Connector\Services\ReconciliationIssueStore;
@@ -149,6 +150,11 @@ test('a delivery still in flight and an open parked page are blockers; a third t
         app(TenantContext::class)->set($t['tenantId']);
         app(ReconciliationIssueStore::class)->report($t['connection'], 'sync:page:'.$t['tenantId'], WorkforceSyncRunner::ISSUE_KIND_DEAD_LETTER, new ReconciliationIssueDetails(reasonCode: 'page_refused'), WorkforceResourceType::Employee->value, 'PAGE-1');
     }
+    // Neither a resolved dead letter nor an open conflict of another kind is a blocker.
+    app(TenantContext::class)->set($source['tenantId']);
+    $resolved = app(ReconciliationIssueStore::class)->report($source['connection'], 'sync:page:resolved', WorkforceSyncRunner::ISSUE_KIND_DEAD_LETTER, new ReconciliationIssueDetails(reasonCode: 'page_refused'), WorkforceResourceType::Employee->value, 'PAGE-2');
+    ReconciliationIssue::query()->forTenant($source['tenantId'])->whereKey($resolved->id)->update(['status' => ReconciliationIssue::STATUS_RESOLVED]);
+    app(ReconciliationIssueStore::class)->report($source['connection'], 'sync:employee:CONFLICT', 'sync_conflict', new ReconciliationIssueDetails(reasonCode: 'review_required'), WorkforceResourceType::Employee->value, 'CONFLICT-1');
 
     expect(dryRunCall($source, $target, ['--json' => true]))->toBe(1);
     $report = json_decode(trim(Artisan::output()), true, flags: JSON_THROW_ON_ERROR);
@@ -156,7 +162,8 @@ test('a delivery still in flight and an open parked page are blockers; a third t
         ->and($report['dead_letters'])->toBe(1)
         ->and($report['collisions'])->toBe([])
         ->and($report['blockers'])->toHaveCount(2)
-        ->and($report['tables']['people_connector_connector_webhook_deliveries'])->toBe(2);
+        ->and($report['tables']['people_connector_connector_webhook_deliveries'])->toBe(2)
+        ->and($report['tables']['people_connector_connector_reconciliation_issues'])->toBe(3);
 });
 
 test('an operator not admitted by the target tenant is refused before anything is read', function (): void {
