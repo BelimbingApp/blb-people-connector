@@ -12,6 +12,7 @@ use App\Domains\PeopleConnector\Connector\Data\ProviderScope;
 use App\Domains\PeopleConnector\Connector\Data\ReconciliationIssueDetails;
 use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
 use App\Domains\PeopleConnector\Connector\Exceptions\ProviderAuthorizationException;
+use App\Domains\PeopleConnector\Connector\Models\ExternalIdentity;
 use App\Domains\PeopleConnector\Connector\Models\ReconciliationIssue;
 use App\Domains\PeopleConnector\Connector\Models\WebhookDelivery;
 use App\Domains\PeopleConnector\Connector\Services\ProviderConnectionStore;
@@ -60,6 +61,36 @@ function dryRunAuthz(array $tenantIds): void
     });
 }
 
+/** Allows everything and records each call with the tenant it was asked under. */
+function dryRunAuthzSpy(): object
+{
+    $spy = new class implements AuthorizationService
+    {
+        /** @var list<array{string, int|null}> */
+        public array $calls = [];
+
+        public function can(Actor $actor, string $capability, ?ResourceContext $resource = null, array $context = []): AuthorizationDecision
+        {
+            $this->calls[] = ['can', app(TenantContext::class)->currentTenantId()];
+
+            return AuthorizationDecision::allow();
+        }
+
+        public function authorize(Actor $actor, string $capability, ?ResourceContext $resource = null, array $context = []): void
+        {
+            $this->calls[] = ['authorize', app(TenantContext::class)->currentTenantId()];
+        }
+
+        public function filterAllowed(Actor $actor, string $capability, iterable $resources, array $context = []): Collection
+        {
+            return collect($resources);
+        }
+    };
+    app()->instance(AuthorizationService::class, $spy);
+
+    return $spy;
+}
+
 /** @return array{tenantId: int, operator: User, connection: int} */
 function dryRunTenant(string $name, string $provider): array
 {
@@ -96,7 +127,7 @@ function dryRunCall(array $source, array $target, array $extra = []): int
 {
     app(TenantContext::class)->clear();
 
-    return Artisan::call('connector:migrate:dry-run', ['source' => $source['tenantId'], '--to' => $target['tenantId'], '--as' => $source['operator']->id, ...$extra]);
+    return Artisan::call('connector:migrate:dry-run', ['--tenant' => $source['tenantId'], '--to' => $target['tenantId'], '--as' => $source['operator']->id, ...$extra]);
 }
 
 test('a source identity the target already maps is listed as a collision and the run exits 1, writing nothing', function (): void {
@@ -179,8 +210,67 @@ test('an operator not admitted by the target tenant is refused before anything i
     expect(dryRunCall($source, $target))->toBe(1)
         ->and(Artisan::output())->toContain('lacks the capability in tenant '.$source['tenantId']);
 
-    expect(Artisan::call('connector:migrate:dry-run', ['source' => $source['tenantId'], '--to' => $source['tenantId'], '--as' => $source['operator']->id]))->toBe(1)
+    expect(Artisan::call('connector:migrate:dry-run', ['--tenant' => $source['tenantId'], '--to' => $source['tenantId'], '--as' => $source['operator']->id]))->toBe(1)
         ->and(Artisan::output())->toContain('must differ');
-    expect(Artisan::call('connector:migrate:dry-run', ['source' => $source['tenantId'], '--as' => $source['operator']->id]))->toBe(1)
+    expect(Artisan::call('connector:migrate:dry-run', ['--tenant' => $source['tenantId'], '--as' => $source['operator']->id]))->toBe(1)
         ->and(Artisan::output())->toContain('pass --to=<tenant id>');
+});
+
+test('a delivery whose retry is still pending is in flight; a dead-lettered one is not', function (): void {
+    $source = dryRunTenant('Move Source', 'test.move');
+    $target = dryRunTenant('Move Target', 'test.move');
+    dryRunAuthz([$source['tenantId'], $target['tenantId']]);
+
+    // RunIncrementalWorkforceSync::handle marks the delivery `failed` and
+    // rethrows while attempts remain, so the job is back on the queue for
+    // another attempt. That is unfinished work a tenant move would strand.
+    WebhookDelivery::query()->create(['tenant_id' => $source['tenantId'], 'connection_id' => $source['connection'], 'delivery_id' => 'd-failed-retrying', 'status' => WebhookDelivery::STATUS_FAILED, 'attempts' => 1, 'received_at' => now()]);
+    WebhookDelivery::query()->create(['tenant_id' => $source['tenantId'], 'connection_id' => $source['connection'], 'delivery_id' => 'd-dead', 'status' => WebhookDelivery::STATUS_DEAD_LETTERED, 'attempts' => 3, 'received_at' => now()]);
+
+    expect(dryRunCall($source, $target, ['--json' => true]))->toBe(1);
+    $report = json_decode(trim(Artisan::output()), true, flags: JSON_THROW_ON_ERROR);
+    expect($report['in_flight_deliveries'])->toBe(1)
+        ->and($report['blockers'])->toHaveCount(1)
+        ->and($report['dead_letters'])->toBe(0);
+});
+
+test('a non-active identity on either side is not a collision', function (): void {
+    $source = dryRunTenant('Move Source', 'test.move');
+    $target = dryRunTenant('Move Target', 'test.move');
+    dryRunAuthz([$source['tenantId'], $target['tenantId']]);
+    // Source retired identity vs target active: not reported.
+    $retiredSource = dryRunIdentity($source, 'test.move', 'EMP-RETIRED-SOURCE');
+    dryRunIdentity($target, 'test.move', 'EMP-RETIRED-SOURCE');
+    ExternalIdentity::query()->forTenant($source['tenantId'])->whereKey($retiredSource)->update(['state' => 'replaced']);
+    // Source active vs target retired identity: not reported either.
+    dryRunIdentity($source, 'test.move', 'EMP-RETIRED-TARGET');
+    $retiredTarget = dryRunIdentity($target, 'test.move', 'EMP-RETIRED-TARGET');
+    ExternalIdentity::query()->forTenant($target['tenantId'])->whereKey($retiredTarget)->update(['state' => 'replaced']);
+
+    expect(dryRunCall($source, $target, ['--json' => true]))->toBe(0);
+    $report = json_decode(trim(Artisan::output()), true, flags: JSON_THROW_ON_ERROR);
+    expect($report['collisions'])->toBe([])->and($report['blocked'])->toBeFalse();
+});
+
+test('an operator with no company is an invalid actor: refused before either tenant is asked, nothing written', function (): void {
+    $source = dryRunTenant('Move Source', 'test.move');
+    $target = dryRunTenant('Move Target', 'test.move');
+    $sibling = dryRunTenant('Move Sibling', 'test.move');
+    dryRunIdentity($source, 'test.move', 'EMP-100');
+    dryRunIdentity($sibling, 'test.move', 'EMP-100');
+    // The factory's default user has no company, so Actor::forUser() builds
+    // the actor validate() refuses: the shape the command meets in production.
+    $operator = User::factory()->create();
+    expect(Actor::forUser($operator)->validate())->not->toBeNull();
+    $spy = dryRunAuthzSpy();
+    $before = dryRunCounts();
+    $siblingBefore = ExternalIdentity::query()->forTenant($sibling['tenantId'])->pluck('external_id_hash', 'id')->all();
+
+    app(TenantContext::class)->clear();
+    expect(Artisan::call('connector:migrate:dry-run', ['--tenant' => $source['tenantId'], '--to' => $target['tenantId'], '--as' => $operator->id]))->toBe(1)
+        ->and(Artisan::output())->toContain('valid operator')
+        ->and(Artisan::output())->not->toContain('Nothing was written')
+        ->and($spy->calls)->toBe([]);
+    expect(dryRunCounts())->toBe($before)
+        ->and(ExternalIdentity::query()->forTenant($sibling['tenantId'])->pluck('external_id_hash', 'id')->all())->toBe($siblingBefore);
 });

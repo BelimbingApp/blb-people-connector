@@ -26,6 +26,7 @@ use App\Domains\PeopleConnector\Connector\Data\WorkforceUpsert;
 use App\Domains\PeopleConnector\Connector\Enums\OperatorAuditOperation;
 use App\Domains\PeopleConnector\Connector\Enums\PeopleCapability;
 use App\Domains\PeopleConnector\Connector\Exceptions\CompanyMoveRefusedException;
+use App\Domains\PeopleConnector\Connector\Exceptions\ConnectionMaintenanceException;
 use App\Domains\PeopleConnector\Connector\Exceptions\ConnectorRecordNotFoundException;
 use App\Domains\PeopleConnector\Connector\Exceptions\CorruptWorkforcePageException;
 use App\Domains\PeopleConnector\Connector\Exceptions\ExternalIdentityCollisionException;
@@ -531,6 +532,15 @@ final class WorkforceSyncRunner
 
         if ($connection->status !== ProviderConnection::STATUS_ACTIVE) {
             throw new WorkforceSyncException("Provider connection {$connectionId} is not active.");
+        }
+
+        // A planned window (#264) holds every pass here, before a port is
+        // resolved or a page read, so a half-migrated provider is never
+        // consulted and no checkpoint or attempt counter moves.
+        if ($connection->inMaintenance()) {
+            throw new ConnectionMaintenanceException(
+                "Provider connection {$connectionId} is in maintenance until {$connection->maintenance_until->format(DATE_ATOM)}.",
+            );
         }
 
         return $connection;

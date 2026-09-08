@@ -59,7 +59,10 @@ final class TenantMoveDryRun
             $targetTenantId,
             $tables,
             $this->collisions($sourceTenantId, $targetTenantId),
-            (int) WebhookDelivery::query()->forTenant($sourceTenantId)->where('status', WebhookDelivery::STATUS_ACCEPTED)->count(),
+            // In flight = queued (accepted) or failed with a retry still pending:
+            // the job marks `failed` and rethrows while attempts remain (#255).
+            // Dead-lettered is terminal and is not counted.
+            (int) WebhookDelivery::query()->forTenant($sourceTenantId)->whereIn('status', [WebhookDelivery::STATUS_ACCEPTED, WebhookDelivery::STATUS_FAILED])->count(),
             (int) ReconciliationIssue::query()->forTenant($sourceTenantId)
                 ->where('kind', WorkforceSyncRunner::ISSUE_KIND_DEAD_LETTER)
                 ->where('status', ReconciliationIssue::STATUS_OPEN)->count(),

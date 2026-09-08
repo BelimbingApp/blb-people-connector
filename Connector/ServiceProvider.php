@@ -7,9 +7,12 @@ use App\Domains\People\Provider\Data\ExternalReference as PeopleExternalReferenc
 use App\Domains\PeopleConnector\Connector\Console\Commands\BenchSyncCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\CapabilityVerifyCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\ConnectionHealthCheckCommand;
+use App\Domains\PeopleConnector\Connector\Console\Commands\ConnectionMaintenanceCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\ConnectionResidueCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\ConnectorDoctorCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\CutoverRehearsalCommand;
+use App\Domains\PeopleConnector\Connector\Console\Commands\EgressProbeCommand;
+use App\Domains\PeopleConnector\Connector\Console\Commands\FileExchangeDiscoverCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\Hr2000ImportDryRunCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\IdentityAuditTrailCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\MigrateDryRunCommand;
@@ -81,10 +84,13 @@ class ServiceProvider extends BaseServiceProvider
             $this->commands([
                 BenchSyncCommand::class,
                 CutoverRehearsalCommand::class,
+                FileExchangeDiscoverCommand::class,
                 CapabilityVerifyCommand::class,
                 ConnectionHealthCheckCommand::class,
+                ConnectionMaintenanceCommand::class,
                 ConnectionResidueCommand::class,
                 ConnectorDoctorCommand::class,
+                EgressProbeCommand::class,
                 Hr2000ImportDryRunCommand::class,
                 MigrateDryRunCommand::class,
                 OperatorWhoamiCommand::class,

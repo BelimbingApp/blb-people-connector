@@ -7,6 +7,7 @@ use App\Base\Authz\DTO\Actor;
 use App\Base\Authz\DTO\ResourceContext;
 use App\Base\Database\Services\DataShare\DataSharePrivateStorage;
 use App\Base\Tenancy\Contracts\TenantContext;
+use App\Domains\PeopleConnector\Connector\Contracts\ExportsSupplementalSubjectRecords;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceSubjectImportResult;
 use App\Domains\PeopleConnector\Connector\Enums\OperatorAuditOperation;
 use App\Domains\PeopleConnector\Connector\Exceptions\ProviderAuthorizationException;
@@ -14,10 +15,18 @@ use App\Domains\PeopleConnector\Connector\Exceptions\WorkforceSubjectImportExcep
 use App\Domains\PeopleConnector\Connector\Models\ExternalIdentity;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceEntity;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceSnapshot;
+use Illuminate\Contracts\Container\Container;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
-/** Import only the identity mapping and append-only history from a subject export. */
+/**
+ * Import only the identity mapping and append-only history from a subject export.
+ *
+ * A package's `supplemental` blocks (#308) are never written here: a block
+ * whose exporter is registered on this side and says restorable() is handed
+ * back verbatim in the result for that module to act on; every other block is
+ * named in `not_restored`, so a restore says what it could not restore.
+ */
 final class WorkforceSubjectImporter
 {
     public const IMPORT_CAPABILITY = 'people-connector.identity.import';
@@ -30,6 +39,7 @@ final class WorkforceSubjectImporter
         private readonly DataSharePrivateStorage $storage,
         private readonly TenantConnectionLocator $connections,
         private readonly OperatorAuditLog $audits,
+        private readonly Container $container,
     ) {}
 
     public function import(Actor $actor, int $connectionId, string $packageId): WorkforceSubjectImportResult
@@ -44,6 +54,7 @@ final class WorkforceSubjectImporter
         }
 
         $package = $this->readPackage($packageId);
+        [$supplemental, $notRestored] = $this->supplemental($package);
         $tables = $package['tables'];
         $entities = $tables[(new WorkforceEntity)->getTable()] ?? [];
         $identities = $tables[(new ExternalIdentity)->getTable()] ?? [];
@@ -83,7 +94,7 @@ final class WorkforceSubjectImporter
         }
 
         try {
-            return DB::transaction(function () use ($actor, $connection, $entities, $identities, $packageId, $snapshots, $tenantId): WorkforceSubjectImportResult {
+            return DB::transaction(function () use ($actor, $connection, $entities, $identities, $notRestored, $packageId, $snapshots, $supplemental, $tenantId): WorkforceSubjectImportResult {
                 $this->connections->get((int) $connection->id, lock: true);
                 foreach ($identities as $identity) {
                     $exists = ExternalIdentity::query()->forTenant($tenantId)
@@ -136,15 +147,54 @@ final class WorkforceSubjectImporter
                     'package_id' => $packageId,
                     'workforce_entity_id' => (int) $entity->id,
                     'rows' => count($identities) + count($snapshots) + 1,
+                    'supplemental_restorable' => array_keys($supplemental),
+                    'supplemental_not_restored' => $notRestored,
                 ]);
 
-                return new WorkforceSubjectImportResult($packageId, (int) $entity->id, count($identities), count($snapshots));
+                return new WorkforceSubjectImportResult($packageId, (int) $entity->id, count($identities), count($snapshots), $supplemental, $notRestored);
             });
         } catch (WorkforceSubjectImportException $failure) {
             throw $failure;
         } catch (\Throwable $failure) {
             throw new WorkforceSubjectImportException('The subject history import failed; no changes were written.', previous: $failure);
         }
+    }
+
+    /**
+     * Split the package's supplemental blocks into the ones a registered,
+     * restorable exporter may take back (verbatim) and the names of the rest.
+     *
+     * @param  array<string, mixed>  $package
+     * @return array{0: array<string, array<string, list<array<string, mixed>>>>, 1: list<string>}
+     */
+    private function supplemental(array $package): array
+    {
+        $blocks = $package['supplemental'] ?? [];
+        if (! is_array($blocks)) {
+            throw new WorkforceSubjectImportException('The subject package supplemental block is not a map of exporter sections.');
+        }
+
+        $restorable = [];
+        foreach ($this->container->tagged(ExportsSupplementalSubjectRecords::class) as $exporter) {
+            if ($exporter->restorable()) {
+                $restorable[$exporter->name()] = true;
+            }
+        }
+
+        $kept = [];
+        $notRestored = [];
+        foreach ($blocks as $name => $sections) {
+            if (! is_string($name) || ! is_array($sections)) {
+                throw new WorkforceSubjectImportException('The subject package supplemental block is not a map of exporter sections.');
+            }
+            if (isset($restorable[$name])) {
+                $kept[$name] = $sections;
+            } else {
+                $notRestored[] = $name;
+            }
+        }
+
+        return [$kept, $notRestored];
     }
 
     /** @return array<string, mixed> */

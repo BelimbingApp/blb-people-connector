@@ -37,6 +37,12 @@ final class WorkforceFreshnessPolicy
             default => null,
         };
 
+        // A breach inside a maintenance window is the window doing its job:
+        // still stale to any reader, but named so nobody raises a fault for it.
+        if ($reason !== null && $reason !== WorkforceFreshness::REASON_CONNECTION_INACTIVE && $connection->inMaintenance($checkedAt)) {
+            $reason = WorkforceFreshness::REASON_MAINTENANCE;
+        }
+
         return new WorkforceFreshness(
             $connectionId,
             $stream,
