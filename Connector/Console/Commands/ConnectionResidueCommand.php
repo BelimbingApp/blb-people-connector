@@ -3,6 +3,7 @@
 namespace App\Domains\PeopleConnector\Connector\Console\Commands;
 
 use App\Base\Authz\DTO\Actor;
+use App\Base\Authz\Exceptions\AuthorizationDeniedException;
 use App\Base\Tenancy\Console\TenantScopedCommand;
 use App\Core\User\Models\User;
 use App\Domains\PeopleConnector\Connector\Data\ConnectionResidueReport;
@@ -45,7 +46,7 @@ final class ConnectionResidueCommand extends TenantScopedCommand
 
         try {
             $report = $residue->for(Actor::forUser($operator), (int) $this->argument('connection'));
-        } catch (ProviderAuthorizationException|ConnectorRecordNotFoundException|ConnectionResidueException $refusal) {
+        } catch (AuthorizationDeniedException|ProviderAuthorizationException|ConnectorRecordNotFoundException|ConnectionResidueException $refusal) {
             $this->error($refusal->getMessage());
 
             return self::FAILURE;

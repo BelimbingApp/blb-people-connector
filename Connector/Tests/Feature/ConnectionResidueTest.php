@@ -71,10 +71,10 @@ function residueAuthz(bool $allow): void
         public function authorize(Actor $actor, string $capability, ?ResourceContext $resource = null, array $context = []): void
         {
             if (! $this->allow) {
-                throw new ProviderAuthorizationException(
-                    providerId: 'connector',
-                    operation: 'connection_residue',
-                    message: 'The actor lacks the connector connection list capability.',
+                // Match the platform AuthorizationEngine path: deny throws
+                // AuthorizationDeniedException, not a connector-local type.
+                throw new \App\Base\Authz\Exceptions\AuthorizationDeniedException(
+                    AuthorizationDecision::deny(AuthorizationReasonCode::DENIED_MISSING_CAPABILITY),
                 );
             }
         }
@@ -408,7 +408,25 @@ test('an operator without the capability is refused before the audit row', funct
     $auditsBefore = OperatorAudit::query()->count();
 
     expect(fn () => app(ConnectionResidueReporter::class)->for($f['actor'], $f['connectionId']))
-        ->toThrow(ProviderAuthorizationException::class)
+        ->toThrow(\App\Base\Authz\Exceptions\AuthorizationDeniedException::class)
+        ->and(OperatorAudit::query()->count())->toBe($auditsBefore);
+});
+
+test('the command turns a platform authorization denial into a clean non-zero exit', function (): void {
+    $f = residueRetiredFixture('Residue Cmd Denied Tenant');
+    residueAuthz(false);
+    app(TenantContext::class)->set($f['tenantId']);
+    $operator = User::factory()->create(['company_id' => $f['companyId']]);
+    $auditsBefore = OperatorAudit::query()->count();
+
+    $exit = Artisan::call('connector:connection:residue', [
+        'connection' => $f['connectionId'],
+        '--as' => $operator->id,
+        '--tenant' => $f['tenantId'],
+    ]);
+
+    expect($exit)->toBe(1)
+        ->and(Artisan::output())->toContain('Authorization denied')
         ->and(OperatorAudit::query()->count())->toBe($auditsBefore);
 });
 
