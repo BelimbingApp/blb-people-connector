@@ -151,7 +151,7 @@ test('a restored row-count mismatch is reported per table and exits non-zero', f
             'people_connector_connector_provider_connections' => 0,
         ])
         ->and($report['redactions'])->toHaveKey('people_connector_connector_provider_credentials')
-        ->and($authorization->calls)->toBe([[(int) $fixture['operator']->id, 'people-connector.backup.rehearse']])
+        ->and($authorization->calls)->toBe([[(int) $fixture['operator']->id, 'people-connector.connection.manage']])
         ->and($fakes['publisher']->calls)->toBe(1)
         ->and($fakes['restorer']->calls)->toBe(1);
 });

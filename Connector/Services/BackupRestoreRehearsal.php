@@ -12,7 +12,7 @@ use App\Domains\PeopleConnector\Connector\Exceptions\ProviderAuthorizationExcept
 
 final class BackupRestoreRehearsal
 {
-    public const CAPABILITY = 'people-connector.backup.rehearse';
+    public const CAPABILITY = 'people-connector.connection.manage';
 
     public function __construct(
         private readonly TenantContext $tenants,

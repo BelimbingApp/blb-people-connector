@@ -14,8 +14,8 @@ its private connection URL outside source control:
 PEOPLE_CONNECTOR_REHEARSAL_DATABASE_URL=postgresql://...
 ```
 
-Then run the rehearsal as an operator granted
-`people-connector.backup.rehearse`:
+Then run the rehearsal as an operator granted the connector-management
+capability (`people-connector.connection.manage`):
 
 ```bash
 php artisan connector:backup:rehearse --tenant=42 --as=7
