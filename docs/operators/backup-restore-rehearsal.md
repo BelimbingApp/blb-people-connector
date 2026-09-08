@@ -22,9 +22,12 @@ php artisan connector:backup:rehearse --tenant=42 --as=7
 ```
 
 The connection URL is passed only in the environment of a fresh child process,
-so the source process's cached DataShare identity and settings cannot leak into
-the destination. The one-time offer secret is held in a mode-0600 handoff file
-and deleted when the child exits.
+which also derives a stable scratch-only application URL from a one-way hash of
+that connection URL. A fresh scratch therefore receives a distinct fallback
+DataShare identity without storing the private URL or requiring a pre-existing
+instance-id setting. The source process's cached DataShare identity and settings
+cannot leak into the destination. The one-time offer secret is held in a
+mode-0600 handoff file and deleted when the child exits.
 
 DataShare packages are instance-level. Until the platform supports
 tenant-filtered export and identity remapping, this command refuses a source
