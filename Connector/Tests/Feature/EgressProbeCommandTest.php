@@ -52,8 +52,8 @@ function egressProbeTenant(string $name, string $providerId, string $origin): ar
     ];
 }
 
-/** @return array{server: resource, port: int, certificate: string} */
-function egressTlsListener(): array
+/** @return array{process: resource, pipes: array<int, resource>, port: int, certificate: string} */
+function startEgressTlsListener(int $tlsDelaySeconds = 0): array
 {
     $key = openssl_pkey_new(['private_key_bits' => 2048, 'private_key_type' => OPENSSL_KEYTYPE_RSA]);
     $request = openssl_csr_new(['commonName' => '127.0.0.1'], $key, ['digest_alg' => 'sha256']);
@@ -62,40 +62,57 @@ function egressTlsListener(): array
     openssl_pkey_export($key, $keyPem);
     $certificatePath = tempnam(sys_get_temp_dir(), 'connector-egress-');
     file_put_contents($certificatePath, $certificatePem.$keyPem);
-    $context = stream_context_create(['ssl' => ['local_cert' => $certificatePath, 'allow_self_signed' => true]]);
-    $server = stream_socket_server('tcp://127.0.0.1:0', $errorNumber, $error, STREAM_SERVER_BIND | STREAM_SERVER_LISTEN, $context);
+    $serverCode = <<<'PHP'
+$certificatePath = $argv[1];
+$tlsDelaySeconds = (int) $argv[2];
+$context = stream_context_create(['ssl' => ['local_cert' => $certificatePath, 'allow_self_signed' => true]]);
+$server = stream_socket_server('tcp://127.0.0.1:0', $errorNumber, $error, STREAM_SERVER_BIND | STREAM_SERVER_LISTEN, $context);
+if (! is_resource($server)) {
+    fwrite(STDERR, "listener failed: {$errorNumber} {$error}\n");
+    exit(1);
+}
+$address = stream_socket_get_name($server, false);
+fwrite(STDOUT, substr((string) $address, strrpos((string) $address, ':') + 1)."\n");
+fflush(STDOUT);
+$tcp = stream_socket_accept($server, 10);
+if (is_resource($tcp)) {
+    fclose($tcp);
+}
+$tls = stream_socket_accept($server, 10);
+if (is_resource($tls)) {
+    if ($tlsDelaySeconds > 0) {
+        sleep($tlsDelaySeconds);
+    } else {
+        stream_socket_enable_crypto($tls, true, STREAM_CRYPTO_METHOD_TLS_SERVER);
+    }
+    fclose($tls);
+}
+fclose($server);
+PHP;
+    $process = proc_open(
+        [PHP_BINARY, '-r', $serverCode, $certificatePath, (string) $tlsDelaySeconds],
+        [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']],
+        $pipes,
+    );
 
-    expect($server)->toBeResource();
-    $address = stream_socket_get_name($server, false);
+    expect($process)->toBeResource();
+    fclose($pipes[0]);
+    $port = (int) trim((string) fgets($pipes[1]));
+    expect($port)->toBeGreaterThan(0);
 
-    return ['server' => $server, 'port' => (int) substr((string) $address, strrpos((string) $address, ':') + 1), 'certificate' => $certificatePath];
+    return ['process' => $process, 'pipes' => $pipes, 'port' => $port, 'certificate' => $certificatePath];
 }
 
-/** Accept the probe's plain TCP connection, then its TLS connection. */
-function serveEgressProbe($server, int $tlsDelaySeconds = 0): int
+/** @param array{process: resource, pipes: array<int, resource>, certificate: string} $listener */
+function finishEgressTlsListener(array $listener): void
 {
-    $processId = pcntl_fork();
-    if ($processId === 0) {
-        $tcp = stream_socket_accept($server, 10);
-        if (is_resource($tcp)) {
-            fclose($tcp);
-        }
-        $tls = stream_socket_accept($server, 10);
-        if (is_resource($tls)) {
-            if ($tlsDelaySeconds > 0) {
-                sleep($tlsDelaySeconds);
-            } else {
-                stream_socket_enable_crypto($tls, true, STREAM_CRYPTO_METHOD_TLS_SERVER);
-            }
-            fclose($tls);
-        }
-        fclose($server);
-        exit(0);
-    }
+    fclose($listener['pipes'][1]);
+    $error = stream_get_contents($listener['pipes'][2]);
+    fclose($listener['pipes'][2]);
 
-    expect($processId)->toBeGreaterThan(0);
-
-    return $processId;
+    expect(proc_close($listener['process']))->toBe(0)
+        ->and($error)->toBe('');
+    unlink($listener['certificate']);
 }
 
 function egressProbeCall(array $fixture): int
@@ -108,9 +125,7 @@ function egressProbeCall(array $fixture): int
 }
 
 test('egress probe reports DNS TCP and TLS green, then exits red when the listener closes', function (): void {
-    $listener = egressTlsListener();
-    $processId = serveEgressProbe($listener['server']);
-    fclose($listener['server']);
+    $listener = startEgressTlsListener();
 
     $target = egressProbeTenant('Egress Probe Tenant', 'test.egress-target', "https://127.0.0.1:{$listener['port']}");
     egressProbeTenant('Foreign Egress Probe Tenant', 'test.egress-foreign', "https://127.0.0.1:{$listener['port']}");
@@ -121,18 +136,14 @@ test('egress probe reports DNS TCP and TLS green, then exits red when the listen
         ->and(array_column($report['connections'][0]['outcomes'], 'status'))->toBe(['green', 'green', 'green'])
         ->and(array_column($report['connections'][0]['outcomes'], 'check'))->toBe(['dns', 'tcp', 'tls']);
 
-    pcntl_waitpid($processId, $status);
+    finishEgressTlsListener($listener);
     expect(egressProbeCall($target))->toBe(1);
     $closed = json_decode(trim(Artisan::output()), true, flags: JSON_THROW_ON_ERROR);
     expect($closed['connections'][0]['outcomes'][1])->toMatchArray(['check' => 'tcp', 'status' => 'red']);
-
-    unlink($listener['certificate']);
 });
 
 test('egress probe bounds a stalled TLS handshake to five seconds', function (): void {
-    $listener = egressTlsListener();
-    $processId = serveEgressProbe($listener['server'], tlsDelaySeconds: 8);
-    fclose($listener['server']);
+    $listener = startEgressTlsListener(tlsDelaySeconds: 8);
     $target = egressProbeTenant('Stalled Egress Probe Tenant', 'test.egress-stalled', "https://127.0.0.1:{$listener['port']}");
 
     $startedAt = hrtime(true);
@@ -142,6 +153,5 @@ test('egress probe bounds a stalled TLS handshake to five seconds', function ():
         ->and(json_decode(trim(Artisan::output()), true, flags: JSON_THROW_ON_ERROR)['connections'][0]['outcomes'][2])
         ->toMatchArray(['check' => 'tls', 'status' => 'red']);
 
-    pcntl_waitpid($processId, $status);
-    unlink($listener['certificate']);
+    finishEgressTlsListener($listener);
 });
