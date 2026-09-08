@@ -2,6 +2,7 @@
 
 namespace App\Domains\PeopleConnector\Connector\Models;
 
+use App\Domains\PeopleConnector\Connector\Enums\ProviderConnectionMode;
 use App\Domains\PeopleConnector\Connector\Exceptions\InvalidProviderConfigurationException;
 
 final class ProviderConnection extends TenantOwnedModel
@@ -83,6 +84,8 @@ final class ProviderConnection extends TenantOwnedModel
     {
         return [
             'company_id' => 'integer',
+            'mode' => ProviderConnectionMode::class,
+            'remote_credential_id' => 'integer',
             'public_metadata' => 'array',
             'activated_at' => 'immutable_datetime',
             'deactivated_at' => 'immutable_datetime',

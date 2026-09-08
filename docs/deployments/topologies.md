@@ -59,3 +59,74 @@ Skill and Training copies; the composed domain-pin proof is recorded in
 Manifest dependencies, collision checks and a successful boot are necessary
 installation evidence. Activation still requires the topology-specific
 authority declaration and denial proof above.
+
+## Reference configuration: remote native People
+
+The remote native shape above is not activation-ready, and the connector now
+says so at every point where a caller could mistake a co-located answer for a
+remote one. Configuring a connection for it is supported; relying on it to
+synchronise is not.
+
+**Placement.** A connection carries `mode`, `remote_base_url` and
+`remote_credential_id`. `mode` defaults to `in_process`, so every existing
+connection keeps its meaning without a data migration. Only a connection whose
+mode is `remote_http` may carry a base URL or a credential reference; setting
+either on any other mode is refused rather than silently dropped, because an
+operator who typed a base URL and saw no error would reasonably believe the
+placement had been configured.
+
+**Allowlist.** `people-connector.remote.allowed_hosts` is empty by default and
+must name the host of every remote People installation before a connection can
+reference it. This is deployment configuration, not a per-connection field, so
+adding a host is a decision with a named owner rather than something an
+operator can do from a form. The allowlist is compared against the parsed host
+of the URL, so `https://allowed.example@attacker.example/api` is refused: the
+host there is `attacker.example`. The base URL must be absolute and `https`.
+
+**Credential scoping.** `remote_credential_id` must name a credential belonging
+to that same connection and tenant; a sibling connection's credential is
+refused at configuration time, where the operator can still be told which
+connection owns it. At probe time the credential is vended by
+`ProviderCredentialStore::requireUsable()`, which enforces expiry, revocation
+and the tenant boundary in one place. Provider credentials expire within five
+minutes of issuance by contract, so the stored reference records the operator's
+binding while the store remains the runtime authority.
+
+**Health.** `RemoteProviderHealthProbe` answers for a `remote_http` connection,
+and `ConnectionHealthChecker` and `connector:doctor` never ask the in-process
+adapter about one. That is the point: `FirstPartyPeopleAdapter::health()`
+returns healthy by construction, so a co-located answer about a remote host
+describes the wrong machine. States are `Unavailable` when the host is
+unreachable, times out or answers non-2xx; `Degraded` when it answers but the
+contract majors disagree or its reported watermark is older than
+`people-connector.sync.max_age_minutes`; `Healthy` otherwise. Reports carry
+reason codes and the host, never transport exception text
+(`docs/contracts/diagnostic-privacy.md`).
+
+**What is still missing, and why sync refuses.** Three pieces of the remote
+transport do not exist yet:
+
+1. No route serves the health read. Connector #163 shipped it as an in-process
+   operator service and recorded that giving it a URL is a separate decision
+   with its own exposure to argue about. `people-connector.remote.health_path`
+   is therefore configuration rather than a constant, and a `remote_http`
+   connection reports `Unavailable` until the remote host serves that path.
+2. `ProviderCredential` carries identifiers and never a secret, deliberately,
+   so a credential can be logged and reported without leaking one. The
+   secret-bearing exchange an authenticated remote call needs is not built.
+3. There is no remote bootstrap or change transport at all.
+
+Because of (3), `WorkforceSyncRunner` refuses a pass on a `remote_http`
+connection with `ProviderTemporaryException`, before any port is resolved and
+before any page is read, and records a `sync:remote:transport-missing` issue for
+the operator. Reading its pages through the co-located adapter would fill the
+projections from the wrong host and stamp them fresh, which is precisely the
+fallback workforce ledger this document forbids. The refusal is temporary
+rather than permanent: the placement is legitimate and the transport is what is
+absent, so a caller that retries once the transport lands is right to.
+
+**Upgrade order.** Upgrade the remote People host first, then the connector. The
+probe reports `Degraded` on a contract-major mismatch and names both majors, so
+a half-finished upgrade is visible as a pairing problem rather than an outage.
+Upgrading the connector first makes every remote connection degraded until the
+People host catches up.
