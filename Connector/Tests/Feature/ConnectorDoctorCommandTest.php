@@ -1,0 +1,236 @@
+<?php
+
+use App\Base\Authz\Contracts\AuthorizationService;
+use App\Base\Authz\DTO\Actor;
+use App\Base\Authz\DTO\AuthorizationDecision;
+use App\Base\Authz\DTO\ResourceContext;
+use App\Base\Tenancy\Contracts\TenantContext;
+use App\Core\User\Models\User;
+use App\Domains\PeopleConnector\Connector\Data\ExternalReference;
+use App\Domains\PeopleConnector\Connector\Data\ProviderScope;
+use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
+use App\Domains\PeopleConnector\Connector\Jobs\RunIncrementalWorkforceSync;
+use App\Domains\PeopleConnector\Connector\Models\ProviderCredentialRecord;
+use App\Domains\PeopleConnector\Connector\Models\WebhookDelivery;
+use App\Domains\PeopleConnector\Connector\Models\WebhookReceipt;
+use App\Domains\PeopleConnector\Connector\Models\WorkforceEntity;
+use App\Domains\PeopleConnector\Connector\Services\ProviderConnectionStore;
+use App\Domains\PeopleConnector\Connector\Services\ProviderRegistry;
+use App\Domains\PeopleConnector\Connector\Services\WorkforceIdentityStore;
+use App\Domains\PeopleConnector\FirstPartyPeople\FirstPartyPeopleAdapter;
+use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Queue;
+
+beforeEach(function (): void {
+    config()->set('queue.default', 'database');
+    app()->instance(AuthorizationService::class, new class implements AuthorizationService
+    {
+        public function can(Actor $actor, string $capability, ?ResourceContext $resource = null, array $context = []): AuthorizationDecision
+        {
+            return AuthorizationDecision::allow();
+        }
+
+        public function authorize(Actor $actor, string $capability, ?ResourceContext $resource = null, array $context = []): void {}
+
+        public function filterAllowed(Actor $actor, string $capability, iterable $resources, array $context = []): Collection
+        {
+            return collect($resources);
+        }
+    });
+});
+
+afterEach(fn () => app(TenantContext::class)->clear());
+
+function doctorTenant(string $name): array
+{
+    [$tenant, $company] = createTenantWithCompany(['name' => $name]);
+
+    return [(int) $tenant->id, (int) $company->id, User::factory()->create(['company_id' => $company->id])];
+}
+
+/** A usable credential far from expiry, so the connection's expiry row (#296) is green. */
+function doctorCredential(int $tenantId, int $connectionId, string $providerId): void
+{
+    ProviderCredentialRecord::query()->create([
+        'tenant_id' => $tenantId, 'connection_id' => $connectionId, 'provider_id' => $providerId,
+        'key_id' => 'doctor-key', 'secret_reference' => 'base-integration:doctor-test',
+        'audience' => 'provider', 'scopes' => ['workforce:read'],
+        // Fixed dates: the runs below travel to 2026-09-06, so a wall-clock issued_at would postdate them.
+        'issued_at' => '2020-01-01 00:00:00', 'expires_at' => '2099-01-01 00:00:00',
+    ]);
+}
+
+function queueDoctorWebhook(int $tenantId, int $ageSeconds): void
+{
+    Queue::connection('database')->pushOn(RunIncrementalWorkforceSync::QUEUE, new RunIncrementalWorkforceSync($tenantId, 999));
+    DB::table('jobs')->latest('id')->limit(1)->update(['created_at' => now()->subSeconds($ageSeconds)->timestamp]);
+}
+
+test('connector doctor reports only this tenants stale webhook delivery and exits red', function (): void {
+    [$tenantId, $companyId, $operator] = doctorTenant('Doctor Tenant');
+    [$otherTenantId, $otherCompanyId] = doctorTenant('Other Doctor Tenant');
+
+    app(TenantContext::class)->set($tenantId);
+    app(ProviderRegistry::class)->register(app(FirstPartyPeopleAdapter::class));
+    $targetConnections = app(ProviderConnectionStore::class);
+    $targetConnection = $targetConnections->configure(ProviderScope::company($companyId), FirstPartyPeopleAdapter::ID);
+    $targetConnections->activate((int) $targetConnection->id);
+    doctorCredential($tenantId, (int) $targetConnection->id, FirstPartyPeopleAdapter::ID);
+
+    app(TenantContext::class)->set($otherTenantId);
+    $connections = app(ProviderConnectionStore::class);
+    $connection = $connections->configure(ProviderScope::company($otherCompanyId), 'test.other-doctor');
+    $connection = $connections->activate((int) $connection->id);
+    $identity = app(WorkforceIdentityStore::class)->resolveOrCreateIdentity(
+        (int) $connection->id,
+        new ExternalReference('test.other-doctor', WorkforceResourceType::Employee, 'OTHER-UNRESOLVED'),
+        now(),
+    );
+    WorkforceEntity::query()->whereKey($identity->workforce_entity_id)->update(['state' => WorkforceEntity::STATE_INACTIVE]);
+
+    queueDoctorWebhook($tenantId, 3601);
+    queueDoctorWebhook($tenantId, 3599);
+    queueDoctorWebhook($otherTenantId, 7200);
+
+    expect(Artisan::call('connector:doctor', ['--tenant' => $tenantId, '--as' => $operator->id]))->toBe(1)
+        ->and(Artisan::output())->toContain('webhook_deliveries', 'red', '1 stale', 'identity_mappings', 'green', '0 unresolved');
+
+    DB::table('jobs')->delete();
+    expect(Artisan::call('connector:doctor', ['--tenant' => $tenantId, '--as' => $operator->id, '--json' => true]))->toBe(0);
+    $rows = collect(json_decode(trim(Artisan::output()), true, flags: JSON_THROW_ON_ERROR)['checks']);
+    expect($rows)->toHaveCount(12)
+        ->and($rows->firstWhere('check', 'webhook_duplicates')['detail'] ?? null)->toBe('0 skipped in 7 days')
+        ->and($rows->pluck('status')->unique()->all())->toBe(['green']);
+});
+
+test('connector doctor checks configured adapters that have no active connection', function (): void {
+    [$tenantId, $companyId, $operator] = doctorTenant('Inactive Adapter Tenant');
+
+    app(TenantContext::class)->set($tenantId);
+    app(ProviderConnectionStore::class)->configure(ProviderScope::company($companyId), 'test.inactive-doctor');
+
+    expect(Artisan::call('connector:doctor', ['--tenant' => $tenantId, '--as' => $operator->id]))->toBe(1)
+        ->and(Artisan::output())->toContain(
+            'adapter_conformance',
+            'red',
+            'adapter_not_active:test.inactive-doctor',
+        );
+});
+
+test('connector doctor counts this tenants acknowledged webhook duplicates and stays green', function (): void {
+    [$tenantId, $companyId, $operator] = doctorTenant('Duplicate Doctor Tenant');
+    [$otherTenantId, $otherCompanyId] = doctorTenant('Other Duplicate Tenant');
+    foreach ([[$tenantId, 3, 1], [$tenantId, 2, 10], [$otherTenantId, 5, 1]] as [$tenant, $duplicates, $daysAgo]) {
+        WebhookReceipt::query()->create([
+            'tenant_id' => $tenant, 'provider_id' => 'test.doctor', 'connection_id' => 1, 'delivery_id' => 'delivery-'.$tenant.'-'.$daysAgo,
+            'first_seen_at' => now()->subDays($daysAgo), 'duplicate_count' => $duplicates,
+        ]);
+        // Each receipt has its delivery behind it: these are genuine duplicates, not stuck reservations.
+        WebhookDelivery::query()->create(['tenant_id' => $tenant, 'connection_id' => 1, 'delivery_id' => 'delivery-'.$tenant.'-'.$daysAgo, 'status' => WebhookDelivery::STATUS_DELIVERED, 'received_at' => now()->subDays($daysAgo)]);
+    }
+
+    expect(Artisan::call('connector:doctor', ['--tenant' => $tenantId, '--as' => $operator->id, '--json' => true]))->toBe(0);
+    $rows = collect(json_decode(trim(Artisan::output()), true, flags: JSON_THROW_ON_ERROR)['checks']);
+    expect($rows->firstWhere('check', 'webhook_duplicates'))->toBe(['check' => 'webhook_duplicates', 'status' => 'green', 'count' => 3, 'detail' => '3 skipped in 7 days']);
+});
+
+test('connector doctor turns red on a receipt with no delivery behind it, after the grace window, in this tenant only', function (): void {
+    [$tenantId, $companyId, $operator] = doctorTenant('Stuck Doctor Tenant');
+    [$otherTenantId] = doctorTenant('Other Stuck Tenant');
+    $receipt = fn (int $tenant, string $delivery, int $minutesAgo) => WebhookReceipt::query()->create([
+        'tenant_id' => $tenant, 'provider_id' => 'test.doctor', 'connection_id' => 7, 'delivery_id' => $delivery, 'first_seen_at' => now()->subMinutes($minutesAgo),
+    ]);
+    $receipt($tenantId, 'delivery-fresh', 1);
+    $receipt($tenantId, 'delivery-done', 30);
+    WebhookDelivery::query()->create(['tenant_id' => $tenantId, 'connection_id' => 7, 'delivery_id' => 'delivery-done', 'status' => WebhookDelivery::STATUS_DELIVERED, 'received_at' => now()->subMinutes(30)]);
+    $receipt($otherTenantId, 'delivery-foreign-stuck', 30);
+
+    expect(Artisan::call('connector:doctor', ['--tenant' => $tenantId, '--as' => $operator->id, '--json' => true]))->toBe(0);
+    $rows = collect(json_decode(trim(Artisan::output()), true, flags: JSON_THROW_ON_ERROR)['checks']);
+    expect($rows->firstWhere('check', 'webhook_stuck_reservations'))->toBe(['check' => 'webhook_stuck_reservations', 'status' => 'green', 'count' => 0, 'detail' => '0 stuck']);
+
+    $receipt($tenantId, 'delivery-lost', 10);
+    expect(Artisan::call('connector:doctor', ['--tenant' => $tenantId, '--as' => $operator->id]))->toBe(1)
+        ->and(Artisan::output())->toContain('webhook_stuck_reservations', 'red', '1 stuck');
+});
+
+test('connector doctor records every run and lists only this tenants latest snapshot per check', function (): void {
+    [$tenantId, $companyId, $operator] = doctorTenant('Doctor History Tenant');
+    [$otherTenantId] = doctorTenant('Other Doctor History Tenant');
+
+    app(TenantContext::class)->set($tenantId);
+    app(ProviderRegistry::class)->register(app(FirstPartyPeopleAdapter::class));
+    $connections = app(ProviderConnectionStore::class);
+    $connection = $connections->configure(ProviderScope::company($companyId), FirstPartyPeopleAdapter::ID);
+    $connections->activate((int) $connection->id);
+    doctorCredential($tenantId, (int) $connection->id, FirstPartyPeopleAdapter::ID);
+
+    $this->travelTo('2026-09-06 10:00:00');
+    expect(Artisan::call('connector:doctor', ['--tenant' => $tenantId, '--as' => $operator->id, '--record' => true]))->toBe(0);
+
+    queueDoctorWebhook($tenantId, 3601);
+    $this->travelTo('2026-09-06 11:00:00');
+    expect(Artisan::call('connector:doctor', ['--tenant' => $tenantId, '--as' => $operator->id, '--record' => true]))->toBe(1);
+
+    DB::table('people_connector_connector_doctor_snapshots')->insert([
+        'tenant_id' => $otherTenantId,
+        'check' => 'foreign_only',
+        'status' => 'red',
+        'count' => 99,
+        'measured_at' => now(),
+    ]);
+
+    expect(DB::table('people_connector_connector_doctor_snapshots')->where('tenant_id', $tenantId)->count())->toBe(24)
+        ->and(DB::table('people_connector_connector_doctor_snapshots')
+            ->where('tenant_id', $tenantId)
+            ->pluck('check')
+            ->countBy()
+            ->sortKeys()
+            ->all())
+        ->toBe([
+            'adapter_conformance' => 2,
+            'connection_maintenance' => 2,
+            'delegation_secret_overlap' => 2,
+            'identity_mappings' => 2,
+            'provider_credential_expiry:'.$connection->id => 2,
+            'reconciliation_drift' => 2,
+            'sync_dead_letters' => 2,
+            'webhook_dead_letters' => 2,
+            'webhook_deliveries' => 2,
+            'webhook_duplicates' => 2,
+            'webhook_secret_overlap' => 2,
+            'webhook_stuck_reservations' => 2,
+        ]);
+
+    expect(Artisan::call('connector:doctor', ['--tenant' => $tenantId, '--as' => $operator->id, '--history' => 1]))->toBe(0)
+        ->and(Artisan::output())->toContain('webhook_deliveries', 'red', '1')
+        ->not->toContain('foreign_only', '99');
+
+    expect(Artisan::call('connector:doctor', ['--tenant' => $tenantId, '--as' => $operator->id, '--history' => 1, '--json' => true]))->toBe(0);
+    $history = collect(json_decode(trim(Artisan::output()), true, flags: JSON_THROW_ON_ERROR)['checks']);
+    expect($history)->toHaveCount(12)
+        ->and($history->pluck('check')->unique())->toHaveCount(12);
+});
+
+test('connector snapshot retention removes only this tenants rows older than thirty days', function (): void {
+    $this->travelTo('2026-09-06 12:00:00');
+    [$tenantId, , $operator] = doctorTenant('Doctor Snapshot Retention Tenant');
+    [$otherTenantId] = doctorTenant('Other Snapshot Retention Tenant');
+    app(TenantContext::class)->set($tenantId);
+
+    DB::table('people_connector_connector_doctor_snapshots')->insert([
+        ['tenant_id' => $tenantId, 'check' => 'old', 'status' => 'green', 'count' => 0, 'measured_at' => now()->subDays(31)],
+        ['tenant_id' => $tenantId, 'check' => 'current', 'status' => 'green', 'count' => 0, 'measured_at' => now()->subDays(30)],
+        ['tenant_id' => $otherTenantId, 'check' => 'foreign_old', 'status' => 'green', 'count' => 0, 'measured_at' => now()->subDays(31)],
+    ]);
+
+    expect(Artisan::call('people-connector:retention-purge', [
+        '--tenant' => $tenantId,
+        '--as' => $operator->id,
+        '--yes' => true,
+    ]))->toBe(0)
+        ->and(DB::table('people_connector_connector_doctor_snapshots')->pluck('check')->sort()->values()->all())
+        ->toBe(['current', 'foreign_old']);
+});

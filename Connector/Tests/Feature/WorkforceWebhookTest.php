@@ -1,18 +1,24 @@
 <?php
 
 use App\Base\Tenancy\Contracts\TenantContext;
+use App\Core\Company\Models\Company;
 use App\Core\User\Models\User;
 use App\Domains\PeopleConnector\Connector\Data\ProviderScope;
 use App\Domains\PeopleConnector\Connector\Jobs\RunIncrementalWorkforceSync;
 use App\Domains\PeopleConnector\Connector\Models\ProviderConnection;
+use App\Domains\PeopleConnector\Connector\Models\WebhookDelivery;
+use App\Domains\PeopleConnector\Connector\Models\WebhookReceipt;
 use App\Domains\PeopleConnector\Connector\Services\ProviderConnectionStore;
+use App\Domains\PeopleConnector\Connector\Services\WebhookReceiptLedger;
 use Illuminate\Support\Facades\Bus;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 
 afterEach(function (): void {
     app(TenantContext::class)->clear();
     config()->set('people-connector.webhook.enabled', false);
     config()->set('people-connector.webhook.secrets', []);
+    config()->set('people-connector.webhook.max_payload_bytes', 1048576);
 });
 
 function webhookConnection(string $provider = 'test.webhook'): ProviderConnection
@@ -33,14 +39,22 @@ function webhookBody(string $payload = '{"event":"workforce.changed"}'): string
     return $payload;
 }
 
-function webhookServerHeaders(int $connectionId, string $body, int $timestamp, string $secret = 'webhook-test-secret'): array
-{
+function webhookServerHeaders(
+    int $connectionId,
+    string $body,
+    int $timestamp,
+    string $secret = 'webhook-test-secret',
+    ?string $deliveryId = null,
+): array {
+    $deliveryId ??= 'delivery-'.Str::uuid();
+
     return [
         'CONTENT_TYPE' => 'application/json',
         'HTTP_X_PEOPLE_CONNECTOR_TIMESTAMP' => (string) $timestamp,
+        'HTTP_X_PEOPLE_CONNECTOR_DELIVERY' => $deliveryId,
         'HTTP_X_PEOPLE_CONNECTOR_SIGNATURE' => hash_hmac(
             'sha256',
-            $connectionId."\n".$timestamp."\n".$body,
+            $connectionId."\n".$timestamp."\n".$deliveryId."\n".$body,
             $secret,
         ),
     ];
@@ -69,14 +83,24 @@ test('a valid webhook queues one incremental pass without reading the payload as
     $response = $this->call(
         'POST',
         "/webhooks/people-connector/{$connection->id}",
-        server: webhookServerHeaders((int) $connection->id, $body, time()),
+        server: webhookServerHeaders((int) $connection->id, $body, time(), deliveryId: 'delivery-ledger-1'),
         content: $body,
     );
 
     $response->assertAccepted()->assertJson(['queued' => true]);
-    Bus::assertDispatched(RunIncrementalWorkforceSync::class, function (RunIncrementalWorkforceSync $job) use ($connection): bool {
+
+    // The delivery ledger (#223) records the trigger, so an operator can
+    // replay it by id later; the job carries the row id, not the payload.
+    $delivery = WebhookDelivery::query()->forTenant((int) $connection->tenant_id)->sole();
+    expect($delivery->connection_id)->toBe((int) $connection->id)
+        ->and($delivery->delivery_id)->toBe('delivery-ledger-1')
+        ->and($delivery->status)->toBe(WebhookDelivery::STATUS_ACCEPTED)
+        ->and($delivery->replayed_from_id)->toBeNull()
+        ->and(json_encode($delivery->getAttributes()))->not->toContain('payload-only');
+    Bus::assertDispatched(RunIncrementalWorkforceSync::class, function (RunIncrementalWorkforceSync $job) use ($connection, $delivery): bool {
         return $job->tenantId === (int) $connection->tenant_id
-            && $job->connectionId === (int) $connection->id;
+            && $job->connectionId === (int) $connection->id
+            && $job->deliveryId === (int) $delivery->id;
     });
     expect(DB::table('people_connector_connector_workforce_entities')->count())->toBe($before);
 });
@@ -146,5 +170,149 @@ test('a connection from another tenant is refused', function (): void {
     );
 
     $response->assertForbidden()->assertJson(['refused' => 'unknown_connection']);
+    Bus::assertNothingDispatched();
+});
+
+test('a replayed delivery id is acknowledged and skipped: one pass, one delivery, one receipt counting the duplicate', function (): void {
+    $connection = webhookConnection();
+    enableWebhookFor($connection);
+    Bus::fake();
+    $body = webhookBody();
+    $headers = webhookServerHeaders((int) $connection->id, $body, time(), deliveryId: 'delivery-replay-1');
+    $tenantId = (int) $connection->tenant_id;
+
+    $this->call('POST', "/webhooks/people-connector/{$connection->id}", server: $headers, content: $body)
+        ->assertAccepted()->assertJson(['queued' => true]);
+    $this->call('POST', "/webhooks/people-connector/{$connection->id}", server: $headers, content: $body)
+        ->assertOk()->assertJson(['acknowledged' => true, 'skipped' => 'duplicate_delivery']);
+    $this->call('POST', "/webhooks/people-connector/{$connection->id}", server: $headers, content: $body)
+        ->assertOk();
+
+    Bus::assertDispatchedTimes(RunIncrementalWorkforceSync::class, 1);
+    expect(WebhookDelivery::query()->forTenant($tenantId)->count())->toBe(1);
+    $receipt = WebhookReceipt::query()->forTenant($tenantId)->sole();
+    expect($receipt->delivery_id)->toBe('delivery-replay-1')
+        ->and($receipt->provider_id)->toBe('test.webhook')
+        ->and($receipt->connection_id)->toBe((int) $connection->id)
+        ->and($receipt->duplicate_count)->toBe(2)
+        ->and($receipt->last_duplicate_at)->not->toBeNull();
+});
+
+test('the same delivery id sent to another tenant is that tenant\'s own first delivery, not a duplicate', function (): void {
+    $alpha = webhookConnection();
+    $beta = webhookConnection('test.webhook');
+    enableWebhookFor($alpha);
+    enableWebhookFor($beta);
+    Bus::fake();
+    $body = webhookBody();
+
+    foreach ([$alpha, $beta] as $connection) {
+        app(TenantContext::class)->clear();
+        $headers = webhookServerHeaders((int) $connection->id, $body, time(), deliveryId: 'delivery-shared-1');
+        $this->call('POST', "/webhooks/people-connector/{$connection->id}", server: $headers, content: $body)
+            ->assertAccepted()->assertJson(['queued' => true]);
+    }
+
+    Bus::assertDispatchedTimes(RunIncrementalWorkforceSync::class, 2);
+    expect(WebhookReceipt::query()->forTenant((int) $alpha->tenant_id)->where('delivery_id', 'delivery-shared-1')->sole()->duplicate_count)->toBe(0)
+        ->and(WebhookReceipt::query()->forTenant((int) $beta->tenant_id)->where('delivery_id', 'delivery-shared-1')->sole()->duplicate_count)->toBe(0);
+});
+
+test('a delivery whose enqueue fails releases its receipt so the provider retry is processed', function (): void {
+    $connection = webhookConnection();
+    enableWebhookFor($connection);
+    Bus::fake();
+    $body = webhookBody();
+    $headers = webhookServerHeaders((int) $connection->id, $body, time(), deliveryId: 'delivery-retry-1');
+
+    // First arrival: the connection is retired between verification and
+    // enqueue is not reachable from outside, so the failure is simulated at
+    // the ledger: a receipt whose work throws must not survive.
+    $ledger = app(WebhookReceiptLedger::class);
+    expect(fn () => $ledger->acceptOnce((int) $connection->tenant_id, $connection, 'delivery-retry-1', fn () => throw new RuntimeException('queue down')))
+        ->toThrow(RuntimeException::class);
+    expect(WebhookReceipt::query()->forTenant((int) $connection->tenant_id)->count())->toBe(0);
+
+    $this->call('POST', "/webhooks/people-connector/{$connection->id}", server: $headers, content: $body)
+        ->assertAccepted()->assertJson(['queued' => true]);
+    Bus::assertDispatchedTimes(RunIncrementalWorkforceSync::class, 1);
+});
+
+test('a payload above the configured limit is refused before dispatch', function (): void {
+    $connection = webhookConnection();
+    enableWebhookFor($connection);
+    config()->set('people-connector.webhook.max_payload_bytes', 32);
+    Bus::fake();
+    $body = str_repeat('x', 33);
+
+    $this->call(
+        'POST',
+        "/webhooks/people-connector/{$connection->id}",
+        server: webhookServerHeaders((int) $connection->id, $body, time()),
+        content: $body,
+    )->assertStatus(413)->assertJson(['refused' => 'payload_too_large']);
+
+    Bus::assertNothingDispatched();
+});
+
+test('a signature made with a sibling connection secret is refused', function (): void {
+    $connection = webhookConnection('test.webhook.target');
+    $company = Company::factory()->create(['tenant_id' => $connection->tenant_id]);
+    $sibling = app(ProviderConnectionStore::class)->configure(
+        ProviderScope::company((int) $company->id),
+        'test.webhook.sibling',
+    );
+    $sibling = app(ProviderConnectionStore::class)->activate((int) $sibling->id);
+    enableWebhookFor($connection, 'target-secret');
+    config()->set('people-connector.webhook.secrets', [
+        $sibling->id => 'sibling-secret',
+        $connection->id => 'target-secret',
+    ]);
+    Bus::fake();
+    $body = webhookBody();
+
+    $this->call(
+        'POST',
+        "/webhooks/people-connector/{$connection->id}",
+        server: webhookServerHeaders((int) $connection->id, $body, time(), 'sibling-secret'),
+        content: $body,
+    )->assertForbidden()->assertJson(['refused' => 'invalid_signature']);
+
+    Bus::assertNothingDispatched();
+});
+
+test('during a rotation overlap deliveries signed with the old and the new secret are both accepted; after it, the old one is refused before dispatch', function (): void {
+    $connection = webhookConnection();
+    enableWebhookFor($connection);
+    config()->set("people-connector.webhook.secrets.{$connection->id}", [
+        ['secret' => 'new-secret'],
+        ['secret' => 'old-secret', 'expires_at' => '2026-09-07T11:00:00+00:00'],
+    ]);
+    Bus::fake();
+    $body = webhookBody();
+    $post = fn (string $secret, string $delivery) => $this->call('POST', "/webhooks/people-connector/{$connection->id}",
+        server: webhookServerHeaders((int) $connection->id, $body, now()->getTimestamp(), $secret, $delivery), content: $body);
+
+    $this->travelTo('2026-09-07 10:00:00');
+    $post('old-secret', 'delivery-old-1')->assertAccepted();
+    $post('new-secret', 'delivery-new-1')->assertAccepted();
+    $post('never-secret', 'delivery-never-1')->assertForbidden()->assertJson(['refused' => 'invalid_signature']);
+
+    $this->travelTo('2026-09-07 11:00:01');
+    $post('old-secret', 'delivery-old-2')->assertForbidden()->assertJson(['refused' => 'invalid_signature']);
+    $post('new-secret', 'delivery-new-2')->assertAccepted();
+
+    Bus::assertDispatchedTimes(RunIncrementalWorkforceSync::class, 3);
+});
+
+test('a malformed rotation list verifies nothing rather than something', function (): void {
+    $connection = webhookConnection();
+    enableWebhookFor($connection);
+    config()->set("people-connector.webhook.secrets.{$connection->id}", [['secret' => 'ok'], ['secret' => 'old', 'expires_at' => 'yesterday']]);
+    Bus::fake();
+    $body = webhookBody();
+
+    $this->call('POST', "/webhooks/people-connector/{$connection->id}", server: webhookServerHeaders((int) $connection->id, $body, time(), 'ok'), content: $body)
+        ->assertStatus(503)->assertJson(['refused' => 'unconfigured']);
     Bus::assertNothingDispatched();
 });

@@ -187,8 +187,8 @@ test('declared readable and writable ports resolve with their exact type after a
     expect($resolver->read($actor, $provider, PeopleCapability::EmployeeDirectory, TestEmployeeReader::class, $scope))->toBe($reader)
         ->and($resolver->write($actor, $provider, PeopleCapability::EmployeeDirectory, TestEmployeeWriter::class, $scope))->toBe($writer)
         ->and($authorization->authorized)->toBe([
-            'people-connector.provider.read.employee_directory',
-            'people-connector.provider.write.employee_directory',
+            'people-connector.provider.employee-directory.read',
+            'people-connector.provider.employee-directory.write',
         ]);
 });
 
@@ -243,14 +243,14 @@ test('a permission granted for one capability does not authorize another', funct
     {
         public function can(Actor $actor, string $capability, ?ResourceContext $resource = null, array $context = []): AuthorizationDecision
         {
-            return $capability === 'people-connector.provider.read.employee_directory'
+            return $capability === 'people-connector.provider.employee-directory.read'
                 ? AuthorizationDecision::allow()
                 : AuthorizationDecision::deny(AuthorizationReasonCode::DENIED_MISSING_CAPABILITY);
         }
 
         public function authorize(Actor $actor, string $capability, ?ResourceContext $resource = null, array $context = []): void
         {
-            if ($capability !== 'people-connector.provider.read.employee_directory') {
+            if ($capability !== 'people-connector.provider.employee-directory.read') {
                 throw new AuthorizationDeniedException(
                     AuthorizationDecision::deny(AuthorizationReasonCode::DENIED_MISSING_CAPABILITY),
                 );
@@ -259,7 +259,7 @@ test('a permission granted for one capability does not authorize another', funct
 
         public function filterAllowed(Actor $actor, string $capability, iterable $resources, array $context = []): Collection
         {
-            return $capability === 'people-connector.provider.read.employee_directory' ? collect($resources) : collect();
+            return $capability === 'people-connector.provider.employee-directory.read' ? collect($resources) : collect();
         }
     };
     app()->instance(AuthorizationService::class, $authorization);

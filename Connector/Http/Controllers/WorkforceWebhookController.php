@@ -7,7 +7,9 @@ use App\Domains\PeopleConnector\Connector\Exceptions\ConnectorRecordNotFoundExce
 use App\Domains\PeopleConnector\Connector\Exceptions\WebhookRefusal;
 use App\Domains\PeopleConnector\Connector\Jobs\RunIncrementalWorkforceSync;
 use App\Domains\PeopleConnector\Connector\Models\ProviderConnection;
+use App\Domains\PeopleConnector\Connector\Models\WebhookDelivery;
 use App\Domains\PeopleConnector\Connector\Services\TenantConnectionLocator;
+use App\Domains\PeopleConnector\Connector\Services\WebhookReceiptLedger;
 use App\Domains\PeopleConnector\Connector\Services\WorkforceWebhookVerifier;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -18,6 +20,7 @@ final class WorkforceWebhookController
         private readonly TenantContext $tenants,
         private readonly TenantConnectionLocator $connections,
         private readonly WorkforceWebhookVerifier $verifier,
+        private readonly WebhookReceiptLedger $receipts,
     ) {}
 
     public function __invoke(Request $request, int $connectionId): JsonResponse
@@ -39,16 +42,47 @@ final class WorkforceWebhookController
                 throw new WebhookRefusal('unknown_connection', 'The provider connection was not found.');
             }
 
+            $body = $request->getContent();
+            $deliveryId = $request->header(WorkforceWebhookVerifier::DELIVERY_HEADER);
+
             $this->verifier->verify(
                 $connectionId,
-                $request->getContent(),
+                $body,
                 $request->header(WorkforceWebhookVerifier::TIMESTAMP_HEADER),
+                $deliveryId,
                 $request->header(WorkforceWebhookVerifier::SIGNATURE_HEADER),
             );
 
-            RunIncrementalWorkforceSync::dispatch($tenantId, $connectionId);
+            // Idempotency ledger (#227): a delivery id this tenant already
+            // accepted from this provider is acknowledged and skipped, never
+            // run twice. The ledger row is the reservation.
+            $accepted = $this->receipts->acceptOnce(
+                $tenantId,
+                $connection,
+                (string) $deliveryId,
+                function () use ($tenantId, $connection, $connectionId, $deliveryId): void {
+                    // The row is the operator's handle for a replay (#223); it
+                    // records the trigger, never the provider's bytes.
+                    $delivery = WebhookDelivery::query()->create([
+                        'tenant_id' => $tenantId,
+                        'connection_id' => $connectionId,
+                        'delivery_id' => (string) $deliveryId,
+                        'status' => WebhookDelivery::STATUS_ACCEPTED,
+                        'received_at' => now(),
+                    ]);
+                    dispatch(RunIncrementalWorkforceSync::forDelivery($connection, (int) $delivery->id));
+                },
+            );
+
+            if (! $accepted) {
+                return new JsonResponse(['acknowledged' => true, 'skipped' => 'duplicate_delivery'], 200);
+            }
         } catch (ConnectorRecordNotFoundException|WebhookRefusal $refused) {
-            $status = $refused instanceof WebhookRefusal && $refused->reason === 'unconfigured' ? 503 : 403;
+            $status = match ($refused instanceof WebhookRefusal ? $refused->reason : null) {
+                'unconfigured' => 503,
+                'payload_too_large' => 413,
+                default => 403,
+            };
 
             return new JsonResponse(['refused' => $refused instanceof WebhookRefusal ? $refused->reason : 'unknown_connection'], $status);
         }

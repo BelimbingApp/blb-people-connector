@@ -9,6 +9,7 @@ use App\Domains\PeopleConnector\Connector\Contracts\ReadsWorkforceChanges;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceChangePage;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceChangeRequest;
 use App\Domains\PeopleConnector\Connector\Exceptions\ProviderValidationException;
+use App\Domains\PeopleConnector\Connector\Support\WorkforcePageChecksum;
 use App\Domains\PeopleConnector\FirstPartyPeople\Exceptions\ForeignProviderReferenceException;
 use App\Domains\PeopleConnector\FirstPartyPeople\FirstPartyPeopleAdapter;
 
@@ -36,12 +37,21 @@ final readonly class WorkforceChangePort implements ReadsWorkforceChanges
                 limit: $request->limit,
             ));
 
-            return new WorkforceChangePage(
+            $translated = new WorkforceChangePage(
                 changes: array_map($this->translator->change(...), $page->changes),
                 asOf: $page->asOf,
                 nextPageCursor: $page->nextPageCursor,
                 resumeCursor: $page->resumeCursor,
                 complete: $page->complete,
+            );
+
+            return new WorkforceChangePage(
+                changes: $translated->changes,
+                asOf: $translated->asOf,
+                nextPageCursor: $translated->nextPageCursor,
+                resumeCursor: $translated->resumeCursor,
+                complete: $translated->complete,
+                checksum: WorkforcePageChecksum::of($translated),
             );
         } catch (BlbDataContractException $exception) {
             throw new ProviderValidationException(

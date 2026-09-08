@@ -7,5 +7,6 @@ namespace App\Domains\PeopleConnector\Connector\Exceptions;
  * not match, an incremental pass was asked for before any bootstrap completed,
  * or the adapter's paging contradicted itself. Per-record problems are never
  * raised as this; they become reconciliation issues so the pass keeps going.
+ * A page refused whole (CorruptWorkforcePageException) is the one subtype.
  */
-final class WorkforceSyncException extends \RuntimeException {}
+class WorkforceSyncException extends \RuntimeException {}

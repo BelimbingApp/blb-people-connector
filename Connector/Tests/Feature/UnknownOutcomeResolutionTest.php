@@ -11,6 +11,11 @@ use App\Domains\PeopleConnector\Connector\Services\ReconciliationIssueStore;
 use App\Domains\PeopleConnector\Connector\Services\ReconciliationReviewService;
 use App\Domains\PeopleConnector\Connector\Services\UnknownOutcomeReporter;
 use App\Domains\PeopleConnector\Connector\Testing\CompanyIsolationContract;
+use Illuminate\Support\Facades\Date;
+
+beforeEach(fn () => Date::setTestNow('2026-09-06T08:00:00+00:00'));
+
+afterEach(fn () => Date::setTestNow());
 
 function unknownOutcomeIssue(string $key = 'idem-90'): array
 {

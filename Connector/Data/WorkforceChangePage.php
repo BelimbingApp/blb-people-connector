@@ -2,6 +2,13 @@
 
 namespace App\Domains\PeopleConnector\Connector\Data;
 
+use App\Domains\PeopleConnector\Connector\Support\WorkforcePageChecksum;
+
+/**
+ * `checksum`, when an adapter declares it, is WorkforcePageChecksum::of() over
+ * this page's records; the sync runner refuses the page before projection
+ * when the content does not fingerprint to it (#204).
+ */
 final readonly class WorkforceChangePage
 {
     /** @param list<WorkforceUpsert|WorkforceDeactivation|WorkforceMerge> $changes */
@@ -11,7 +18,11 @@ final readonly class WorkforceChangePage
         public ?string $nextPageCursor = null,
         public ?string $resumeCursor = null,
         public bool $complete = false,
+        public ?string $checksum = null,
     ) {
+        if ($checksum !== null && ! WorkforcePageChecksum::isWellFormed($checksum)) {
+            throw new \InvalidArgumentException('A declared workforce change page checksum must be a lowercase hex SHA-256.');
+        }
         foreach ($changes as $change) {
             if (! $change instanceof WorkforceUpsert
                 && ! $change instanceof WorkforceDeactivation

@@ -2,6 +2,13 @@
 
 namespace App\Domains\PeopleConnector\Connector\Data;
 
+use App\Domains\PeopleConnector\Connector\Support\WorkforcePageChecksum;
+
+/**
+ * `checksum`, when an adapter declares it, is WorkforcePageChecksum::of() over
+ * this page's records; the sync runner refuses the page before projection
+ * when the content does not fingerprint to it (#204).
+ */
 final readonly class WorkforcePage
 {
     /**
@@ -19,7 +26,11 @@ final readonly class WorkforcePage
         public array $companies = [],
         public array $organizationUnits = [],
         public array $positions = [],
+        public ?string $checksum = null,
     ) {
+        if ($checksum !== null && ! WorkforcePageChecksum::isWellFormed($checksum)) {
+            throw new \InvalidArgumentException('A declared workforce page checksum must be a lowercase hex SHA-256.');
+        }
         foreach ($employees as $employee) {
             if (! $employee instanceof WorkforceEmployee) {
                 throw new \InvalidArgumentException('Workforce pages accept only WorkforceEmployee values.');

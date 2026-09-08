@@ -8,10 +8,11 @@ use DateTimeImmutable;
 /**
  * Authenticates a provider callback without interpreting its payload.
  *
- * The connection id, timestamp and raw request bytes are the signed message.
- * Signing the connection id prevents a valid secret/message pair from being
- * replayed at another connection endpoint, while leaving projection parsing
- * entirely inside the normal provider pass.
+ * The connection id, timestamp, delivery id and raw request bytes are signed.
+ * Binding every routing and replay-control input to the signature keeps a valid
+ * callback from being moved to another connection or replayed under a new id.
+ * Whether a delivery id was already accepted is the receipt ledger's question
+ * (WebhookReceiptLedger, #227), not this verifier's.
  */
 final class WorkforceWebhookVerifier
 {
@@ -19,15 +20,28 @@ final class WorkforceWebhookVerifier
 
     public const SIGNATURE_HEADER = 'X-People-Connector-Signature';
 
+    public const DELIVERY_HEADER = 'X-People-Connector-Delivery';
+
     public function verify(
         int $connectionId,
         string $body,
         ?string $timestamp,
+        ?string $deliveryId,
         ?string $signature,
         ?DateTimeImmutable $now = null,
     ): void {
         $timestamp = trim((string) $timestamp);
+        $deliveryId = trim((string) $deliveryId);
         $signature = trim((string) $signature);
+
+        $maxPayloadBytes = config('people-connector.webhook.max_payload_bytes', 1048576);
+        if (! is_int($maxPayloadBytes) || $maxPayloadBytes < 1) {
+            throw new WebhookRefusal('unconfigured', 'Webhook verification is not configured.');
+        }
+
+        if (strlen($body) > $maxPayloadBytes) {
+            throw new WebhookRefusal('payload_too_large', 'The webhook payload exceeds the configured limit.');
+        }
 
         if (preg_match('/^[0-9]+$/', $timestamp) !== 1) {
             throw new WebhookRefusal('malformed_timestamp', 'The webhook timestamp is missing or malformed.');
@@ -38,13 +52,20 @@ final class WorkforceWebhookVerifier
             throw new WebhookRefusal('unconfigured', 'Webhook verification is not configured.');
         }
 
-        $now ??= new DateTimeImmutable;
+        if (preg_match('/^[\x21-\x7E]{1,128}$/D', $deliveryId) !== 1) {
+            throw new WebhookRefusal('malformed_delivery_id', 'The webhook delivery id is missing or malformed.');
+        }
+
+        $now ??= DateTimeImmutable::createFromInterface(now());
         if (abs($now->getTimestamp() - (int) $timestamp) > $tolerance) {
             throw new WebhookRefusal('stale_timestamp', 'The webhook timestamp is outside the allowed window.');
         }
 
-        $secret = config("people-connector.webhook.secrets.{$connectionId}");
-        if (! is_string($secret) || $secret === '') {
+        // One string or a rotation list (#247): every secret still inside its
+        // window is tried, so a provider switching secrets mid-overlap is
+        // accepted whichever one it signed with.
+        $secrets = WebhookSecrets::usable($connectionId, $now);
+        if ($secrets === []) {
             throw new WebhookRefusal('unconfigured', 'Webhook verification is not configured for this connection.');
         }
 
@@ -53,10 +74,15 @@ final class WorkforceWebhookVerifier
             throw new WebhookRefusal('invalid_signature', 'The webhook signature is invalid.');
         }
 
-        $message = $connectionId."\n".$timestamp."\n".$body;
-        $expected = hash_hmac('sha256', $message, $secret);
+        $message = $connectionId."\n".$timestamp."\n".$deliveryId."\n".$body;
+        $matched = false;
+        foreach ($secrets as $secret) {
+            // Every candidate is compared, constant-time each, with no early
+            // exit: the number of secrets, not which one matched, sets the time.
+            $matched = hash_equals(hash_hmac('sha256', $message, $secret), strtolower($signature)) || $matched;
+        }
 
-        if (! hash_equals($expected, strtolower($signature))) {
+        if (! $matched) {
             throw new WebhookRefusal('invalid_signature', 'The webhook signature is invalid.');
         }
     }
