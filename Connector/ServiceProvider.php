@@ -4,6 +4,8 @@ namespace App\Domains\PeopleConnector\Connector;
 
 use App\Domains\People\Provider\Contracts\ResolvesWorkforceSubjects;
 use App\Domains\People\Provider\Data\ExternalReference as PeopleExternalReference;
+use App\Domains\PeopleConnector\Connector\Console\Commands\BackupRestoreApplyCommand;
+use App\Domains\PeopleConnector\Connector\Console\Commands\BackupRestoreRehearsalCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\BenchSyncCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\CapabilityVerifyCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\ConnectionHealthCheckCommand;
@@ -30,10 +32,14 @@ use App\Domains\PeopleConnector\Connector\Console\Commands\WebhookSecretRotateCo
 use App\Domains\PeopleConnector\Connector\Console\Commands\WorkforceSubjectExportCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\WorkforceSubjectImportCommand;
 use App\Domains\PeopleConnector\Connector\Contracts\AcceptsDelegatedCommands;
+use App\Domains\PeopleConnector\Connector\Contracts\PublishesBackupRestorePackage;
+use App\Domains\PeopleConnector\Connector\Contracts\RestoresBackupRestorePackage;
+use App\Domains\PeopleConnector\Connector\Services\BackupRestorePackagePublisher;
 use App\Domains\PeopleConnector\Connector\Services\DelegatedCommandPort;
 use App\Domains\PeopleConnector\Connector\Services\ProjectionWorkforceSubjectResolver;
 use App\Domains\PeopleConnector\Connector\Services\ProviderHealthStore;
 use App\Domains\PeopleConnector\Connector\Services\ProviderRegistry;
+use App\Domains\PeopleConnector\Connector\Services\ScratchRestoreProcess;
 use App\Domains\PeopleConnector\Connector\Services\WorkforceFreshnessPolicy;
 use Illuminate\Console\Scheduling\Schedule;
 use Illuminate\Contracts\Foundation\Application;
@@ -79,11 +85,15 @@ class ServiceProvider extends BaseServiceProvider
         // Not a singleton: the port injects the scoped TenantContext, which
         // Octane discards across the request boundary a singleton survives.
         $this->app->bind(AcceptsDelegatedCommands::class, DelegatedCommandPort::class);
+        $this->app->bind(PublishesBackupRestorePackage::class, BackupRestorePackagePublisher::class);
+        $this->app->bind(RestoresBackupRestorePackage::class, ScratchRestoreProcess::class);
         $this->app->singleton(ProviderRegistry::class);
         $this->app->singleton(ProviderHealthStore::class);
 
         if ($this->app->runningInConsole()) {
             $this->commands([
+                BackupRestoreApplyCommand::class,
+                BackupRestoreRehearsalCommand::class,
                 BenchSyncCommand::class,
                 CutoverRehearsalCommand::class,
                 FileExchangeDiscoverCommand::class,

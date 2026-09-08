@@ -2,9 +2,10 @@
 
 namespace App\Domains\PeopleConnector\Connector\Models;
 
+use App\Domains\PeopleConnector\Connector\Contracts\RefusesDeletion;
 use App\Domains\PeopleConnector\Connector\Exceptions\AppendOnlyRecordException;
 
-final class RetentionPurgeAudit extends TenantOwnedModel
+final class RetentionPurgeAudit extends TenantOwnedModel implements RefusesDeletion
 {
     public const UPDATED_AT = null;
 

@@ -6,7 +6,15 @@
             "notes": "Positions have no PeopleCapability case; People's ReadsWorkforcePositions travels under organization_directory on the bootstrap page (connector #299)."
         },
         "hr2000.sbg": {
-            "verified": []
+            "verified": [
+                {
+                    "capability": "employee_directory",
+                    "evidence": "Connector/Tests/Fixtures/hr2000-employee-sample.csv and Connector/Tests/Feature/Hr2000ImportDryRunTest.php",
+                    "verified_at": "2026-09-07T18:23:48Z",
+                    "verified_by": "BelimbingApp/blb-people-connector#277"
+                }
+            ],
+            "notes": "Verified for candidate-1 CSV dry-run inspection only. Applying rows to projections and every provider write remain unsupported."
         }
     }
 }

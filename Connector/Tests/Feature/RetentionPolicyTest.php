@@ -8,13 +8,18 @@ use App\Base\Authz\Enums\AuthorizationReasonCode;
 use App\Base\Authz\Enums\PrincipalType;
 use App\Base\Tenancy\Contracts\TenantContext;
 use App\Core\User\Models\User;
+use App\Domains\PeopleConnector\Connector\Contracts\RefusesDeletion;
 use App\Domains\PeopleConnector\Connector\Data\ProviderScope;
 use App\Domains\PeopleConnector\Connector\Data\ReconciliationIssueDetails;
 use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
 use App\Domains\PeopleConnector\Connector\Exceptions\ProviderAuthorizationException;
 use App\Domains\PeopleConnector\Connector\Exceptions\RetentionPolicyException;
 use App\Domains\PeopleConnector\Connector\Models\DomainModels;
+use App\Domains\PeopleConnector\Connector\Models\FileExchangeRecord;
+use App\Domains\PeopleConnector\Connector\Models\OperatorAudit;
 use App\Domains\PeopleConnector\Connector\Models\RetentionPurgeAudit;
+use App\Domains\PeopleConnector\Connector\Models\SyncCheckpointEvent;
+use App\Domains\PeopleConnector\Connector\Models\WorkforceSnapshot;
 use App\Domains\PeopleConnector\Connector\Services\ProviderConnectionStore;
 use App\Domains\PeopleConnector\Connector\Services\ReconciliationIssueStore;
 use App\Domains\PeopleConnector\Connector\Services\RetentionPolicy;
@@ -135,6 +140,40 @@ function retentionConfigureComplete(array $overrides): void
 
     retentionConfigure([...$base, ...$overrides]);
 }
+
+dataset('append-only connector evidence tables', [
+    'file exchanges' => [FileExchangeRecord::class, 'recorded_at'],
+    'operator audits' => [OperatorAudit::class, 'occurred_at'],
+    'retention purge audits' => [RetentionPurgeAudit::class, 'executed_at'],
+    'sync checkpoint events' => [SyncCheckpointEvent::class, 'completed_at'],
+    'workforce snapshots' => [WorkforceSnapshot::class, 'observed_at'],
+]);
+
+test('finite retention is refused for every append-only evidence table before a purge can write', function (string $model, string $column): void {
+    $f = retentionTenant('Append-only Retention '.class_basename($model));
+    retentionAuthz(true);
+    $table = (new $model)->getTable();
+    retentionConfigureComplete([$table => ['days' => 1, 'column' => $column]]);
+    $before = [
+        $table => DB::table($table)->where('tenant_id', $f['tenantId'])->count(),
+        'purge_audits' => RetentionPurgeAudit::query()->forTenant($f['tenantId'])->count(),
+    ];
+    $refusal = null;
+
+    try {
+        $reviewedAt = new DateTimeImmutable('2026-09-06T12:00:00+00:00');
+        $report = app(RetentionPolicy::class)->review($f['actor'], $reviewedAt);
+        app(RetentionPurger::class)->purge($f['actor'], $report, $reviewedAt);
+    } catch (RetentionPolicyException $exception) {
+        $refusal = $exception;
+    }
+
+    expect(is_subclass_of($model, RefusesDeletion::class))->toBeTrue()
+        ->and($refusal)->toBeInstanceOf(RetentionPolicyException::class)
+        ->and($refusal?->getMessage())->toContain('append-only')
+        ->and(DB::table($table)->where('tenant_id', $f['tenantId'])->count())->toBe($before[$table])
+        ->and(RetentionPurgeAudit::query()->forTenant($f['tenantId'])->count())->toBe($before['purge_audits']);
+})->with('append-only connector evidence tables');
 
 test('the report counts only the rows past retention for a configured table', function (): void {
     $f = retentionTenant('Retention Counting Tenant');
