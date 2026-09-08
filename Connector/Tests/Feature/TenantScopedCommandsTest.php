@@ -73,6 +73,7 @@ function connectorTenantScopedArguments(string $name): array
         'connector:webhook:secret:rotate' => ['connection' => 1],
         'people-connector:subject-export' => ['entity' => 1],
         'connector:identity-import' => ['package' => 'none'],
+        'connector:connection:residue' => ['connection' => 1],
         default => [],
     };
 }
