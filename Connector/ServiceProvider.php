@@ -10,6 +10,7 @@ use App\Domains\PeopleConnector\Connector\Console\Commands\BenchSyncCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\CapabilityVerifyCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\ConnectionHealthCheckCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\ConnectionMaintenanceCommand;
+use App\Domains\PeopleConnector\Connector\Console\Commands\ConnectionResidueCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\ConnectorDoctorCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\CutoverRehearsalCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\EgressProbeCommand;
@@ -100,6 +101,7 @@ class ServiceProvider extends BaseServiceProvider
                 CapabilityVerifyCommand::class,
                 ConnectionHealthCheckCommand::class,
                 ConnectionMaintenanceCommand::class,
+                ConnectionResidueCommand::class,
                 FileExchangeArchiveCommand::class,
                 FileExchangeListCommand::class,
                 FileExchangeQuarantineCommand::class,

@@ -22,6 +22,7 @@ enum OperatorAuditOperation: string
     case FileExchangeDiscovered = 'file_exchange.discovered';
     case FileExchangeQuarantined = 'file_exchange.quarantined';
     case FileExchangeArchived = 'file_exchange.archived';
+    case ConnectionResidueReported = 'connection.residue_reported';
 
     public function label(): string
     {
@@ -43,6 +44,7 @@ enum OperatorAuditOperation: string
             self::FileExchangeDiscovered => 'Inbound file exchange directory discovered',
             self::FileExchangeQuarantined => 'File exchange record quarantined',
             self::FileExchangeArchived => 'File exchange record archived',
+            self::ConnectionResidueReported => 'Connection residue reported',
         };
     }
 }
