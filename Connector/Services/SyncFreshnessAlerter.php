@@ -46,6 +46,14 @@ final class SyncFreshnessAlerter
             return null;
         }
 
+        // Stale (maintenance) is expected while the window holds (#264): no new
+        // issue, and an issue already open stays as it is for the pass after
+        // the window to clear.
+        if ($freshness->staleReason === WorkforceFreshness::REASON_MAINTENANCE) {
+            return $this->issues->openForConnection($connectionId)
+                ->first(static fn (ReconciliationIssue $issue): bool => $issue->kind === self::ISSUE_KIND);
+        }
+
         return $this->issues->report(
             $connectionId,
             $this->breachWindowKey($connectionId, $freshness),

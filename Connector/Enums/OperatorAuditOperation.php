@@ -7,6 +7,7 @@ enum OperatorAuditOperation: string
 {
     case SyncPass = 'sync.pass';
     case ConnectionRetired = 'connection.retired';
+    case ConnectionMaintenance = 'connection.maintenance';
     case IdentitiesRemapped = 'provider.identities_remapped';
     case IdentitiesRemapRolledBack = 'provider.identities_remap_rolled_back';
     case CutoverRehearsed = 'cutover.rehearsed';
@@ -18,6 +19,7 @@ enum OperatorAuditOperation: string
     case WebhookSecretRotated = 'webhook.secret_rotated';
     case SupportBundled = 'support.bundled';
     case FileExchangeRecorded = 'file_exchange.recorded';
+    case FileExchangeDiscovered = 'file_exchange.discovered';
     case FileExchangeQuarantined = 'file_exchange.quarantined';
     case FileExchangeArchived = 'file_exchange.archived';
 
@@ -26,6 +28,7 @@ enum OperatorAuditOperation: string
         return match ($this) {
             self::SyncPass => 'Workforce sync pass',
             self::ConnectionRetired => 'Connection retired',
+            self::ConnectionMaintenance => 'Connection maintenance window changed',
             self::IdentitiesRemapped => 'Identities remapped to a replacement connection',
             self::IdentitiesRemapRolledBack => 'Identity remap rolled back to the source connection',
             self::CutoverRehearsed => 'Cutover rehearsed',
@@ -37,6 +40,7 @@ enum OperatorAuditOperation: string
             self::WebhookSecretRotated => 'Webhook signing secret rotated',
             self::SupportBundled => 'Support bundle written',
             self::FileExchangeRecorded => 'File exchange record written',
+            self::FileExchangeDiscovered => 'Inbound file exchange directory discovered',
             self::FileExchangeQuarantined => 'File exchange record quarantined',
             self::FileExchangeArchived => 'File exchange record archived',
         };

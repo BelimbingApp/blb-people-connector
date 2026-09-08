@@ -13,7 +13,9 @@ use App\Domains\PeopleConnector\Connector\Exceptions\ProviderAuthorizationExcept
 use App\Domains\PeopleConnector\Connector\Jobs\RunIncrementalWorkforceSync;
 use App\Domains\PeopleConnector\Connector\Models\ExternalIdentity;
 use App\Domains\PeopleConnector\Connector\Models\ProviderConnection;
+use App\Domains\PeopleConnector\Connector\Models\ProviderCredentialRecord;
 use App\Domains\PeopleConnector\Connector\Models\ReconciliationIssue;
+use App\Domains\PeopleConnector\Connector\Models\WebhookDelivery;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceEntity;
 use App\Domains\PeopleConnector\Connector\Testing\ProviderConformance;
 use Illuminate\Support\Facades\DB;
@@ -44,6 +46,12 @@ final class ConnectorDoctor
             $this->row('adapter_conformance', count($adapterViolations), count($adapterViolations).' violations across '.$adapterCount.' configured'.($adapterViolations === [] ? '' : ': '.implode(', ', $adapterViolations))),
             $this->row('webhook_deliveries', $stale, $staleDetail),
             $this->row('reconciliation_drift', $drift, "{$drift} open"),
+            // A delivery whose retry budget ended left the queue, so the row
+            // above gets greener as it fails (#271); this one counts it until
+            // an operator replays it. Parked pages are the subset of open
+            // issues that means a stuck feed, counted apart from the total.
+            $this->webhookDeadLetters($tenantId),
+            $this->syncDeadLetters($tenantId),
             $this->row('identity_mappings', $unresolved, "{$unresolved} unresolved"),
             // A receipt with no delivery behind it is a reservation whose enqueue
             // never ran; its retry is acknowledged as a duplicate, so this row is
@@ -61,7 +69,72 @@ final class ConnectorDoctor
             // a rotation nobody finished is invisible until tokens minted
             // before it start being refused.
             $this->delegationSecretOverlap(),
+            // Yellow while a connection is inside a planned maintenance window
+            // (#264): the pause is an operator's decision, not a fault.
+            $this->maintenance($tenantId),
+            // One row per active connection (#296): the only failure knowable
+            // weeks ahead, so it gets a warning window and its own alert key.
+            ...$this->credentialExpiry($tenantId),
         ]);
+    }
+
+    /**
+     * Provider credential expiry, one row per active connection of the tenant.
+     *
+     * Red when no usable credential exists right now (expired, revoked, or
+     * never issued), yellow when the latest usable one expires inside
+     * `people-connector.doctor.credential_warning_days`, green otherwise. The
+     * detail names the credential id, key id and expiry and never the secret
+     * reference (docs/contracts/diagnostic-privacy.md). Inactive and retired
+     * connections have no row: nothing authenticates as them.
+     *
+     * @return list<array{check: string, status: string, count: int, detail: string}>
+     */
+    public function credentialExpiry(int $tenantId): array
+    {
+        $now = \DateTimeImmutable::createFromInterface(now());
+        $warning = $now->modify('+'.self::credentialWarningDays().' days');
+        $rows = [];
+
+        $connectionIds = ProviderConnection::query()->forTenant($tenantId)
+            ->where('status', ProviderConnection::STATUS_ACTIVE)
+            ->orderBy('id')
+            ->pluck('id');
+
+        foreach ($connectionIds as $connectionId) {
+            $check = 'provider_credential_expiry:'.(int) $connectionId;
+            $credential = ProviderCredentialRecord::query()
+                ->forTenant($tenantId)
+                ->where('connection_id', (int) $connectionId)
+                ->whereNull('revoked_at')
+                ->where('issued_at', '<=', $now)
+                ->where('expires_at', '>', $now)
+                ->orderByDesc('expires_at')
+                ->orderByDesc('id')
+                ->first(['credential_id', 'key_id', 'expires_at']);
+
+            if ($credential === null) {
+                $rows[] = ['check' => $check, 'status' => 'red', 'count' => 1, 'detail' => 'no usable credential'];
+
+                continue;
+            }
+
+            $expiresAt = \DateTimeImmutable::createFromInterface($credential->expires_at);
+            $detail = "credential {$credential->credential_id} key {$credential->key_id} expires ".$expiresAt->format(DATE_ATOM);
+
+            $rows[] = $expiresAt <= $warning
+                ? ['check' => $check, 'status' => 'yellow', 'count' => 1, 'detail' => $detail.' (inside the '.self::credentialWarningDays().'-day warning window)']
+                : ['check' => $check, 'status' => 'green', 'count' => 0, 'detail' => $detail];
+        }
+
+        return $rows;
+    }
+
+    public static function credentialWarningDays(): int
+    {
+        $days = config('people-connector.doctor.credential_warning_days');
+
+        return is_int($days) && $days >= 0 ? $days : 14;
     }
 
     public function record(Actor $actor, ?\DateTimeImmutable $measuredAt = null): ConnectorDoctorReport
@@ -181,6 +254,42 @@ final class ConnectorDoctor
         return $job instanceof RunIncrementalWorkforceSync ? $job->tenantId : null;
     }
 
+    /**
+     * Dead-lettered deliveries nobody has replayed yet. A replay keeps the
+     * original row and points at it through `replayed_from_id`, so the
+     * count drops when the replay is created, not when it completes: the
+     * new pass is watched by the queue-based `webhook_deliveries` row.
+     *
+     * @return array{check: string, status: string, count: int, detail: string}
+     */
+    private function webhookDeadLetters(int $tenantId): array
+    {
+        $deliveries = (new WebhookDelivery)->getTable();
+        $unreplayed = WebhookDelivery::query()->forTenant($tenantId)
+            ->where('status', WebhookDelivery::STATUS_DEAD_LETTERED)
+            ->whereNotExists(fn ($query) => $query->from("{$deliveries} as replay")
+                ->whereColumn('replay.replayed_from_id', "{$deliveries}.id")
+                ->whereColumn('replay.tenant_id', "{$deliveries}.tenant_id"));
+        $count = (clone $unreplayed)->count();
+        $oldest = $count === 0 ? null : $unreplayed->orderBy('failed_at')->orderBy('id')->first()?->failed_at;
+
+        return $this->row('webhook_dead_letters', $count, $count === 0
+            ? '0 dead-lettered'
+            : "{$count} dead-lettered, oldest failed_at ".($oldest?->format(DATE_ATOM) ?? 'unknown'));
+    }
+
+    /** @return array{check: string, status: string, count: int, detail: string} */
+    private function syncDeadLetters(int $tenantId): array
+    {
+        $parked = ReconciliationIssue::query()->forTenant($tenantId)
+            ->where('status', ReconciliationIssue::STATUS_OPEN)
+            ->where('kind', WorkforceSyncRunner::ISSUE_KIND_DEAD_LETTER);
+        $count = (clone $parked)->count();
+        $connections = $count === 0 ? 0 : (clone $parked)->distinct()->count('connection_id');
+
+        return $this->row('sync_dead_letters', $count, "{$count} parked pages across {$connections} connections");
+    }
+
     private function unresolvedMappings(int $tenantId): int
     {
         $identities = (new ExternalIdentity)->getTable();
@@ -255,6 +364,24 @@ final class ConnectorDoctor
         return DelegationPolicy::previousSecretAcceptedAt(\DateTimeImmutable::createFromInterface(now()))
             ? $row('yellow', 1, 'previous delegation secret accepted until '.$expiresAt->format(DATE_ATOM))
             : $row('red', 1, 'previous delegation secret lapsed at '.$expiresAt->format(DATE_ATOM));
+    }
+
+    /** @return array{check: string, status: string, count: int, detail: string} */
+    private function maintenance(int $tenantId): array
+    {
+        $windows = ProviderConnection::query()->forTenant($tenantId)
+            ->where('maintenance_until', '>', now())
+            ->orderByDesc('maintenance_until')
+            ->get(['id', 'maintenance_until']);
+        $count = $windows->count();
+        $latest = $windows->first()?->maintenance_until;
+
+        return [
+            'check' => 'connection_maintenance',
+            'status' => $count === 0 ? 'green' : 'yellow',
+            'count' => $count,
+            'detail' => $count === 0 ? '0 in maintenance' : "{$count} in maintenance, latest window ends {$latest->format(DATE_ATOM)}",
+        ];
     }
 
     private function row(string $check, int $failures, string $detail): array

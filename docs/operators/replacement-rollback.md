@@ -53,6 +53,26 @@ cannot be reversed twice. An audit id from another tenant is not found.
    #184). Do not run a sync pass on it until the mapping is confirmed: the
    first pass that observes a handed-over identity closes the rollback window
    for it.
+
+   The rehearsal now reconciles counts as well as mappings. Alongside the three
+   older checks it prints, per company and per resource type, how many live
+   employees, organization units and positions each side can answer for, and
+   refuses to exit zero while the two disagree. Mapping every identity says the
+   two providers can name the same people; it says nothing about the target
+   holding an organization unit nobody told it about, or an extra active
+   position the source retired. `--json` carries the same rows under `counts`
+   for a deployment script to read.
+
+   The source's side of that count includes the people it has already handed to
+   this target, because a remap is what retires a source identity — counting
+   only what is still live on the source would report every ready cutover as
+   holding nobody. A handover to some *other* connection is not counted: those
+   people are not the ones this switch is about to move.
+
+   A mismatch is a question, not a verdict. Find out which side is wrong before
+   you flip: a short target usually means a sync pass the new provider has not
+   run, and a long one usually means it is reporting somebody the source had
+   already retired.
 3. Wrong mapping? Roll back with this command, fix the review sheet, remap.
 4. Right mapping? Sync, then retire the source. After that there is no way
    back short of a new replacement in the other direction.

@@ -9,11 +9,13 @@ use Throwable;
  * A verified provider callback and the fate of the sync pass it triggered.
  *
  * `accepted` means the pass is queued, `delivered` that it completed,
- * `failed` that its latest retryable attempt threw, and `dead_lettered` that
- * the connection's retry budget ended. Failures keep a reason code and the
- * exception class, never the message. Failed and dead-lettered deliveries can
- * be replayed (WebhookDeliveryReplayer); the replay is a new row whose
- * `replayed_from_id` names this one.
+ * `failed` that its latest retryable attempt threw, `dead_lettered` that
+ * the connection's retry budget ended, and `deferred` that the connection
+ * was in a maintenance window (#264) so the pass was held without spending
+ * an attempt. Failures keep a reason code and the exception class, never the
+ * message. Failed, dead-lettered and deferred deliveries can be replayed
+ * (WebhookDeliveryReplayer); the replay is a new row whose `replayed_from_id`
+ * names this one.
  */
 final class WebhookDelivery extends TenantOwnedModel
 {
@@ -25,6 +27,14 @@ final class WebhookDelivery extends TenantOwnedModel
 
     public const STATUS_DEAD_LETTERED = 'dead_lettered';
 
+    public const STATUS_DEFERRED = 'deferred';
+
+    /** @return list<string> Statuses a replay may start from. */
+    public static function replayableStatuses(): array
+    {
+        return [self::STATUS_FAILED, self::STATUS_DEAD_LETTERED, self::STATUS_DEFERRED];
+    }
+
     protected $table = 'people_connector_connector_webhook_deliveries';
 
     public function markDelivered(): void
@@ -35,6 +45,16 @@ final class WebhookDelivery extends TenantOwnedModel
             'failure_reason' => null,
             'failure_class' => null,
             'delivered_at' => now(),
+        ])->save();
+    }
+
+    /** Held by a maintenance window: no attempt spent, nothing failed. */
+    public function markDeferred(): void
+    {
+        $this->forceFill([
+            'status' => self::STATUS_DEFERRED,
+            'failure_reason' => null,
+            'failure_class' => null,
         ])->save();
     }
 
