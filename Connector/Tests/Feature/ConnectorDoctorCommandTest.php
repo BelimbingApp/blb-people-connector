@@ -240,7 +240,16 @@ test('connector doctor records every run and lists only this tenants latest snap
 });
 
 test('every check the doctor returns has a row in the operator doc', function (): void {
-    [$tenantId, , $operator] = doctorTenant('Doctor Doc Tenant');
+    [$tenantId, $companyId, $operator] = doctorTenant('Doctor Doc Tenant');
+    // An active connection, or the per-connection rows never appear and this
+    // guard cannot see the prefixes it exists to check (#284, #296).
+    app(TenantContext::class)->set($tenantId);
+    app(ProviderRegistry::class)->register(app(FirstPartyPeopleAdapter::class));
+    $connections = app(ProviderConnectionStore::class);
+    $connection = $connections->activate((int) $connections->configure(ProviderScope::company($companyId), FirstPartyPeopleAdapter::ID)->id);
+    doctorCredential($tenantId, (int) $connection->id, FirstPartyPeopleAdapter::ID);
+    doctorCheckpoint((int) $connection->id);
+
     $doc = file_get_contents(dirname(__DIR__, 3).'/docs/operators/connector-doctor.md');
     expect($doc)->toBeString();
 
@@ -248,7 +257,8 @@ test('every check the doctor returns has a row in the operator doc', function ()
     $keys = collect(doctorCheckNames($tenantId, $operator))
         ->map(fn (string $check): string => strstr($check, ':', true) ?: $check)
         ->unique();
-    expect($keys)->not->toBeEmpty();
+    expect($keys)->not->toBeEmpty()
+        ->and($keys)->toContain('provider_credential_expiry', 'workforce_freshness');
     $undocumented = $keys->reject(fn (string $key): bool => preg_match('/^\| `'.preg_quote($key, '/').'` \|/m', $doc) === 1)->values()->all();
     expect($undocumented)->toBe([]);
 });

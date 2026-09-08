@@ -53,6 +53,7 @@ rows). A test fails when a check is added without a row here (#320 / #300):
 | `sync_dead_letters` | an open reconciliation issue of kind `sync_dead_letter` parks a feed page (#271) | subset of `reconciliation_drift` that means a stuck feed |
 | `connection_maintenance` | never | yellow with the count of connections inside a planned maintenance window (#264) |
 | `provider_credential_expiry` | no usable provider credential, or (yellow) inside the warning window (#296) | one row per active connection as `provider_credential_expiry:<id>` |
+| `workforce_freshness` | `WorkforceFreshnessPolicy` calls the connection stale (#284) | one row per active connection as `workforce_freshness:<id>`; detail carries the reason code and the age |
 
 The table reports adapter conformance for every configured provider, queued
 webhook-triggered syncs older than one hour, open reconciliation drift,
