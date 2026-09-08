@@ -7,6 +7,7 @@ use App\Base\Tenancy\Console\TenantScopedCommand;
 use App\Base\Tenancy\Contracts\TenantContext;
 use App\Core\User\Models\User;
 use App\Domains\PeopleConnector\Connector\Data\RetentionTableReport;
+use App\Domains\PeopleConnector\Connector\Data\SupplementalTableReport;
 use App\Domains\PeopleConnector\Connector\Exceptions\ProviderAuthorizationException;
 use App\Domains\PeopleConnector\Connector\Exceptions\RetentionPolicyException;
 use App\Domains\PeopleConnector\Connector\Services\RetentionPolicy;
@@ -62,6 +63,18 @@ final class RetentionReportCommand extends TenantScopedCommand
             ], array_values($report->tables)),
         );
         $this->line("Rows past retention: {$report->totalExpired()}. Nothing was deleted.");
+
+        if ($report->supplemental !== []) {
+            $this->line('Supplemental tables (Skills and Training): never purged, not bound to a connection.');
+            $this->table(
+                ['Table', 'Retention', 'Rows'],
+                array_map(static fn (SupplementalTableReport $t): array => [
+                    $t->table,
+                    'indefinite',
+                    (string) $t->rows,
+                ], array_values($report->supplemental)),
+            );
+        }
 
         return self::SUCCESS;
     }

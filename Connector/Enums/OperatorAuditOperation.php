@@ -20,6 +20,8 @@ enum OperatorAuditOperation: string
     case SupportBundled = 'support.bundled';
     case FileExchangeRecorded = 'file_exchange.recorded';
     case FileExchangeDiscovered = 'file_exchange.discovered';
+    case FileExchangeQuarantined = 'file_exchange.quarantined';
+    case FileExchangeArchived = 'file_exchange.archived';
     case ConnectionResidueReported = 'connection.residue_reported';
 
     public function label(): string
@@ -40,6 +42,8 @@ enum OperatorAuditOperation: string
             self::SupportBundled => 'Support bundle written',
             self::FileExchangeRecorded => 'File exchange record written',
             self::FileExchangeDiscovered => 'Inbound file exchange directory discovered',
+            self::FileExchangeQuarantined => 'File exchange record quarantined',
+            self::FileExchangeArchived => 'File exchange record archived',
             self::ConnectionResidueReported => 'Connection residue reported',
         };
     }

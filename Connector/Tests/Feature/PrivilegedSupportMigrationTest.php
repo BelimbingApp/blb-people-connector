@@ -35,11 +35,11 @@ afterEach(function (): void {
     DB::statement('DROP SCHEMA "'.$this->privilegedSupportMigrationSchema.'" CASCADE');
 });
 
-function privilegedSupportMigrationFunctionExists(string $schema): bool
+function privilegedSupportMigrationFunctionExists(string $schema, string $function): bool
 {
     return DB::scalar(
         'SELECT to_regprocedure(?) IS NOT NULL',
-        [$schema.'.people_connector_support_action_immutable()'],
+        [$schema.'.'.$function],
     );
 }
 
@@ -53,7 +53,9 @@ test('rebuild can recreate support tables while the PostgreSQL guard function re
         ->toBeTrue()
         ->and(Schema::hasTable('people_connector_connector_privileged_support_actions'))
         ->toBeTrue()
-        ->and(privilegedSupportMigrationFunctionExists($schema))
+        ->and(privilegedSupportMigrationFunctionExists($schema, 'people_connector_support_action_immutable()'))
+        ->toBeTrue()
+        ->and(privilegedSupportMigrationFunctionExists($schema, 'people_connector_support_grant_immutable()'))
         ->toBeTrue();
 
     Schema::drop('people_connector_connector_privileged_support_actions');
@@ -63,7 +65,9 @@ test('rebuild can recreate support tables while the PostgreSQL guard function re
         ->toBeFalse()
         ->and(Schema::hasTable('people_connector_connector_privileged_support_actions'))
         ->toBeFalse()
-        ->and(privilegedSupportMigrationFunctionExists($schema))
+        ->and(privilegedSupportMigrationFunctionExists($schema, 'people_connector_support_action_immutable()'))
+        ->toBeTrue()
+        ->and(privilegedSupportMigrationFunctionExists($schema, 'people_connector_support_grant_immutable()'))
         ->toBeTrue();
 
     DB::transaction(fn () => $migration->up());
@@ -72,6 +76,8 @@ test('rebuild can recreate support tables while the PostgreSQL guard function re
         ->toBeTrue()
         ->and(Schema::hasTable('people_connector_connector_privileged_support_actions'))
         ->toBeTrue()
-        ->and(privilegedSupportMigrationFunctionExists($schema))
+        ->and(privilegedSupportMigrationFunctionExists($schema, 'people_connector_support_action_immutable()'))
+        ->toBeTrue()
+        ->and(privilegedSupportMigrationFunctionExists($schema, 'people_connector_support_grant_immutable()'))
         ->toBeTrue();
 });

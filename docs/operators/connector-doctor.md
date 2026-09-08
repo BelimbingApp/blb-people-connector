@@ -53,6 +53,7 @@ rows). A test fails when a check is added without a row here (#320 / #300):
 | `sync_dead_letters` | an open reconciliation issue of kind `sync_dead_letter` parks a feed page (#271) | subset of `reconciliation_drift` that means a stuck feed |
 | `connection_maintenance` | never | yellow with the count of connections inside a planned maintenance window (#264) |
 | `provider_credential_expiry` | no usable provider credential, or (yellow) inside the warning window (#296) | one row per active connection as `provider_credential_expiry:<id>` |
+| `workforce_freshness` | `WorkforceFreshnessPolicy` calls the connection stale (#284) | one row per active connection as `workforce_freshness:<id>`; detail carries the reason code and the age |
 
 The table reports adapter conformance for every configured provider, queued
 webhook-triggered syncs older than one hour, open reconciliation drift,
@@ -108,6 +109,15 @@ credential as it issues the new one); `connector:webhook:secret:rotate` is the
 webhook signing secret, not this. Because `--record` writes one snapshot per
 row, `--alert` covers expiry with no further configuration, keyed by the same
 `provider_credential_expiry:<id>` name.
+
+Then one `workforce_freshness:<connection id>` row per active connection
+(#284): red when `WorkforceFreshnessPolicy` says the connection is stale, with
+the reason code in the detail (`never_synchronized`, or `exceeded_max_age`
+with the age and the configured maximum in minutes), green with the age
+alone. Inactive and retired connections have no row: their staleness is a
+decision already taken. Because the row is a check like any other, `--alert`
+covers sync lag: two consecutive stale snapshots send one alert naming the
+connection, and the next fresh checkpoint sends the recovery.
 Yellow does not fail the doctor; only red does. A provider without an active connection is red because its
 ports cannot be exercised. Any red row makes the command exit non-zero. Use
 `--json` for automation.

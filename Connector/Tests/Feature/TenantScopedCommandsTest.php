@@ -74,6 +74,8 @@ function connectorTenantScopedArguments(string $name): array
         'people-connector:subject-export' => ['entity' => 1],
         'connector:identity-import' => ['package' => 'none'],
         'connector:connection:residue' => ['connection' => 1],
+        'connector:file-exchange:quarantine' => ['record' => 1],
+        'connector:file-exchange:archive' => ['record' => 1],
         default => [],
     };
 }

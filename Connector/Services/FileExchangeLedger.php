@@ -170,9 +170,15 @@ final class FileExchangeLedger
         DB::transaction(function () use ($record, $status, $reason, $actor, $before): void {
             $record->forceFill(['status' => $status, 'status_reason' => $reason])->save();
 
+            $operation = match ($status) {
+                FileExchangeRecord::STATUS_QUARANTINED => OperatorAuditOperation::FileExchangeQuarantined,
+                FileExchangeRecord::STATUS_ARCHIVED => OperatorAuditOperation::FileExchangeArchived,
+                default => OperatorAuditOperation::FileExchangeRecorded,
+            };
+
             $this->audit->record(
                 $actor,
-                OperatorAuditOperation::FileExchangeRecorded,
+                $operation,
                 (int) $record->provider_connection_id,
                 null,
                 $record->evidence_reference,

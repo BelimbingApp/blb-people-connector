@@ -5,6 +5,29 @@ return [
     'supported_contract_major' => 1,
 
     /*
+     * Remote native People placement ([1010-h], #310). A connection whose mode
+     * is remote_http names a separately administered People installation, and
+     * its base URL host must appear here. The default is empty on purpose: an
+     * allowlist that ships with entries is not an allowlist, and a connector
+     * that would probe any host an operator typed is one SSRF away from being
+     * the attacker's HTTP client. Adding a host is a deployment decision with a
+     * named owner, which is why it lives in configuration and not in the row.
+     *
+     * health_path is the contract path probed on that host. It is configurable
+     * rather than hardcoded because the remote side does not serve it yet:
+     * #163 shipped the health read as an in-process operator service and
+     * recorded that giving it a URL is a separate decision. Until that decision
+     * is made and the route exists, a remote_http connection reports
+     * Unavailable, which is the honest answer and is what
+     * docs/deployments/topologies.md already means by "not activation-ready".
+     */
+    'remote' => [
+        'allowed_hosts' => [],
+        'health_path' => '/health',
+        'timeout_seconds' => 5,
+    ],
+
+    /*
      * Workforce synchronisation ([1006]). One checkpoint stream serves the
      * bootstrap and incremental passes, because the bootstrap's resume cursor
      * is what the first incremental read presents. max_age_minutes is measured

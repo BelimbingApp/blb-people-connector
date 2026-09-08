@@ -25,11 +25,13 @@ use App\Domains\PeopleConnector\Connector\Data\WorkforceSyncReport;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceUpsert;
 use App\Domains\PeopleConnector\Connector\Enums\OperatorAuditOperation;
 use App\Domains\PeopleConnector\Connector\Enums\PeopleCapability;
+use App\Domains\PeopleConnector\Connector\Enums\ProviderConnectionMode;
 use App\Domains\PeopleConnector\Connector\Exceptions\CompanyMoveRefusedException;
 use App\Domains\PeopleConnector\Connector\Exceptions\ConnectionMaintenanceException;
 use App\Domains\PeopleConnector\Connector\Exceptions\ConnectorRecordNotFoundException;
 use App\Domains\PeopleConnector\Connector\Exceptions\CorruptWorkforcePageException;
 use App\Domains\PeopleConnector\Connector\Exceptions\ExternalIdentityCollisionException;
+use App\Domains\PeopleConnector\Connector\Exceptions\ProviderTemporaryException;
 use App\Domains\PeopleConnector\Connector\Exceptions\WorkforceHistoryConflictException;
 use App\Domains\PeopleConnector\Connector\Exceptions\WorkforceProjectionConflictException;
 use App\Domains\PeopleConnector\Connector\Exceptions\WorkforceSyncException;
@@ -70,6 +72,10 @@ final class WorkforceSyncRunner
     public const ISSUE_KIND_FEED_REFUSED = 'sync_feed_refused';
 
     public const ISSUE_KEY_FEED_REFUSED = 'sync:feed:refused';
+
+    public const ISSUE_KEY_REMOTE_TRANSPORT_MISSING = 'sync:remote:transport-missing';
+
+    public const ISSUE_KIND_REMOTE_TRANSPORT_MISSING = 'remote_transport_missing';
 
     public const ISSUE_KIND_DEAD_LETTER = 'sync_dead_letter';
 
@@ -540,6 +546,34 @@ final class WorkforceSyncRunner
         if ($connection->inMaintenance()) {
             throw new ConnectionMaintenanceException(
                 "Provider connection {$connectionId} is in maintenance until {$connection->maintenance_until->format(DATE_ATOM)}.",
+            );
+        }
+
+        // A remote_http connection names a People installation this process
+        // cannot reach: #153 delegated authority, #163 health and #177 denial
+        // parity exist, but no remote bootstrap transport does. Reading its
+        // pages through the co-located adapter would fill the projections from
+        // the wrong host and stamp them fresh, which is the one outcome
+        // docs/deployments/topologies.md forbids ("never a fallback workforce
+        // ledger"). Refusing here, alongside the maintenance hold, keeps it
+        // ahead of port resolution so nothing is read and no checkpoint moves.
+        //
+        // Temporary rather than permanent: the placement is legitimate and the
+        // transport is what is absent, so a caller that retries after the
+        // transport lands is right to.
+        if ($connection->mode === ProviderConnectionMode::RemoteHttp) {
+            $this->issues->report(
+                $connectionId,
+                self::ISSUE_KEY_REMOTE_TRANSPORT_MISSING,
+                self::ISSUE_KIND_REMOTE_TRANSPORT_MISSING,
+                new ReconciliationIssueDetails(reasonCode: 'remote_transport_missing'),
+                severity: 'error',
+            );
+
+            throw new ProviderTemporaryException(
+                providerId: (string) $connection->provider_id,
+                operation: 'workforce_sync',
+                message: "Provider connection {$connectionId} is remote_http; no remote bootstrap transport exists, so a sync pass is refused.",
             );
         }
 
