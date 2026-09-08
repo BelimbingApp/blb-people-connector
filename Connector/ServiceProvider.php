@@ -7,6 +7,7 @@ use App\Domains\People\Provider\Data\ExternalReference as PeopleExternalReferenc
 use App\Domains\PeopleConnector\Connector\Console\Commands\ConnectionHealthCheckCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\ConnectorDoctorCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\CutoverRehearsalCommand;
+use App\Domains\PeopleConnector\Connector\Console\Commands\EgressProbeCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\IdentityAuditTrailCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\RetentionPurgeCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\RetentionReportCommand;
@@ -73,6 +74,7 @@ class ServiceProvider extends BaseServiceProvider
                 CutoverRehearsalCommand::class,
                 ConnectionHealthCheckCommand::class,
                 ConnectorDoctorCommand::class,
+                EgressProbeCommand::class,
                 IdentityAuditTrailCommand::class,
                 RetentionPurgeCommand::class,
                 RetentionReportCommand::class,
