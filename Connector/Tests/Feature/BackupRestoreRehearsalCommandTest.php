@@ -194,4 +194,3 @@ test('an operator from another tenant is refused before authorization or export'
         ->and($fakes['publisher']->calls)->toBe(0)
         ->and($fakes['restorer']->calls)->toBe(0);
 });
-

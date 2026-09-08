@@ -20,6 +20,7 @@ return [
     ],
 
     'capabilities' => [
+        'people-connector.backup.rehearse',
         'people-connector.connection.list',
         'people-connector.connection.manage',
         'people-connector.identity.manage',
