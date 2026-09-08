@@ -45,6 +45,7 @@ use App\Domains\PeopleConnector\Connector\Services\ConnectionRetirementService;
 use App\Domains\PeopleConnector\Connector\Services\ProviderConnectionStore;
 use App\Domains\PeopleConnector\Connector\Services\ProviderRegistry;
 use App\Domains\PeopleConnector\Connector\Services\SchedulerPrincipal;
+use App\Domains\PeopleConnector\Connector\Services\SyncCheckpointStore;
 use App\Domains\PeopleConnector\Connector\Services\SyncFreshnessAlerter;
 use App\Domains\PeopleConnector\Connector\Services\WorkforceFreshnessPolicy;
 use App\Domains\PeopleConnector\Connector\Services\WorkforceSyncRunner;
@@ -154,6 +155,21 @@ function maintProvider(): ProviderAdapter
  *
  * @return array{tenantId: int, companyId: int, connectionId: int, operator: User, actor: Actor, provider: ProviderAdapter}
  */
+/** A fresh checkpoint, so the connection's workforce_freshness row (#284) is green and only the maintenance row moves. */
+function maintSeedCheckpoint(array $f): void
+{
+    app(TenantContext::class)->set($f['tenantId']);
+    $asOf = new DateTimeImmutable;
+    $current = SyncCheckpoint::query()->where('connection_id', $f['connectionId'])->where('stream', WorkforceFreshnessPolicy::stream())->first();
+    app(SyncCheckpointStore::class)->advanceCompletedPage(
+        $f['connectionId'],
+        WorkforceFreshnessPolicy::stream(),
+        new WorkforceChangePage([], $asOf, resumeCursor: 'cursor-fresh', complete: true),
+        (int) ($current?->version ?? 0),
+        $asOf,
+    );
+}
+
 function maintFixture(string $name): array
 {
     maintAuthz();
@@ -361,6 +377,11 @@ test('connector doctor shows connection_maintenance yellow for the tenant in mai
     config()->set('queue.default', 'database');
     $inMaintenance = maintFixture('Maintenance Doctor Tenant');
     $other = maintFixture('Maintenance Doctor Other Tenant');
+    // Seed before the window opens: a checkpoint cannot be written through a
+    // paused connection, and the freshness row (#284) must stay green here.
+    maintSeedCheckpoint($inMaintenance);
+    maintSeedCheckpoint($other);
+    app(TenantContext::class)->set($inMaintenance['tenantId']);
     $until = now()->addHours(4)->format(DATE_ATOM);
     expect(maintCommand($inMaintenance, ['--until' => $until])['status'])->toBe(0);
 

@@ -8,14 +8,18 @@ use App\Base\Tenancy\Contracts\TenantContext;
 use App\Core\User\Models\User;
 use App\Domains\PeopleConnector\Connector\Data\ExternalReference;
 use App\Domains\PeopleConnector\Connector\Data\ProviderScope;
+use App\Domains\PeopleConnector\Connector\Data\WorkforceChangePage;
 use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
 use App\Domains\PeopleConnector\Connector\Jobs\RunIncrementalWorkforceSync;
 use App\Domains\PeopleConnector\Connector\Models\ProviderCredentialRecord;
 use App\Domains\PeopleConnector\Connector\Models\WebhookDelivery;
 use App\Domains\PeopleConnector\Connector\Models\WebhookReceipt;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceEntity;
+use App\Domains\PeopleConnector\Connector\Services\ConnectorDoctor;
 use App\Domains\PeopleConnector\Connector\Services\ProviderConnectionStore;
 use App\Domains\PeopleConnector\Connector\Services\ProviderRegistry;
+use App\Domains\PeopleConnector\Connector\Services\SyncCheckpointStore;
+use App\Domains\PeopleConnector\Connector\Services\WorkforceFreshnessPolicy;
 use App\Domains\PeopleConnector\Connector\Services\WorkforceIdentityStore;
 use App\Domains\PeopleConnector\FirstPartyPeople\FirstPartyPeopleAdapter;
 use Illuminate\Support\Collection;
@@ -50,6 +54,35 @@ function doctorTenant(string $name): array
     return [(int) $tenant->id, (int) $company->id, User::factory()->create(['company_id' => $company->id])];
 }
 
+/**
+ * Check names the doctor returns for this tenant, measured rather than pinned
+ * (#320 / #300): a lane that adds a row must not re-pin a literal here.
+ *
+ * @return list<string>
+ */
+function doctorCheckNames(int $tenantId, User $operator): array
+{
+    app(TenantContext::class)->set($tenantId);
+
+    return array_column(app(ConnectorDoctor::class)->inspect(Actor::forUser($operator))->checks, 'check');
+}
+
+/**
+ * A completed checkpoint, so the connection's workforce_freshness row (#284)
+ * is green and only the row under test moves the exit code.
+ */
+function doctorCheckpoint(int $connectionId): void
+{
+    $asOf = new DateTimeImmutable;
+    app(SyncCheckpointStore::class)->advanceCompletedPage(
+        $connectionId,
+        WorkforceFreshnessPolicy::stream(),
+        new WorkforceChangePage([], $asOf, resumeCursor: 'cursor-0', complete: true),
+        0,
+        $asOf,
+    );
+}
+
 /** A usable credential far from expiry, so the connection's expiry row (#296) is green. */
 function doctorCredential(int $tenantId, int $connectionId, string $providerId): void
 {
@@ -78,6 +111,7 @@ test('connector doctor reports only this tenants stale webhook delivery and exit
     $targetConnection = $targetConnections->configure(ProviderScope::company($companyId), FirstPartyPeopleAdapter::ID);
     $targetConnections->activate((int) $targetConnection->id);
     doctorCredential($tenantId, (int) $targetConnection->id, FirstPartyPeopleAdapter::ID);
+    doctorCheckpoint((int) $targetConnection->id);
 
     app(TenantContext::class)->set($otherTenantId);
     $connections = app(ProviderConnectionStore::class);
@@ -100,7 +134,7 @@ test('connector doctor reports only this tenants stale webhook delivery and exit
     DB::table('jobs')->delete();
     expect(Artisan::call('connector:doctor', ['--tenant' => $tenantId, '--as' => $operator->id, '--json' => true]))->toBe(0);
     $rows = collect(json_decode(trim(Artisan::output()), true, flags: JSON_THROW_ON_ERROR)['checks']);
-    expect($rows)->toHaveCount(12)
+    expect($rows->pluck('check')->all())->toBe(doctorCheckNames($tenantId, $operator))
         ->and($rows->firstWhere('check', 'webhook_duplicates')['detail'] ?? null)->toBe('0 skipped in 7 days')
         ->and($rows->pluck('status')->unique()->all())->toBe(['green']);
 });
@@ -166,6 +200,7 @@ test('connector doctor records every run and lists only this tenants latest snap
     $connection = $connections->configure(ProviderScope::company($companyId), FirstPartyPeopleAdapter::ID);
     $connections->activate((int) $connection->id);
     doctorCredential($tenantId, (int) $connection->id, FirstPartyPeopleAdapter::ID);
+    doctorCheckpoint((int) $connection->id);
 
     $this->travelTo('2026-09-06 10:00:00');
     expect(Artisan::call('connector:doctor', ['--tenant' => $tenantId, '--as' => $operator->id, '--record' => true]))->toBe(0);
@@ -182,27 +217,18 @@ test('connector doctor records every run and lists only this tenants latest snap
         'measured_at' => now(),
     ]);
 
-    expect(DB::table('people_connector_connector_doctor_snapshots')->where('tenant_id', $tenantId)->count())->toBe(24)
+    // Two runs, one snapshot per check per run, no row for a check the doctor
+    // did not return, and the foreign row above never counted (#320).
+    $checks = doctorCheckNames($tenantId, $operator);
+    expect($checks)->not->toBeEmpty()
+        ->and(DB::table('people_connector_connector_doctor_snapshots')->where('tenant_id', $tenantId)->count())->toBe(2 * count($checks))
         ->and(DB::table('people_connector_connector_doctor_snapshots')
             ->where('tenant_id', $tenantId)
             ->pluck('check')
             ->countBy()
             ->sortKeys()
             ->all())
-        ->toBe([
-            'adapter_conformance' => 2,
-            'connection_maintenance' => 2,
-            'delegation_secret_overlap' => 2,
-            'identity_mappings' => 2,
-            'provider_credential_expiry:'.$connection->id => 2,
-            'reconciliation_drift' => 2,
-            'sync_dead_letters' => 2,
-            'webhook_dead_letters' => 2,
-            'webhook_deliveries' => 2,
-            'webhook_duplicates' => 2,
-            'webhook_secret_overlap' => 2,
-            'webhook_stuck_reservations' => 2,
-        ]);
+        ->toBe(collect($checks)->sort()->mapWithKeys(fn (string $check): array => [$check => 2])->all());
 
     expect(Artisan::call('connector:doctor', ['--tenant' => $tenantId, '--as' => $operator->id, '--history' => 1]))->toBe(0)
         ->and(Artisan::output())->toContain('webhook_deliveries', 'red', '1')
@@ -210,8 +236,79 @@ test('connector doctor records every run and lists only this tenants latest snap
 
     expect(Artisan::call('connector:doctor', ['--tenant' => $tenantId, '--as' => $operator->id, '--history' => 1, '--json' => true]))->toBe(0);
     $history = collect(json_decode(trim(Artisan::output()), true, flags: JSON_THROW_ON_ERROR)['checks']);
-    expect($history)->toHaveCount(12)
-        ->and($history->pluck('check')->unique())->toHaveCount(12);
+    expect($history->pluck('check')->sort()->values()->all())->toBe(collect($checks)->sort()->values()->all());
+});
+
+test('every check the doctor returns has a row in the operator doc', function (): void {
+    [$tenantId, $companyId, $operator] = doctorTenant('Doctor Doc Tenant');
+    // An active connection, or the per-connection rows never appear and this
+    // guard cannot see the prefixes it exists to check (#284, #296).
+    app(TenantContext::class)->set($tenantId);
+    app(ProviderRegistry::class)->register(app(FirstPartyPeopleAdapter::class));
+    $connections = app(ProviderConnectionStore::class);
+    $connection = $connections->activate((int) $connections->configure(ProviderScope::company($companyId), FirstPartyPeopleAdapter::ID)->id);
+    doctorCredential($tenantId, (int) $connection->id, FirstPartyPeopleAdapter::ID);
+    doctorCheckpoint((int) $connection->id);
+
+    $doc = file_get_contents(dirname(__DIR__, 3).'/docs/operators/connector-doctor.md');
+    expect($doc)->toBeString();
+
+    // Prefixed rows (`provider_credential_expiry:<id>`) are keyed by prefix in the doc.
+    $keys = collect(doctorCheckNames($tenantId, $operator))
+        ->map(fn (string $check): string => strstr($check, ':', true) ?: $check)
+        ->unique();
+    expect($keys)->not->toBeEmpty()
+        ->and($keys)->toContain('provider_credential_expiry', 'workforce_freshness');
+    $undocumented = $keys->reject(fn (string $key): bool => preg_match('/^\| `'.preg_quote($key, '/').'` \|/m', $doc) === 1)->values()->all();
+    expect($undocumented)->toBe([]);
+});
+
+test('recorded doctor snapshots must be one row per check: fewer or duplicate rows fail the derived pin', function (): void {
+    [$tenantId, $companyId, $operator] = doctorTenant('Doctor Derived Pin Tenant');
+    app(TenantContext::class)->set($tenantId);
+    app(ProviderRegistry::class)->register(app(FirstPartyPeopleAdapter::class));
+    $connections = app(ProviderConnectionStore::class);
+    $connection = $connections->configure(ProviderScope::company($companyId), FirstPartyPeopleAdapter::ID);
+    $connections->activate((int) $connection->id);
+    doctorCredential($tenantId, (int) $connection->id, FirstPartyPeopleAdapter::ID);
+    doctorCheckpoint((int) $connection->id);
+
+    expect(Artisan::call('connector:doctor', ['--tenant' => $tenantId, '--as' => $operator->id, '--record' => true]))->toBe(0);
+    $checks = doctorCheckNames($tenantId, $operator);
+    $expected = collect($checks)->sort()->mapWithKeys(fn (string $check): array => [$check => 1])->all();
+    $actual = fn () => DB::table('people_connector_connector_doctor_snapshots')
+        ->where('tenant_id', $tenantId)
+        ->pluck('check')
+        ->countBy()
+        ->sortKeys()
+        ->all();
+
+    expect($actual())->toBe($expected);
+
+    $victim = $checks[0];
+    DB::table('people_connector_connector_doctor_snapshots')
+        ->where('tenant_id', $tenantId)
+        ->where('check', $victim)
+        ->delete();
+    expect($actual())->not->toBe($expected);
+
+    DB::table('people_connector_connector_doctor_snapshots')->insert([
+        'tenant_id' => $tenantId,
+        'check' => $victim,
+        'status' => 'green',
+        'count' => 0,
+        'measured_at' => now(),
+    ]);
+    expect($actual())->toBe($expected);
+
+    DB::table('people_connector_connector_doctor_snapshots')->insert([
+        'tenant_id' => $tenantId,
+        'check' => $victim,
+        'status' => 'green',
+        'count' => 0,
+        'measured_at' => now(),
+    ]);
+    expect($actual())->not->toBe($expected);
 });
 
 test('connector snapshot retention removes only this tenants rows older than thirty days', function (): void {

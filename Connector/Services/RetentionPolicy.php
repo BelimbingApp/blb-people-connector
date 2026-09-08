@@ -5,6 +5,7 @@ namespace App\Domains\PeopleConnector\Connector\Services;
 use App\Base\Authz\Contracts\AuthorizationService;
 use App\Base\Authz\DTO\Actor;
 use App\Base\Tenancy\Contracts\TenantContext;
+use App\Domains\PeopleConnector\Connector\Contracts\RefusesDeletion;
 use App\Domains\PeopleConnector\Connector\Data\RetentionReport;
 use App\Domains\PeopleConnector\Connector\Data\RetentionTableReport;
 use App\Domains\PeopleConnector\Connector\Exceptions\ProviderAuthorizationException;
@@ -29,6 +30,7 @@ final class RetentionPolicy
     public function __construct(
         private readonly TenantContext $tenantContext,
         private readonly AuthorizationService $authorization,
+        private readonly SupplementalTableRegister $supplemental,
     ) {}
 
     public function review(Actor $actor, ?\DateTimeImmutable $now = null): RetentionReport
@@ -46,6 +48,7 @@ final class RetentionPolicy
 
         $reviewedAt = $now ?? \DateTimeImmutable::createFromInterface(now());
         $owned = self::ownedTables();
+        $deletionRefused = self::deletionRefusedTables();
         $tables = [];
 
         foreach (self::declaredPolicy() as $table => $rule) {
@@ -53,9 +56,21 @@ final class RetentionPolicy
             // that quietly matched nothing would look like "nothing to purge"
             // forever, and one naming another domain's table would be a licence
             // to delete rows this domain has no claim on.
+            if ($this->supplemental->isSupplemental($table)) {
+                throw new RetentionPolicyException(
+                    "[{$table}] is a supplemental Skills or Training table: never purged, retention indefinite, so it cannot carry a retention rule.",
+                );
+            }
+
             if (! in_array($table, $owned, true)) {
                 throw new RetentionPolicyException(
                     "Retention can only be declared for connector-owned tables; [{$table}] is not one.",
+                );
+            }
+
+            if ($rule['days'] !== null && in_array($table, $deletionRefused, true)) {
+                throw new RetentionPolicyException(
+                    "Retention for [{$table}] cannot be finite because its model declares the table append-only.",
                 );
             }
 
@@ -86,7 +101,11 @@ final class RetentionPolicy
             );
         }
 
-        return new RetentionReport($tenantId, $reviewedAt, $tables);
+        // The supplemental section is read only after the policy is validated
+        // and the actor admitted: the register is a list of another domain's
+        // tables and their row counts, which is exactly the kind of thing an
+        // unauthorized review must not have been shown.
+        return new RetentionReport($tenantId, $reviewedAt, $tables, $this->supplemental->report($tenantId));
     }
 
     private function expiredCount(string $table, string $column, int $tenantId, \DateTimeImmutable $reviewedAt, int $days): int
@@ -150,6 +169,15 @@ final class RetentionPolicy
         return array_values(array_unique(array_map(
             static fn (string $model): string => (new $model)->getTable(),
             array_filter(DomainModels::all(), static fn (string $model): bool => is_subclass_of($model, Model::class)),
+        )));
+    }
+
+    /** @return list<string> */
+    private static function deletionRefusedTables(): array
+    {
+        return array_values(array_unique(array_map(
+            static fn (string $model): string => (new $model)->getTable(),
+            array_filter(DomainModels::all(), static fn (string $model): bool => is_subclass_of($model, RefusesDeletion::class)),
         )));
     }
 }

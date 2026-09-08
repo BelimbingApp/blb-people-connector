@@ -883,6 +883,17 @@ Retention of People-owned Skill catalogs and Training aggregates, and export
 of tombstoned rows, are not decided here; the owning People workstreams must
 carry those decisions through relocation.
 
+The boundary itself is named by `SupplementalTableRegister`
+(blb-people-connector#307): every table under `people_connector_skill_`,
+`people_connector_training_` and `people_training_`, read from the schema
+rather than a hand-written list, is supplemental — provider-independent,
+retention indefinite, never purged. `RetentionPolicy::review()` lists them
+under `supplemental` with the acting tenant's row count and refuses a
+retention rule for any of them; `RetentionPurger` refuses a report naming one
+before its transaction opens; and the composed suite proves that retiring a
+connection, replacing its provider and rolling the replacement back leave
+every register table's row count unchanged.
+
 ## What this contract cannot yet decide
 
 The following attribution gap and suggested storage shape are retained as

@@ -77,15 +77,15 @@ test('the first-party adapter declares only the published company, organization 
     }
 });
 
-test('the adapter resolves its two declared read ports and nothing else', function (): void {
+test('the adapter resolves its declared read ports including reconciliation and nothing else', function (): void {
     $adapter = app(FirstPartyPeopleAdapter::class);
     $authorization = ProviderPortAuthorization::forConformance(FirstPartyPeopleAdapter::ID);
 
     expect($adapter->resolvePort(BootstrapsWorkforce::class, $authorization))->toBeInstanceOf(BootstrapsWorkforce::class)
-        ->and($adapter->resolvePort(ReadsWorkforceChanges::class, $authorization))->toBeInstanceOf(ReadsWorkforceChanges::class);
+        ->and($adapter->resolvePort(ReadsWorkforceChanges::class, $authorization))->toBeInstanceOf(ReadsWorkforceChanges::class)
+        ->and($adapter->resolvePort(ReconcilesWorkforce::class, $authorization))->toBeInstanceOf(ReconcilesWorkforce::class);
 
     foreach ([
-        ReconcilesWorkforce::class,
         ImportsWorkforceFiles::class,
         AuthenticatesProvider::class,
         ProvidesProviderUiHandoff::class,

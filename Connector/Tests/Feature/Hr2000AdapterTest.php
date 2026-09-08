@@ -1,8 +1,13 @@
 <?php
 
+use App\Domains\PeopleConnector\Connector\Contracts\AuthenticatesProvider;
 use App\Domains\PeopleConnector\Connector\Contracts\BootstrapsWorkforce;
+use App\Domains\PeopleConnector\Connector\Contracts\ImportsWorkforceFiles;
+use App\Domains\PeopleConnector\Connector\Contracts\ProvidesProviderUiHandoff;
 use App\Domains\PeopleConnector\Connector\Data\Hr2000DeploymentProfile;
+use App\Domains\PeopleConnector\Connector\Data\ProviderFile;
 use App\Domains\PeopleConnector\Connector\Data\ProviderPortAuthorization;
+use App\Domains\PeopleConnector\Connector\Enums\CapabilityDelivery;
 use App\Domains\PeopleConnector\Connector\Enums\CapabilityDirection;
 use App\Domains\PeopleConnector\Connector\Enums\Hr2000CompanyAxis;
 use App\Domains\PeopleConnector\Connector\Enums\Hr2000HostingMode;
@@ -10,26 +15,44 @@ use App\Domains\PeopleConnector\Connector\Enums\Hr2000Transport;
 use App\Domains\PeopleConnector\Connector\Enums\PeopleCapability;
 use App\Domains\PeopleConnector\Connector\Enums\ProviderHealthState;
 use App\Domains\PeopleConnector\Connector\Exceptions\InvalidProviderConfigurationException;
+use App\Domains\PeopleConnector\Connector\Exceptions\UnsupportedProviderOperation;
 use App\Domains\PeopleConnector\Connector\Providers\Hr2000Adapter;
 use App\Domains\PeopleConnector\Connector\Services\ProviderRegistry;
 use App\Domains\PeopleConnector\Connector\Testing\ProviderConformance;
 
-test('the undiscovered HR2000 adapter is registrable but exposes no provider operation', function (): void {
+test('the HR2000 adapter exposes only its evidenced file import read port', function (): void {
     $adapter = new Hr2000Adapter(Hr2000DeploymentProfile::undiscovered());
     $registry = new ProviderRegistry;
+    $authorization = ProviderPortAuthorization::forConformance(Hr2000Adapter::ID);
+    $fixture = __DIR__.'/../Fixtures/hr2000-employee-sample.csv';
+    $file = new ProviderFile(basename($fixture), hash_file('sha256', $fixture), $fixture, filesize($fixture));
 
     $registry->register($adapter);
 
     expect($registry->find(Hr2000Adapter::ID))->toBe($adapter)
         ->and($adapter->descriptor()->id)->toBe('hr2000.sbg')
-        ->and($adapter->capabilities()->all())->toBe([])
-        ->and($adapter->capabilities()->direction(PeopleCapability::EmployeeDirectory))->toBe(CapabilityDirection::None)
-        ->and($adapter->resolvePort(
-            BootstrapsWorkforce::class,
-            ProviderPortAuthorization::forConformance(Hr2000Adapter::ID),
-        ))->toBeNull()
+        ->and($adapter->capabilities()->direction(PeopleCapability::EmployeeDirectory))->toBe(CapabilityDirection::Read)
+        ->and($adapter->capabilities()->deliveries(PeopleCapability::EmployeeDirectory))->toBe([CapabilityDelivery::FileExchange])
+        ->and($adapter->capabilities()->readPortContracts(PeopleCapability::EmployeeDirectory))->toBe([ImportsWorkforceFiles::class])
+        ->and($adapter->capabilities()->writePortContracts(PeopleCapability::EmployeeDirectory))->toBe([])
         ->and($adapter->health()->state)->toBe(ProviderHealthState::Unknown)
         ->and(ProviderConformance::violations($adapter))->toBe([]);
+
+    $port = $adapter->resolvePort(ImportsWorkforceFiles::class, $authorization);
+    expect($port)->toBeInstanceOf(ImportsWorkforceFiles::class)
+        ->and($port->inspect($file)->accepted)->toBeTrue()
+        ->and(fn () => $port->inspectAndImport($file))->toThrow(UnsupportedProviderOperation::class, 'dry-run inspection only')
+        ->and($adapter->resolvePort(BootstrapsWorkforce::class, $authorization))->toBeNull();
+
+    foreach ([AuthenticatesProvider::class, ProvidesProviderUiHandoff::class] as $writeContract) {
+        expect($adapter->resolvePort($writeContract, $authorization))->toBeNull();
+    }
+
+    foreach (PeopleCapability::cases() as $capability) {
+        if ($capability !== PeopleCapability::EmployeeDirectory) {
+            expect($adapter->capabilities()->direction($capability))->toBe(CapabilityDirection::None);
+        }
+    }
 });
 
 test('incomplete SBG discovery fails activation without exposing profile values', function (): void {
@@ -37,7 +60,7 @@ test('incomplete SBG discovery fails activation without exposing profile values'
 
     expect(fn () => $adapter->assertActivatable())
         ->toThrow(InvalidProviderConfigurationException::class, 'product_unverified')
-        ->and($adapter->capabilities()->all())->toBe([]);
+        ->and($adapter->capabilities()->direction(PeopleCapability::EmployeeDirectory))->toBe(CapabilityDirection::Read);
 });
 
 test('a provider-coarser company axis is rejected even when every other fact is supplied', function (): void {

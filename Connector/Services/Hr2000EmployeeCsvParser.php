@@ -2,14 +2,18 @@
 
 namespace App\Domains\PeopleConnector\Connector\Services;
 
+use App\Domains\PeopleConnector\Connector\Contracts\ImportsWorkforceFiles;
 use App\Domains\PeopleConnector\Connector\Data\ExternalReference;
 use App\Domains\PeopleConnector\Connector\Data\Hr2000ImportDefect;
 use App\Domains\PeopleConnector\Connector\Data\Hr2000ImportDryRun;
 use App\Domains\PeopleConnector\Connector\Data\Hr2000ImportRecord;
 use App\Domains\PeopleConnector\Connector\Data\ProviderFile;
+use App\Domains\PeopleConnector\Connector\Data\ProviderFileImportResult;
+use App\Domains\PeopleConnector\Connector\Data\ProviderFileInspection;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceEmployee;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceProvenance;
 use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
+use App\Domains\PeopleConnector\Connector\Exceptions\UnsupportedProviderOperation;
 use App\Domains\PeopleConnector\Connector\Providers\Hr2000Adapter;
 
 /**
@@ -31,7 +35,7 @@ use App\Domains\PeopleConnector\Connector\Providers\Hr2000Adapter;
  * max_rows data rows stops at row max_rows + 1 (row_limit_exceeded). Both are
  * file-level defects, so no record is typed.
  */
-final class Hr2000EmployeeCsvParser
+final class Hr2000EmployeeCsvParser implements ImportsWorkforceFiles
 {
     public const SCHEMA_VERSION = 'hr2000.sbg.employee-csv.candidate-1';
 
@@ -42,6 +46,21 @@ final class Hr2000EmployeeCsvParser
     private const STATUS_ACTIVE = 'A';
 
     private const STATUS_RESIGNED = 'R';
+
+    public function inspect(ProviderFile $file): ProviderFileInspection
+    {
+        return $this->parse($file, now()->toDateTimeImmutable())->inspection();
+    }
+
+    public function inspectAndImport(ProviderFile $file): ProviderFileImportResult
+    {
+        throw new UnsupportedProviderOperation(
+            providerId: Hr2000Adapter::ID,
+            operation: 'inspect_and_import_workforce_file',
+            message: 'The verified HR2000 file capability supports dry-run inspection only; projection application remains disabled.',
+            context: ['file_sha256' => $file->sha256],
+        );
+    }
 
     public function parse(ProviderFile $file, \DateTimeImmutable $observedAt): Hr2000ImportDryRun
     {

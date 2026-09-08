@@ -18,6 +18,19 @@ current projections, snapshots, reconciliation issues, and directly related
 operator-audit rows. Credential references and payload hashes are replaced by
 null at every nesting level.
 
+The connector does not own everything recorded about an employee. A People
+module that holds supplemental records (skill assessments, training
+participation, evidence, passports) contributes them by registering an
+`ExportsSupplementalSubjectRecords` implementation under that container tag;
+the connector names no module. The package then carries a `supplemental` block
+with one section per exporter (rows keyed by table, redacted by the module and
+again by the connector), `supplemental_exporters` naming who contributed, and
+`supplemental_missing: true` when nothing did. A package with
+`supplemental_missing: true` is partial: hand it over as such, or wait for the
+module exporters to be mounted. Exporters run only after the operator is
+authorised, with the subject's tenant and owning company entity, and the audit
+row names them.
+
 For an authorised support import, move the package unchanged into the protected
 incoming DataShare directory, then name its package id and a target connection:
 
@@ -33,7 +46,11 @@ restore contract. The target connection must use the exported provider and
 belong to the acting operator's tenant and company. If any exported external id
 is already mapped there, or a relationship points outside the package, the
 whole import is refused without writes. A successful import appends one target
-operator-audit row and requires `people-connector.identity.import`.
+operator-audit row and requires `people-connector.identity.import`. Supplemental
+blocks are never written by the import: a block whose exporter is registered on
+the target and declares `restorable()` is returned verbatim under `supplemental`
+in the result for that module to act on; every other block is listed in
+`not_restored`, in the result and in the audit row.
 
 The command fails closed when the entity is outside the current tenant, when
 the operator lacks `people-connector.identity.export`, or when the subject is

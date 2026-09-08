@@ -36,6 +36,25 @@ informational line, never an error. The exit code is still the doctor's own.
 Sent alerts live in `people_connector_connector_doctor_alerts`, purged with
 the snapshots after 30 days.
 
+Every row the doctor returns, by `check` key (or prefix for per-connection
+rows). A test fails when a check is added without a row here (#320 / #300):
+
+| check | red when | notes |
+|---|---|---|
+| `adapter_conformance` | a configured provider has no active connection or fails a conformance probe | count is violations across configured providers |
+| `webhook_deliveries` | a queued webhook-triggered sync is older than one hour | red on an opaque queue backend rather than guessed healthy |
+| `reconciliation_drift` | any reconciliation issue is open | |
+| `identity_mappings` | an active identity no longer joins to a compatible current entity and connection | |
+| `webhook_stuck_reservations` | a receipt older than five minutes has no delivery behind it (#227) | |
+| `webhook_duplicates` | never | informational: deliveries acknowledged as duplicates in seven days |
+| `webhook_secret_overlap` | never | yellow while a connection's previous signing secret is inside its rotation overlap (#247) |
+| `delegation_secret_overlap` | a previous delegation secret lapsed or has no usable expiry (#262) | yellow while the previous secret is still accepted |
+| `webhook_dead_letters` | a dead-lettered delivery has no replay pointing at it yet (#271) | count is unreplayed dead letters, detail names the oldest `failed_at` |
+| `sync_dead_letters` | an open reconciliation issue of kind `sync_dead_letter` parks a feed page (#271) | subset of `reconciliation_drift` that means a stuck feed |
+| `connection_maintenance` | never | yellow with the count of connections inside a planned maintenance window (#264) |
+| `provider_credential_expiry` | no usable provider credential, or (yellow) inside the warning window (#296) | one row per active connection as `provider_credential_expiry:<id>` |
+| `workforce_freshness` | `WorkforceFreshnessPolicy` calls the connection stale (#284) | one row per active connection as `workforce_freshness:<id>`; detail carries the reason code and the age |
+
 The table reports adapter conformance for every configured provider, queued
 webhook-triggered syncs older than one hour, open reconciliation drift,
 active identity mappings that no longer join to a compatible current entity
@@ -90,6 +109,15 @@ credential as it issues the new one); `connector:webhook:secret:rotate` is the
 webhook signing secret, not this. Because `--record` writes one snapshot per
 row, `--alert` covers expiry with no further configuration, keyed by the same
 `provider_credential_expiry:<id>` name.
+
+Then one `workforce_freshness:<connection id>` row per active connection
+(#284): red when `WorkforceFreshnessPolicy` says the connection is stale, with
+the reason code in the detail (`never_synchronized`, or `exceeded_max_age`
+with the age and the configured maximum in minutes), green with the age
+alone. Inactive and retired connections have no row: their staleness is a
+decision already taken. Because the row is a check like any other, `--alert`
+covers sync lag: two consecutive stale snapshots send one alert naming the
+connection, and the next fresh checkpoint sends the recovery.
 Yellow does not fail the doctor; only red does. A provider without an active connection is red because its
 ports cannot be exercised. Any red row makes the command exit non-zero. Use
 `--json` for automation.
