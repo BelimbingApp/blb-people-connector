@@ -9,6 +9,7 @@ use App\Core\User\Models\User;
 use App\Domains\PeopleConnector\Connector\Jobs\RunIncrementalWorkforceSync;
 use App\Domains\PeopleConnector\Connector\Models\ConnectorDoctorAlert;
 use App\Domains\PeopleConnector\Connector\Notifications\ConnectorDoctorAlertNotification;
+use App\Domains\PeopleConnector\Connector\Services\ConnectorDoctor;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Artisan;
@@ -61,6 +62,19 @@ function doctorAlertStaleWebhook(int $tenantId): void
     DB::table('jobs')->latest('id')->limit(1)->update(['created_at' => Carbon::parse('2026-09-07 00:00:00')->timestamp]);
 }
 
+/**
+ * Check names the doctor returns for this tenant, measured rather than pinned
+ * (#320 / #300): every lane that adds a row was re-pinning a literal here.
+ *
+ * @return list<string>
+ */
+function doctorAlertCheckNames(int $tenantId, User $operator): array
+{
+    app(TenantContext::class)->set($tenantId);
+
+    return array_column(app(ConnectorDoctor::class)->inspect(Actor::forUser($operator))->checks, 'check');
+}
+
 function doctorAlertRun(int $tenantId, User $operator, string $at, bool $record = true): int
 {
     test()->travelTo($at);
@@ -89,9 +103,12 @@ test('a red once stays quiet, red twice alerts once naming the check, red a thir
     [$tenantId, $operator] = doctorAlertTenant('Doctor Alert Tenant');
     doctorAlertStaleWebhook($tenantId);
 
+    $checks = doctorAlertCheckNames($tenantId, $operator);
     expect(doctorAlertRun($tenantId, $operator, '2026-09-07 10:00:00'))->toBe(1);
     Notification::assertNothingSent();
-    expect(DB::table('people_connector_connector_doctor_snapshots')->where('tenant_id', $tenantId)->count())->toBe(11);
+    // One snapshot per check this tenant, and no row for a check the doctor did not return (#320).
+    expect(DB::table('people_connector_connector_doctor_snapshots')->where('tenant_id', $tenantId)->pluck('check')->countBy()->sortKeys()->all())
+        ->toBe(collect($checks)->sort()->mapWithKeys(fn (string $check): array => [$check => 1])->all());
 
     expect(doctorAlertRun($tenantId, $operator, '2026-09-07 11:00:00'))->toBe(1)
         ->and(Artisan::output())->toContain('webhook_deliveries');

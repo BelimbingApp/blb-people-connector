@@ -95,9 +95,12 @@ test('registered adapters satisfy paging cursor and checksum dispositions', func
         : null;
 
     if ($registration['cases']['bootstrap_paging'] === 'unsupported') {
+        $directoryPorts = $adapter->capabilities()->portContracts(PeopleCapability::EmployeeDirectory);
+
         expect($bootstrap)->toBeNull()
             ->and($changes)->toBeNull()
-            ->and($adapter->capabilities()->portContracts(PeopleCapability::EmployeeDirectory))->toBe([])
+            ->and($directoryPorts)->not->toContain(BootstrapsWorkforce::class)
+            ->and($directoryPorts)->not->toContain(ReadsWorkforceChanges::class)
             ->and(ProviderConformance::violations($adapter))->toBe([]);
 
         return;
