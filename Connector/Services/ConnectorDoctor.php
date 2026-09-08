@@ -9,6 +9,8 @@ use App\Domains\PeopleConnector\Connector\Contracts\ReadableProviderPort;
 use App\Domains\PeopleConnector\Connector\Data\ConnectorDoctorReport;
 use App\Domains\PeopleConnector\Connector\Data\ProviderScope;
 use App\Domains\PeopleConnector\Connector\Enums\PeopleCapability;
+use App\Domains\PeopleConnector\Connector\Enums\ProviderConnectionMode;
+use App\Domains\PeopleConnector\Connector\Enums\ProviderHealthState;
 use App\Domains\PeopleConnector\Connector\Exceptions\ProviderAuthorizationException;
 use App\Domains\PeopleConnector\Connector\Jobs\RunIncrementalWorkforceSync;
 use App\Domains\PeopleConnector\Connector\Models\ExternalIdentity;
@@ -24,6 +26,7 @@ use Illuminate\Support\Facades\DB;
 final class ConnectorDoctor
 {
     public function __construct(
+        private readonly RemoteProviderHealthProbe $remoteProbe,
         private readonly TenantContext $tenants,
         private readonly AuthorizationService $authorization,
         private readonly ProviderRegistry $registry,
@@ -80,6 +83,10 @@ final class ConnectorDoctor
             // the only evidence a feed is still moving, so a connection that
             // stopped synchronizing is red here and reaches --alert.
             ...$this->workforceFreshness($tenantId),
+            // One row per active remote_http connection (#310): its People
+            // installation runs on another host, and the in-process adapter
+            // cannot see whether that host is up.
+            ...$this->remotePlacement($tenantId),
         ]);
     }
 
@@ -410,6 +417,51 @@ final class ConnectorDoctor
                 $freshness->isStale() ? 1 : 0,
                 $freshness->isStale() ? $freshness->staleReason.($age === null ? '' : ", {$age}") : (string) $age,
             );
+        }
+
+        return $rows;
+    }
+
+    /**
+     * Remote native People placement, one row per active remote_http connection.
+     *
+     * Red when the remote host is unreachable or answers non-2xx, yellow when it
+     * answers but the contract majors disagree or its watermark is stale, green
+     * otherwise. The detail carries the probe's reason code and the host, never
+     * the base URL's query, the credential or any transport exception text
+     * (docs/contracts/diagnostic-privacy.md).
+     *
+     * Connections in any other mode have no row here: the co-located adapter
+     * already answers for them, and a row that is always green teaches an
+     * operator to skip the section.
+     *
+     * @return list<array{check: string, status: string, count: int, detail: string}>
+     */
+    private function remotePlacement(int $tenantId): array
+    {
+        $rows = [];
+        $connections = ProviderConnection::query()->forTenant($tenantId)
+            ->where('status', ProviderConnection::STATUS_ACTIVE)
+            ->where('mode', ProviderConnectionMode::RemoteHttp->value)
+            ->orderBy('id')
+            ->get();
+
+        foreach ($connections as $connection) {
+            $health = $this->remoteProbe->probe($connection);
+            $host = parse_url((string) $connection->remote_base_url, PHP_URL_HOST);
+            $host = is_string($host) && $host !== '' ? $host : 'unknown-host';
+            $reason = $health->message ?? $health->state->value;
+
+            $rows[] = [
+                'check' => 'remote_placement:'.(int) $connection->id,
+                'status' => match ($health->state) {
+                    ProviderHealthState::Healthy => 'green',
+                    ProviderHealthState::Degraded => 'yellow',
+                    default => 'red',
+                },
+                'count' => $health->state === ProviderHealthState::Healthy ? 0 : 1,
+                'detail' => $host.' '.$reason,
+            ];
         }
 
         return $rows;

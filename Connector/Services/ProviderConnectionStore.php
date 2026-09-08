@@ -7,8 +7,10 @@ use App\Core\Company\Models\Company;
 use App\Domains\PeopleConnector\Connector\Data\ProviderConnectionMetadata;
 use App\Domains\PeopleConnector\Connector\Data\ProviderScope;
 use App\Domains\PeopleConnector\Connector\Data\WebhookDeliveryPolicy;
+use App\Domains\PeopleConnector\Connector\Enums\ProviderConnectionMode;
 use App\Domains\PeopleConnector\Connector\Exceptions\InvalidProviderConfigurationException;
 use App\Domains\PeopleConnector\Connector\Models\ProviderConnection;
+use App\Domains\PeopleConnector\Connector\Models\ProviderCredentialRecord;
 use Illuminate\Support\Facades\DB;
 
 final class ProviderConnectionStore
@@ -25,10 +27,14 @@ final class ProviderConnectionStore
         ?string $label = null,
         ?string $adapterVersion = null,
         ?string $contractVersion = null,
+        ProviderConnectionMode $mode = ProviderConnectionMode::InProcess,
+        ?string $remoteBaseUrl = null,
+        ?int $remoteCredentialId = null,
     ): ProviderConnection {
         $tenantId = $this->tenantContext->requireTenantId();
         $this->assertProviderId($providerId);
         $this->assertCompanyScope($scope, $tenantId);
+        $remoteBaseUrl = $this->assertPlacement($mode, $remoteBaseUrl, $remoteCredentialId);
 
         if (($label !== null && strlen($label) > 255)
             || ($adapterVersion !== null && strlen($adapterVersion) > 50)
@@ -36,7 +42,7 @@ final class ProviderConnectionStore
             throw new InvalidProviderConfigurationException('Provider connection metadata exceeds its supported length.');
         }
 
-        return DB::transaction(function () use ($scope, $providerId, $publicMetadata, $label, $adapterVersion, $contractVersion, $tenantId): ProviderConnection {
+        return DB::transaction(function () use ($scope, $providerId, $publicMetadata, $label, $adapterVersion, $contractVersion, $tenantId, $mode, $remoteBaseUrl, $remoteCredentialId): ProviderConnection {
             $connection = ProviderConnection::query()
                 ->forTenant($tenantId)
                 ->where('scope_key', $scope->key())
@@ -62,11 +68,33 @@ final class ProviderConnectionStore
             $metadata = $publicMetadata?->toArray() ?? [];
             $metadata['webhook_delivery_policy'] ??= WebhookDeliveryPolicy::defaults()->toArray();
 
+            // The credential must already belong to this connection. Checking it
+            // here rather than at use is what lets the operator be told which
+            // connection owns it; a reference resolved later just fails a probe
+            // with nothing to act on. A connection being created for the first
+            // time has no id yet, so it cannot own a credential either, and
+            // naming one is refused rather than silently stored.
+            if ($remoteCredentialId !== null) {
+                $owned = ProviderCredentialRecord::query()
+                    ->forTenant($tenantId)
+                    ->whereKey($remoteCredentialId)
+                    ->where('connection_id', $connection->exists ? (int) $connection->id : 0)
+                    ->exists();
+                if (! $owned) {
+                    throw new InvalidProviderConfigurationException(
+                        'A remote provider credential must belong to the connection it is configured on, inside the same tenant.',
+                    );
+                }
+            }
+
             $connection->fill([
                 'label' => $label,
                 'adapter_version' => $adapterVersion,
                 'contract_version' => $contractVersion,
                 'public_metadata' => $metadata,
+                'mode' => $mode,
+                'remote_base_url' => $remoteBaseUrl,
+                'remote_credential_id' => $remoteCredentialId,
             ]);
             $connection->save();
 
@@ -139,6 +167,62 @@ final class ProviderConnectionStore
     public function find(int $connectionId): ProviderConnection
     {
         return $this->connections->get($connectionId);
+    }
+
+    /**
+     * Placement validation, before anything is written.
+     *
+     * A non-remote connection carrying a base URL or a credential is refused
+     * rather than quietly cleared: silently dropping them would leave the
+     * operator believing a remote placement had been configured.
+     */
+    private function assertPlacement(ProviderConnectionMode $mode, ?string $remoteBaseUrl, ?int $remoteCredentialId): ?string
+    {
+        if ($mode !== ProviderConnectionMode::RemoteHttp) {
+            if ($remoteBaseUrl !== null || $remoteCredentialId !== null) {
+                throw new InvalidProviderConfigurationException(
+                    'A remote base URL and credential belong only to a remote_http provider connection.',
+                );
+            }
+
+            return null;
+        }
+
+        if ($remoteBaseUrl === null || trim($remoteBaseUrl) === '') {
+            throw new InvalidProviderConfigurationException(
+                'A remote_http provider connection requires the base URL of the People installation it reaches.',
+            );
+        }
+
+        $remoteBaseUrl = rtrim(trim($remoteBaseUrl), '/');
+        if (strlen($remoteBaseUrl) > 500) {
+            throw new InvalidProviderConfigurationException('Provider connection metadata exceeds its supported length.');
+        }
+
+        $parts = parse_url($remoteBaseUrl);
+        $scheme = is_array($parts) ? ($parts['scheme'] ?? null) : null;
+        $host = is_array($parts) ? ($parts['host'] ?? null) : null;
+        if ($host === null || $host === '' || $scheme !== 'https') {
+            throw new InvalidProviderConfigurationException(
+                'A remote_http provider connection requires an absolute https base URL with a host.',
+            );
+        }
+
+        // The allowlist is the control, and it is compared against the parsed
+        // host only. Matching on the whole URL would let
+        // https://allowed.example@attacker.example pass a substring test while
+        // the request went somewhere else entirely.
+        $allowed = array_map(
+            static fn (mixed $entry): string => strtolower(trim((string) $entry)),
+            (array) config('people-connector.remote.allowed_hosts', []),
+        );
+        if (! in_array(strtolower($host), $allowed, true)) {
+            throw new InvalidProviderConfigurationException(
+                'The remote People host is not in people-connector.remote.allowed_hosts.',
+            );
+        }
+
+        return $remoteBaseUrl;
     }
 
     private function assertProviderId(string $providerId): void

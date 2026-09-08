@@ -29,6 +29,7 @@ final class ConnectionHealthChecker
         private readonly TenantContext $tenants,
         private readonly AuthorizationService $authorization,
         private readonly ProviderRegistry $registry,
+        private readonly RemoteProviderHealthProbe $remoteProbe,
     ) {}
 
     public function check(Actor $actor, ?CapabilityEvidenceRegister $register = null): ConnectionHealthCheckReport
@@ -57,7 +58,14 @@ final class ConnectionHealthChecker
                 'provider' => $providerId,
                 'registered' => $provider !== null,
                 'in_register' => $register->knows($providerId),
-                'health' => $provider === null ? ProviderHealthState::Unknown->value : $this->health($provider),
+                // A remote_http connection is never answered by the in-process
+                // adapter. FirstPartyPeopleAdapter::health() returns Healthy by
+                // construction, so asking it about a separately hosted People
+                // installation reports the local process's health under the
+                // remote connection's name (#310).
+                'health' => $this->remoteProbe->handles($connection)
+                    ? $this->remoteProbe->probe($connection)->state->value
+                    : ($provider === null ? ProviderHealthState::Unknown->value : $this->health($provider)),
                 'declared' => $declared,
                 // The comparison: declared without evidence is drift.
                 'unsupported_declared' => array_values(array_diff($declared, $verified)),
