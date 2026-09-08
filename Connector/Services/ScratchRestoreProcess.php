@@ -11,6 +11,8 @@ use Throwable;
 
 final class ScratchRestoreProcess implements RestoresBackupRestorePackage
 {
+    public function __construct(private readonly ScratchRestoreEnvironment $environment) {}
+
     public function restore(BackupRestorePackage $package, int $operatorId): ScratchRestoreResult
     {
         $databaseUrl = trim((string) config('people-connector.backup_rehearsal.database_url'));
@@ -42,11 +44,7 @@ final class ScratchRestoreProcess implements RestoresBackupRestorePackage
                 '--tenant='.$package->tenantId,
                 '--as='.$operatorId,
                 '--json',
-            ], base_path(), [
-                'APP_CONFIG_CACHE' => $handoff.'.no-config-cache',
-                'DB_URL' => $databaseUrl,
-                'PEOPLE_CONNECTOR_REHEARSAL_HANDOFF' => $handoff,
-            ], null, 300);
+            ], base_path(), $this->environment->forDatabase($databaseUrl, $handoff), null, 300);
             $process->run();
 
             if (! $process->isSuccessful()) {

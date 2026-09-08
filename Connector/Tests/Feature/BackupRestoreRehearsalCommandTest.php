@@ -5,6 +5,9 @@ use App\Base\Authz\DTO\Actor;
 use App\Base\Authz\DTO\AuthorizationDecision;
 use App\Base\Authz\DTO\ResourceContext;
 use App\Base\Authz\Enums\AuthorizationReasonCode;
+use App\Base\Database\Services\DataShare\DataShareInstanceIdentityResolver;
+use App\Base\Database\Services\DataShare\DataShareSettings;
+use App\Base\Settings\Contracts\SettingsService;
 use App\Base\Tenancy\Contracts\TenantContext;
 use App\Core\User\Models\User;
 use App\Domains\PeopleConnector\Connector\Contracts\PublishesBackupRestorePackage;
@@ -12,6 +15,7 @@ use App\Domains\PeopleConnector\Connector\Contracts\RestoresBackupRestorePackage
 use App\Domains\PeopleConnector\Connector\Data\BackupRestorePackage;
 use App\Domains\PeopleConnector\Connector\Data\ScratchRestoreResult;
 use App\Domains\PeopleConnector\Connector\Exceptions\ProviderAuthorizationException;
+use App\Domains\PeopleConnector\Connector\Services\ScratchRestoreEnvironment;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Artisan;
 
@@ -168,6 +172,27 @@ test('an empty scratch restore with matching per-table counts exits zero', funct
     expect($report['successful'])->toBeTrue()
         ->and($report['mismatches'])->toBe([])
         ->and($report['scratch_after'])->toBe($counts);
+});
+
+test('a fresh scratch database receives a distinct fallback DataShare identity', function (): void {
+    $settings = app(SettingsService::class);
+    $settings->forget('data_share.instance.id');
+    $sourceUrl = (string) config('app.url');
+    $source = new DataShareInstanceIdentityResolver(new DataShareSettings($settings));
+    $sourceId = $source->current()->id;
+
+    $environment = (new ScratchRestoreEnvironment)->forDatabase(
+        'postgresql://operator:secret@scratch.internal/rehearsal',
+        '/tmp/private-handoff',
+    );
+    config()->set('app.url', $environment['APP_URL']);
+    $scratch = new DataShareInstanceIdentityResolver(new DataShareSettings($settings));
+
+    expect($scratch->current()->id)->not->toBe($sourceId)
+        ->and($environment['APP_URL'])->not->toContain('operator', 'secret', 'scratch.internal')
+        ->and($environment['DB_URL'])->toBe('postgresql://operator:secret@scratch.internal/rehearsal');
+
+    config()->set('app.url', $sourceUrl);
 });
 
 test('a named operator without the rehearsal grant is refused before export', function (): void {
