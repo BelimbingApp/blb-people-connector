@@ -9,13 +9,25 @@ use App\Base\Authz\Enums\PrincipalType;
 use App\Base\Tenancy\Contracts\TenantContext;
 use App\Core\Employee\Models\Employee;
 use App\Core\User\Models\User;
+use App\Domains\People\Skills\Data\AssessmentDraft;
+use App\Domains\People\Skills\Data\RequirementItemDraft;
+use App\Domains\People\Skills\Data\RequirementProfileDraft;
+use App\Domains\People\Skills\Data\RequirementSelectorDraft;
 use App\Domains\People\Skills\Data\SkillDraft;
+use App\Domains\People\Skills\Enums\AssessmentCycle;
+use App\Domains\People\Skills\Enums\AssessmentMethod;
+use App\Domains\People\Skills\Enums\RequirementCriticality;
+use App\Domains\People\Skills\Enums\SelectorType;
+use App\Domains\People\Skills\Services\AssessmentStore;
+use App\Domains\People\Skills\Services\RequirementProfileStore;
+use App\Domains\People\Skills\Services\SkillCatalogDefaults;
 use App\Domains\People\Skills\Services\SkillCatalogStore;
 use App\Domains\People\Training\Data\TrainingCourseDraft;
 use App\Domains\People\Training\Data\TrainingEventDraft;
 use App\Domains\People\Training\Enums\DeliveryMode;
 use App\Domains\People\Training\Services\TrainingCatalogStore;
 use App\Domains\People\Training\Services\TrainingEventStore;
+use App\Domains\People\Training\Services\TrainingParticipationStore;
 use App\Domains\PeopleConnector\Connector\Data\ExternalReference;
 use App\Domains\PeopleConnector\Connector\Data\ProviderIdentityMapping;
 use App\Domains\PeopleConnector\Connector\Data\ProviderScope;
@@ -160,15 +172,40 @@ function supplementalFixture(string $name): array
     $employee = Employee::factory()->create(['company_id' => $companyId, 'full_name' => 'Ada Supplemental', 'short_name' => null, 'supervisor_id' => null, 'status' => 'active', 'employee_type' => 'full_time']);
     $organizer = Employee::factory()->create(['company_id' => $companyId, 'full_name' => 'Bo Organiser', 'short_name' => null, 'supervisor_id' => null, 'status' => 'active', 'employee_type' => 'full_time']);
 
+    supplementalAuthz(true);
+
+    // Seeded through the owning modules' public stores, never by writing to
+    // People tables from here: the connector declares no dependency on the
+    // Skills and Training schemas, only on the register that names them.
     $catalog = app(SkillCatalogStore::class);
     $category = $catalog->defineCategory($companyId, 'safety', 'Safety');
     $skill = $catalog->defineSkill($companyId, new SkillDraft('isolation.energy', 'Energy isolation', 'Isolate.', (int) $category->id));
-    DB::table(SUPPLEMENTAL_ASSESSMENTS)->insert([
-        'tenant_id' => $tenantId, 'company_entity_id' => $companyId, 'employee_entity_id' => $employee->id,
-        'skill_id' => $skill->id, 'requirement_reference' => 'supplemental', 'requirement_version' => 1, 'required_level' => 3,
-        'assessed_level' => 3, 'gap' => 0, 'result_band' => 'meets', 'criticality' => 'critical', 'method' => 'direct_observation',
-        'cycle' => 'annual', 'status' => 'draft', 'hod_verification' => 'pending', 'created_at' => now(), 'updated_at' => now(),
-    ]);
+    app(SkillCatalogDefaults::class)->install($companyId);
+
+    $profiles = app(RequirementProfileStore::class);
+    $profile = $profiles->draft($companyId, new RequirementProfileDraft(
+        code: 'supplemental.isolation',
+        name: 'Supplemental Isolation',
+        selectors: [new RequirementSelectorDraft(SelectorType::Company)],
+        items: [new RequirementItemDraft(
+            skillId: (int) $skill->id,
+            sequence: 1,
+            requiredLevel: 3,
+            criticality: RequirementCriticality::Critical,
+            weightPercent: 100.0,
+        )],
+    ));
+    $profiles->publish($companyId, (int) $profile->id);
+
+    app(AssessmentStore::class)->draft($companyId, new AssessmentDraft(
+        employeeEntityId: (int) $employee->id,
+        skillId: (int) $skill->id,
+        assessedLevel: 3,
+        method: AssessmentMethod::DirectObservation,
+        cycle: AssessmentCycle::Annual,
+        assessedAt: now(),
+        evidence: 'Observed one supervised isolation drill.',
+    ));
 
     $course = app(TrainingCatalogStore::class)->defineCourse($companyId, new TrainingCourseDraft(
         code: 'isolation.induction', title: 'Isolation induction', deliveryMode: DeliveryMode::InternalClassroom,
@@ -178,13 +215,12 @@ function supplementalFixture(string $name): array
         courseId: (int) $course->id, startsAt: now()->addDays(5), endsAt: now()->addDays(6), capacity: 10,
         organizerEmployeeEntityId: (int) $organizer->id,
     ));
-    DB::table(SUPPLEMENTAL_PARTICIPANTS)->insert([
-        'tenant_id' => $tenantId, 'company_entity_id' => $companyId, 'event_id' => $event->id,
-        'provider_id' => SUPPLEMENTAL_OLD_PROVIDER, 'employee_subject_id' => 'SUP-EMP-1', 'workforce_observed_at' => now(),
-        'created_at' => now(), 'updated_at' => now(),
-    ]);
-
-    supplementalAuthz(true);
+    app(TrainingParticipationStore::class)->enrolFromRequest(
+        User::factory()->create(['company_id' => $companyId]),
+        $companyId,
+        (int) $event->id,
+        [['provider_id' => SUPPLEMENTAL_OLD_PROVIDER, 'employee_subject_id' => 'SUP-EMP-1']],
+    );
 
     return [
         'tenantId' => $tenantId,
