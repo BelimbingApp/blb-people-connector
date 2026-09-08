@@ -2,9 +2,10 @@
 
 namespace App\Domains\PeopleConnector\Connector\Models;
 
+use App\Domains\PeopleConnector\Connector\Contracts\RefusesDeletion;
 use App\Domains\PeopleConnector\Connector\Exceptions\AppendOnlyRecordException;
 
-final class PrivilegedSupportAction extends TenantOwnedModel
+final class PrivilegedSupportAction extends TenantOwnedModel implements RefusesDeletion
 {
     protected $table = 'people_connector_connector_privileged_support_actions';
 

@@ -26,6 +26,7 @@ return [
         'people-connector.identity.audit',
         'people-connector.identity.export',
         'people-connector.identity.import',
+        'people-connector.identity.purge',
         'people-connector.retention.review',
         'people-connector.retention.purge',
         'people-connector.support.break-glass',

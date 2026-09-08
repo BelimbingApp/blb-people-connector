@@ -35,6 +35,7 @@ use App\Domains\PeopleConnector\Connector\Exceptions\ProviderAuthorizationExcept
 use App\Domains\PeopleConnector\Connector\Jobs\RunIncrementalWorkforceSync;
 use App\Domains\PeopleConnector\Connector\Models\OperatorAudit;
 use App\Domains\PeopleConnector\Connector\Models\ProviderConnection;
+use App\Domains\PeopleConnector\Connector\Models\ProviderCredentialRecord;
 use App\Domains\PeopleConnector\Connector\Models\ReconciliationIssue;
 use App\Domains\PeopleConnector\Connector\Models\SyncCheckpoint;
 use App\Domains\PeopleConnector\Connector\Models\SyncCheckpointEvent;
@@ -181,6 +182,12 @@ function maintFixture(string $name): array
     $provider = app(ProviderRegistry::class)->find(MAINT_PROVIDER);
     $store = app(ProviderConnectionStore::class);
     $connection = $store->activate((int) $store->configure(ProviderScope::company((int) $company->id), MAINT_PROVIDER)->id);
+    // A usable credential keeps the connection's provider_credential_expiry row (#296) green.
+    ProviderCredentialRecord::query()->create([
+        'tenant_id' => (int) $connection->tenant_id, 'connection_id' => (int) $connection->id, 'provider_id' => MAINT_PROVIDER,
+        'key_id' => 'fixture-key', 'secret_reference' => 'base-integration:fixture', 'audience' => 'provider',
+        'scopes' => ['workforce:read'], 'issued_at' => '2020-01-01 00:00:00', 'expires_at' => '2099-01-01 00:00:00',
+    ]);
     app(WorkforceSyncRunner::class)->bootstrap(app(SchedulerPrincipal::class)->forConnection($connection), $provider, (int) $connection->id);
     $operator = User::factory()->create(['company_id' => $company->id]);
 

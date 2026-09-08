@@ -68,6 +68,15 @@ return [
     ],
 
     /*
+     * A separately provisioned, schema-identical scratch instance used only
+     * by connector:backup:rehearse. The URL is inherited by a fresh process,
+     * never accepted on the command line or written to its report.
+     */
+    'backup_rehearsal' => [
+        'database_url' => env('PEOPLE_CONNECTOR_REHEARSAL_DATABASE_URL'),
+    ],
+
+    /*
      * Retention per connector-owned table ([1012]). `days` is the period rows
      * are kept for, measured from `column`; null is indefinite and needs no
      * column, because "we keep this forever" reads no clock.
@@ -113,6 +122,11 @@ return [
         // (#257), e.g. database or mail. Null disables alerting: the command
         // says so and carries on.
         'alert_channel' => env('PEOPLE_CONNECTOR_DOCTOR_ALERT_CHANNEL'),
+
+        // Days before a connection's latest usable provider credential expires
+        // at which connector:doctor turns its provider_credential_expiry row
+        // yellow (#296). Red needs no window: no usable credential is red now.
+        'credential_warning_days' => (int) env('PEOPLE_CONNECTOR_DOCTOR_CREDENTIAL_WARNING_DAYS', 14),
     ],
 
     'file_exchange' => [
@@ -124,9 +138,10 @@ return [
     ],
 
     'retention' => [
-        // Progress logs: how far a sync got is operationally useful for a
-        // while, and of no interest a year later.
-        'people_connector_connector_sync_checkpoint_events' => ['days' => 365, 'column' => 'created_at'],
+        // Cursor history is append-only evidence of every accepted advance.
+        // A finite window would bypass the model's refusal through the purge
+        // query builder, so checkpoint events are retained indefinitely.
+        'people_connector_connector_sync_checkpoint_events' => ['days' => null],
 
         // Webhook deliveries (#223): the trigger ledger an operator replays a
         // failed delivery from. A year-old delivery is not worth re-sending;

@@ -181,7 +181,7 @@ test('a register naming an unknown capability is refused, not ignored', function
         ->and(Artisan::output())->toContain('unknown capability');
 });
 
-test('the shipped register verifies exactly what the first-party adapter declares and nothing for HR2000', function (): void {
+test('the shipped register verifies exactly the declared first-party and HR2000 capabilities', function (): void {
     $t = healthCheckTenant('Health Check Tenant');
 
     expect(healthCheckRun($t, ['--json' => true]))->toBe(0);
@@ -189,7 +189,7 @@ test('the shipped register verifies exactly what the first-party adapter declare
     expect($report['register'])->toEndWith('docs/providers/capability-register.json')
         ->and($report['connections'][0]['unsupported_declared'])->toBe([])
         ->and($report['connections'][0]['withdrawn'])->toBe([])
-        ->and(json_decode(file_get_contents($report['register']), true)['providers']['hr2000.sbg']['verified'])->toBe([]);
+        ->and(json_decode(file_get_contents($report['register']), true)['providers']['hr2000.sbg']['verified'][0]['capability'])->toBe('employee_directory');
 });
 
 test('a health port that throws reads as unavailable, blocks, and its message reaches no output', function (): void {

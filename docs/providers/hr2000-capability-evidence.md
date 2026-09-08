@@ -1,26 +1,27 @@
 # HR2000 capability evidence register
 
-**Status:** discovery incomplete — 2026-09-05.
+**Status:** employee-directory file inspection verified; remaining discovery incomplete — 2026-09-08.
 **Scope:** the SBG deployment profile, adapter ID hr2000.sbg.
 **Governing plan:** [People 0001](https://github.com/BelimbingApp/blb-people/blob/main/docs/plans/0001-people-architecture-and-provider-boundaries.md).
 **Delivery issue:** [connector #133](https://github.com/BelimbingApp/blb-people-connector/issues/133).
 
 ## What is established
 
-The [adapter](../../Connector/Providers/Hr2000Adapter.php) declares an empty
-CapabilitySet and returns null for every requested port. The
-[capability set](../../Connector/Data/CapabilitySet.php) therefore returns
-direction None and no port contracts for all twelve entries in
-[PeopleCapability](../../Connector/Enums/PeopleCapability.php). This was
-enumerated from the local classes on 2026-09-05: zero declarations, twelve
-directions None, twelve empty port lists. It is evidence of the adapter's
-current unsupported surface, not of a vendor product limitation.
+The [adapter](../../Connector/Providers/Hr2000Adapter.php) declares one
+read-only `employee_directory` channel delivered by file exchange through
+`ImportsWorkforceFiles`. Its resolved port accepts the exact candidate-1 CSV
+fixture for dry-run inspection and refuses projection application. Every
+provider-write port returns null, and the other eleven entries in
+[PeopleCapability](../../Connector/Enums/PeopleCapability.php) remain
+undeclared. This is evidence of the adapter's narrow current surface, not of a
+vendor product limitation.
 
 **Verified** requires deployment-specific vendor/customer evidence plus the
-applicable supported-interface or sandbox proof. **Unverified** means that
+applicable supported-interface or fixture proof. **Unverified** means that
 evidence has not been supplied. **Unsupported** below means unavailable through
-the current adapter; vendor capability remains unverified. No row claims a
-verified SBG business operation. Generic product literature in the earlier
+the current adapter; vendor capability remains unverified. The employee CSV
+row is verified only for parsing and inspection: it does not authorize applying
+rows to projections or writing to HR2000. Generic product literature in the earlier
 [discovery contract](../contracts/hr2000-discovery.md) is a discovery lead,
 not customer entitlement, interface conformance or processing approval.
 
@@ -28,7 +29,8 @@ not customer entitlement, interface conformance or processing approval.
 
 The machine-readable form of this table is
 [capability-register.json](capability-register.json) (`hr2000.sbg` verifies
-nothing); `connector:health:check` compares adapter declarations with it.
+`employee_directory` against the candidate-1 fixture and parser test);
+`connector:health:check` compares adapter declarations with it.
 
 All rows inherit the current adapter evidence above. The proposed evidence
 packages must identify the installed product/version and licensed operation,
@@ -38,7 +40,7 @@ implement or enable a port.
 | Capability | Current state | Evidence needed to verify the SBG operation | Risk if assumed |
 |---|---|---|---|
 | company_directory | Unsupported — vendor unverified | Vendor-supported company schema/API or file sample; stable keys and customer-confirmed platform-company mapping; sandbox company-isolation proof | Ambiguous company attribution or cross-company exposure |
-| employee_directory | Unsupported — vendor unverified | Approved employee field allowlist and identifiers; supported bootstrap/delta samples; termination, rehire and partial-response sandbox cases | Excessive personnel replication or incorrect deactivation |
+| employee_directory | Verified — candidate-1 CSV dry-run inspection only ([fixture](../../Connector/Tests/Fixtures/hr2000-employee-sample.csv), [parser proof](../../Connector/Tests/Feature/Hr2000ImportDryRunTest.php), #161/#277) | Projection application remains disabled pending approved mapping, atomic import and tenant/company denial proof | Excessive personnel replication or incorrect deactivation |
 | organization_directory | Unsupported — vendor unverified | Supported unit/position schema and identifiers; effective-date and assignment samples; customer-confirmed source ownership | Invented structure or invalid employee placement |
 | manager_hierarchy | Unsupported — vendor unverified | Supported reporting relationships with effective dates, acting/multiple assignments and vacancy semantics; sandbox traversal cases | Incorrect reporting scope or inferred access grants |
 | user_directory | Unsupported — vendor unverified | Supported user identity schema and reviewed employee/login binding; tenant/company denial proof | Identity collision or impersonation through coincident IDs |
@@ -61,7 +63,7 @@ discovery, not an assertion that named people accepted assignments.
 | Product edition/version | Profile has product and version fields | Installed edition/version and customer/vendor confirmation | Deployment owner + vendor |
 | licensed modules | Profile accepts evidenced module names; undiscovered list is empty | Purchased modules and permitted read/write operations | Deployment owner + vendor |
 | hosting | Profile represents hosting mode | SBG topology, operator and administrative separation | Deployment owner |
-| API or file formats | No implemented transport; profile can name file exchange, remote HTTP or direct database | Vendor-supported interface, schema/sample and approved import/export protocol | Vendor + integration owner |
+| API or file formats | Candidate-1 employee CSV inspection is implemented and fixture-proved | Approval and implementation for projection application, exports, remote HTTP or direct database | Vendor + integration owner |
 | identifiers | Stable-key mapping evidence is required | Resource keys, company cardinality, transfer/rehire/deactivation semantics | Vendor + data owner |
 | authentication | No implemented HR2000 port | Authentication method, credential scopes, delegated actor model and rotation | Vendor + security owner |
 | pagination/deltas | No implemented HR2000 port | Cursor/continuation semantics, ordering, replay and deletion behavior | Vendor + integration owner |
@@ -77,8 +79,8 @@ discovery, not an assertion that named people accepted assignments.
 
 The [deployment profile](../../Connector/Data/Hr2000DeploymentProfile.php)
 blocks incomplete discovery. Even populated profile fields retain
-transport_implementation_unavailable once a transport is selected: a profile
-is not an implementation. Health remains Unknown without a connection attempt.
+transport_implementation_unavailable once a transport is selected: dry-run
+file inspection is not a deployable import transport. Health remains Unknown without a connection attempt.
 The [existing tests](../../Connector/Tests/Feature/Hr2000AdapterTest.php)
 document these guards; this documentation PR did not rerun them or contact a
 vendor/sandbox.
