@@ -2,6 +2,7 @@
 
 namespace App\Domains\PeopleConnector\Connector\Models;
 
+use App\Domains\PeopleConnector\Connector\Contracts\RefusesDeletion;
 use App\Domains\PeopleConnector\Connector\Exceptions\AppendOnlyRecordException;
 
 /**
@@ -11,7 +12,7 @@ use App\Domains\PeopleConnector\Connector\Exceptions\AppendOnlyRecordException;
  * Only the status and its reason move, and never through a delete: a record
  * that could be removed would let changed bytes inherit an earlier approval.
  */
-final class FileExchangeRecord extends TenantOwnedModel
+final class FileExchangeRecord extends TenantOwnedModel implements RefusesDeletion
 {
     public const DIRECTION_IMPORT = 'import';
 
