@@ -9,6 +9,7 @@ use App\Domains\PeopleConnector\Connector\Exceptions\AppendOnlyRecordException;
 use App\Domains\PeopleConnector\Connector\Models\PrivilegedSupportAction;
 use App\Domains\PeopleConnector\Connector\Models\PrivilegedSupportGrant;
 use App\Domains\PeopleConnector\Connector\Services\PrivilegedSupportService;
+use Illuminate\Database\QueryException;
 use Illuminate\Support\Facades\DB;
 
 function grantImmutabilityActor(int $tenantId, int $companyId, int $id): Actor
@@ -94,4 +95,44 @@ test('revoke still succeeds and appends the grant_revoked action', function (): 
             ->count())->toBe(1)
         ->and(PrivilegedSupportAction::query()->where('grant_id', $grant->id)->count())
         ->toBe($beforeActions + 1);
+});
+
+test('raw query-builder writes hit the DB immutability trigger, not only the model guard', function (): void {
+    $f = grantImmutabilityFixture('Grant Trigger Layer Tenant');
+    $table = 'people_connector_connector_privileged_support_grants';
+    $id = (int) $f['grant']->id;
+    $purpose = $f['grant']->purpose;
+
+    // Each attempt needs its own transaction: on PostgreSQL a raised exception
+    // poisons the surrounding one (25P02) and the next refusal would misreport.
+    expect(fn () => DB::transaction(fn () => DB::table($table)->where('id', $id)->update(['purpose' => 'tampered'])))
+        ->toThrow(QueryException::class, 'append-only');
+
+    expect(fn () => DB::transaction(fn () => DB::table($table)->where('id', $id)->delete()))
+        ->toThrow(QueryException::class, 'append-only');
+
+    expect(fn () => DB::transaction(fn () => DB::table($table)->where('id', $id)->update([
+        'revoked_at' => now(),
+        'updated_at' => now(),
+    ])))->not->toThrow(QueryException::class);
+
+    expect(fn () => DB::transaction(fn () => DB::table($table)->where('id', $id)->update([
+        'revoked_at' => now(),
+        'id' => $id + 1,
+        'updated_at' => now(),
+    ])))->toThrow(QueryException::class, 'append-only');
+
+    // Fresh grant: revoke carve-out refuses when purpose rides along.
+    $fresh = grantImmutabilityFixture('Grant Trigger Purpose Ride Tenant');
+    $freshId = (int) $fresh['grant']->id;
+    expect(fn () => DB::transaction(fn () => DB::table($table)->where('id', $freshId)->update([
+        'revoked_at' => now(),
+        'purpose' => 'also tampered',
+        'updated_at' => now(),
+    ])))->toThrow(QueryException::class, 'append-only');
+
+    expect(DB::table($table)->where('id', $id)->value('purpose'))->toBe($purpose)
+        ->and(DB::table($table)->where('id', $id)->value('revoked_at'))->not->toBeNull()
+        ->and(DB::table($table)->where('id', $freshId)->value('purpose'))->toBe($fresh['grant']->purpose)
+        ->and(DB::table($table)->where('id', $freshId)->value('revoked_at'))->toBeNull();
 });
