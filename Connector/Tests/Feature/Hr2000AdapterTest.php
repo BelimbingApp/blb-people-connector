@@ -15,6 +15,7 @@ use App\Domains\PeopleConnector\Connector\Enums\Hr2000Transport;
 use App\Domains\PeopleConnector\Connector\Enums\PeopleCapability;
 use App\Domains\PeopleConnector\Connector\Enums\ProviderHealthState;
 use App\Domains\PeopleConnector\Connector\Exceptions\InvalidProviderConfigurationException;
+use App\Domains\PeopleConnector\Connector\Exceptions\UnsupportedProviderOperation;
 use App\Domains\PeopleConnector\Connector\Providers\Hr2000Adapter;
 use App\Domains\PeopleConnector\Connector\Services\ProviderRegistry;
 use App\Domains\PeopleConnector\Connector\Testing\ProviderConformance;
@@ -39,7 +40,9 @@ test('the HR2000 adapter exposes only its evidenced file import read port', func
 
     $port = $adapter->resolvePort(ImportsWorkforceFiles::class, $authorization);
     expect($port)->toBeInstanceOf(ImportsWorkforceFiles::class)
-        ->and($port->inspect($file)->accepted)->toBeTrue();
+        ->and($port->inspect($file)->accepted)->toBeTrue()
+        ->and(fn () => $port->inspectAndImport($file))->toThrow(UnsupportedProviderOperation::class, 'dry-run inspection only')
+        ->and($adapter->resolvePort(BootstrapsWorkforce::class, $authorization))->toBeNull();
 
     foreach ([AuthenticatesProvider::class, ProvidesProviderUiHandoff::class] as $writeContract) {
         expect($adapter->resolvePort($writeContract, $authorization))->toBeNull();

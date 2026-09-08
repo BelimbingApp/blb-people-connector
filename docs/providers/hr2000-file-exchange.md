@@ -1,6 +1,6 @@
 # HR2000 file-exchange protocol
 
-**Status:** required protocol, not an enabled integration — 2026-09-06.  
+**Status:** candidate-1 CSV inspection enabled; projection import/export disabled — 2026-09-08.
 **Scope:** the SBG deployment profile, adapter ID `hr2000.sbg`.  
 **Governing evidence:** [HR2000 capability evidence register](hr2000-capability-evidence.md).  
 **Governing plan:** [People 0001](https://github.com/BelimbingApp/blb-people/blob/main/docs/plans/0001-people-architecture-and-provider-boundaries.md).  
@@ -8,17 +8,15 @@
 
 ## Current boundary
 
-No HR2000 file format is approved for this deployment. The current adapter
-declares zero capabilities and returns no port contracts. No SBG-specific
-schema, sample, licensed operation, processing approval or transport
-implementation has been supplied. Generic product literature is a discovery
-lead only; it does not approve a format or establish that an operation is
-available to SBG.
+The candidate-1 HR2000 employee CSV layout is approved for dry-run inspection
+against the anonymised [fixture](../../Connector/Tests/Fixtures/hr2000-employee-sample.csv)
+and parser proof delivered by #161/#277. The adapter therefore declares one
+read-only `employee_directory` file-exchange channel and resolves its inspection
+port. Applying inspected rows to projections and every export or provider-write
+operation remain disabled; the port refuses `inspectAndImport()` explicitly.
 
-Accordingly, every HR2000 import and export operation remains disabled. This
-document defines the protocol that a later file-exchange implementation must
-meet after the evidence register verifies the operation. It does not add a
-capability, implement a transport, authorize direct database access or make
+This document defines the protocol a later projection-import implementation
+must meet. The verified parser does not authorize direct database access or make
 HR2000 an authority for Skills, Training or Progression workflows.
 
 ## What makes a format approved
@@ -41,9 +39,10 @@ direction before the adapter may publish a file port. The package must identify:
 - the data owner, integration owner and deployment owner responsible for the
   approval and operation.
 
-The approved-format list is therefore empty today. A similarly named HR2000
-product, a manually produced spreadsheet or a successful ad hoc upload is not
-format evidence. Changing a schema, mapping, encoding, timezone, operation,
+The approved-format list contains only
+`hr2000.sbg.employee-csv.candidate-1`, and only for dry-run inspection. A
+similarly named HR2000 product, a manually produced spreadsheet or a successful
+ad hoc upload is not format evidence. Changing a schema, mapping, encoding, timezone, operation,
 direction or company scope requires a newly reviewed evidence package; it must
 not silently inherit an earlier approval.
 
@@ -89,7 +88,7 @@ authoritative-writer and field allowlist permit the data. The sequence is:
    approver. The approval binds the exact SHA-256, schema version, operation,
    tenant/company scope, mapping version and inspection result. Approval of one
    file never approves changed bytes or a replacement file.
-4. At execution, use the
+4. At execution, a later projection-import implementation must use the
    [`ImportsWorkforceFiles`](../../Connector/Contracts/ImportsWorkforceFiles.php)
    boundary to atomically re-inspect the exact file and import only an accepted
    inspection with the same hash. A changed or newly rejected file returns to
@@ -206,5 +205,6 @@ Before enabling any HR2000 file operation, all of the following must be true:
 - unsupported operations remain undeclared and are rejected at the execution
   boundary.
 
-Until then, the current zero-capability adapter is the correct fail-closed
-behavior.
+Until projection application is implemented and proved, the current
+inspection-only capability and explicit import refusal are the correct
+fail-closed behavior.
