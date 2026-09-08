@@ -137,6 +137,9 @@ final class SupportBundleBuilder
     {
         $byStatus = WebhookDelivery::query()->forTenant($tenantId)->where('received_at', '>=', $since)
             ->selectRaw('status, count(*) as n')->groupBy('status')->pluck('n', 'status')->map(fn (mixed $n): int => (int) $n)->all();
+        // Postgres GROUP BY order is not alphabetical; pin the map so the
+        // bundle JSON is stable across drivers (and identical() in Pest).
+        ksort($byStatus);
 
         return [
             'deliveries_by_status' => $byStatus,
