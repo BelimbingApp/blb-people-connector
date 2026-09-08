@@ -68,6 +68,15 @@ return [
     ],
 
     /*
+     * A separately provisioned, schema-identical scratch instance used only
+     * by connector:backup:rehearse. The URL is inherited by a fresh process,
+     * never accepted on the command line or written to its report.
+     */
+    'backup_rehearsal' => [
+        'database_url' => env('PEOPLE_CONNECTOR_REHEARSAL_DATABASE_URL'),
+    ],
+
+    /*
      * Retention per connector-owned table ([1012]). `days` is the period rows
      * are kept for, measured from `column`; null is indefinite and needs no
      * column, because "we keep this forever" reads no clock.
