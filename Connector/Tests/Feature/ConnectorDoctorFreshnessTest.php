@@ -9,6 +9,7 @@ use App\Core\User\Models\User;
 use App\Domains\PeopleConnector\Connector\Data\ProviderScope;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceChangePage;
 use App\Domains\PeopleConnector\Connector\Models\ProviderConnection;
+use App\Domains\PeopleConnector\Connector\Models\ProviderCredentialRecord;
 use App\Domains\PeopleConnector\Connector\Notifications\ConnectorDoctorAlertNotification;
 use App\Domains\PeopleConnector\Connector\Services\ConnectorDoctor;
 use App\Domains\PeopleConnector\Connector\Services\ProviderConnectionStore;
@@ -73,8 +74,19 @@ function doctorFreshnessConnection(int $tenantId, string $providerId = FirstPart
     app(TenantContext::class)->set($tenantId);
     $store = app(ProviderConnectionStore::class);
     $connection = $store->configure($scope ?? ProviderScope::tenant(), $providerId);
+    $connectionId = (int) $store->activate((int) $connection->id)->id;
 
-    return (int) $store->activate((int) $connection->id)->id;
+    // A usable credential far from expiry, so this connection's
+    // provider_credential_expiry row (#296) is green and only the freshness
+    // row under test moves a count or an exit code.
+    ProviderCredentialRecord::query()->create([
+        'tenant_id' => $tenantId, 'connection_id' => $connectionId, 'provider_id' => $providerId,
+        'key_id' => 'freshness-key', 'secret_reference' => 'base-integration:freshness-test',
+        'audience' => 'provider', 'scopes' => ['workforce:read'],
+        'issued_at' => '2020-01-01 00:00:00', 'expires_at' => '2099-01-01 00:00:00',
+    ]);
+
+    return $connectionId;
 }
 
 function doctorFreshnessCheckpoint(int $tenantId, int $connectionId, DateTimeImmutable $asOf, int $expectedVersion = 0): void
