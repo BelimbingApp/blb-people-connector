@@ -133,7 +133,7 @@ return new class extends Migration
                         AND NEW.requested_by_user_id IS NOT DISTINCT FROM OLD.requested_by_user_id
                         AND NEW.approved_by_user_id IS NOT DISTINCT FROM OLD.approved_by_user_id
                         AND NEW.purpose IS NOT DISTINCT FROM OLD.purpose
-                        AND NEW.capabilities IS NOT DISTINCT FROM OLD.capabilities
+                        AND NEW.capabilities::jsonb IS NOT DISTINCT FROM OLD.capabilities::jsonb
                         AND NEW.issued_at IS NOT DISTINCT FROM OLD.issued_at
                         AND NEW.expires_at IS NOT DISTINCT FROM OLD.expires_at
                         AND NEW.created_at IS NOT DISTINCT FROM OLD.created_at
