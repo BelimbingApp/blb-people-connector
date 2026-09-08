@@ -354,3 +354,50 @@ test('an unknown --status is refused rather than silently matching nothing', fun
     expect($list['status'])->toBe(1)
         ->and($list['output'])->toContain('recorded, quarantined or archived');
 });
+
+test('a path-shaped ProviderFile name is refused before any ledger write', function (): void {
+    $directory = sys_get_temp_dir().'/blb-fx-op-path-'.getmypid();
+    if (! is_dir($directory)) {
+        mkdir($directory, 0700, true);
+    }
+    $path = $directory.'/payroll.csv';
+    file_put_contents($path, "pay,1\n");
+    $sha = hash_file('sha256', $path);
+
+    expect(fn () => new ProviderFile('/srv/private/payroll.csv', $sha, $path))
+        ->toThrow(InvalidArgumentException::class, 'basename');
+    expect(fn () => new ProviderFile('subdir\\payroll.csv', $sha, $path))
+        ->toThrow(InvalidArgumentException::class, 'basename');
+});
+
+test('list JSON, table output and the record audit never disclose the on-disk path', function (): void {
+    $f = fxOpFixture('FX Op No Paths', 'test.fx-op-no-paths');
+    $record = fxOpRecord($f, 'payroll.csv', "pay,1\n");
+    $scratch = sys_get_temp_dir().'/blb-fx-op-'.getmypid();
+
+    $json = fxOpCall('connector:file-exchange:list', $f, [
+        '--connection' => $f['connectionId'],
+        '--json' => true,
+    ]);
+    $table = fxOpCall('connector:file-exchange:list', $f, [
+        '--connection' => $f['connectionId'],
+    ]);
+
+    expect($json['status'])->toBe(0)
+        ->and($json['output'])->toContain('payroll.csv')
+        ->and($json['output'])->not->toContain($scratch)
+        ->and($json['output'])->not->toContain('/srv/private/')
+        ->and($table['status'])->toBe(0)
+        ->and($table['output'])->toContain('payroll.csv')
+        ->and($table['output'])->not->toContain($scratch);
+
+    $audit = OperatorAudit::query()
+        ->forTenant($f['tenantId'])
+        ->where('operation', OperatorAuditOperation::FileExchangeRecorded)
+        ->orderByDesc('id')
+        ->first();
+
+    expect($audit)->not->toBeNull()
+        ->and($audit->after_summary['file_name'] ?? null)->toBe('payroll.csv');
+    expect(json_encode($audit->after_summary))->not->toContain($scratch);
+});

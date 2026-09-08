@@ -325,3 +325,24 @@ test('a file name the audit refuses leaves no record behind', function (): void 
     expect(DB::table(FILE_EXCHANGE_TABLE)->where('file_name', $name)->count())->toBe(0)
         ->and(OperatorAudit::query()->count())->toBe($audits);
 });
+
+test('a path-shaped file name is refused at the ProviderFile boundary before the ledger writes', function (): void {
+    $f = fileExchangeTenant('FX Path Name');
+    $directory = sys_get_temp_dir().'/blb-file-exchange-'.getmypid();
+    if (! is_dir($directory)) {
+        mkdir($directory, 0700, true);
+    }
+    $path = $directory.'/payroll.csv';
+    file_put_contents($path, "pay,1\n");
+
+    expect(fn () => app(FileExchangeLedger::class)->record(
+        $f['connection'],
+        new ProviderFile('/srv/private/payroll.csv', hash_file('sha256', $path), $path),
+        FileExchangeRecord::DIRECTION_IMPORT,
+        'workforce.import',
+        $f['actor'],
+    ))->toThrow(InvalidArgumentException::class, 'basename');
+
+    expect(DB::table(FILE_EXCHANGE_TABLE)->count())->toBe(0)
+        ->and(OperatorAudit::query()->count())->toBe(0);
+});
