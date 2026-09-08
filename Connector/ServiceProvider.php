@@ -13,7 +13,10 @@ use App\Domains\PeopleConnector\Connector\Console\Commands\ConnectionMaintenance
 use App\Domains\PeopleConnector\Connector\Console\Commands\ConnectorDoctorCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\CutoverRehearsalCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\EgressProbeCommand;
+use App\Domains\PeopleConnector\Connector\Console\Commands\FileExchangeArchiveCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\FileExchangeDiscoverCommand;
+use App\Domains\PeopleConnector\Connector\Console\Commands\FileExchangeListCommand;
+use App\Domains\PeopleConnector\Connector\Console\Commands\FileExchangeQuarantineCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\Hr2000ImportDryRunCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\IdentityAuditTrailCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\MigrateDryRunCommand;
@@ -97,6 +100,9 @@ class ServiceProvider extends BaseServiceProvider
                 CapabilityVerifyCommand::class,
                 ConnectionHealthCheckCommand::class,
                 ConnectionMaintenanceCommand::class,
+                FileExchangeArchiveCommand::class,
+                FileExchangeListCommand::class,
+                FileExchangeQuarantineCommand::class,
                 ConnectorDoctorCommand::class,
                 EgressProbeCommand::class,
                 Hr2000ImportDryRunCommand::class,
