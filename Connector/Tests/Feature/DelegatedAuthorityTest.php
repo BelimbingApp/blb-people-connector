@@ -63,7 +63,9 @@ test('an expired authority is refused', function (): void {
     $signer = app(DelegatedAuthoritySigner::class);
     $token = $signer->sign(delegationAuthority());
 
-    expect(fn () => $signer->verify($token, DELEGATION_AUDIENCE, new DateTimeImmutable('2026-09-06T12:02:01+00:00')))
+    // One minute past expiry: outside the default 30-second skew tolerance
+    // (#185). The exact boundary is DelegatedAuthorityHardeningTest's.
+    expect(fn () => $signer->verify($token, DELEGATION_AUDIENCE, new DateTimeImmutable('2026-09-06T12:03:00+00:00')))
         ->toThrow(DelegatedAuthorityException::class);
 });
 
@@ -100,6 +102,153 @@ test('a signing secret that is missing or too short fails closed', function (): 
     // A short key is worse than no key: it looks configured.
     config()->set('people-connector.delegation.secret', 'short');
     expect(fn () => $signer->sign(delegationAuthority()))->toThrow(DelegatedAuthorityException::class);
+});
+
+/*
+ * Rotation with an overlap window (#262). No clock is read anywhere below:
+ * every instant is passed to verify(), so no second can tick between minting
+ * a token and asking about it, and each boundary is asserted from both sides
+ * of the same instant.
+ */
+
+test('a token signed under the rotated-away secret verifies inside the overlap and is refused at its expiry instant and after', function (): void {
+    $previous = str_repeat('a', 64);
+    config()->set('people-connector.delegation.secret', $previous);
+    $signer = app(DelegatedAuthoritySigner::class);
+
+    // Minted before the rotation. Nothing about this token changes when the
+    // deployment's keys do; the whole point of the window is that it survives.
+    $token = $signer->sign(delegationAuthority([
+        'issuedAt' => new DateTimeImmutable('2026-09-07T12:00:00+00:00'),
+        'expiresAt' => new DateTimeImmutable('2026-09-07T12:05:00+00:00'),
+    ]));
+
+    config()->set('people-connector.delegation.secret', str_repeat('b', 64));
+    config()->set('people-connector.delegation.previous_secret', $previous);
+    config()->set('people-connector.delegation.previous_secret_expires_at', '2026-09-07T12:02:00+00:00');
+
+    expect($signer->verify($token, DELEGATION_AUDIENCE, new DateTimeImmutable('2026-09-07T12:01:59+00:00'))->subject)
+        ->toBe('employee:EMP-1');
+
+    // The expiry instant is when the overlap is over, not the last moment it
+    // holds. The token itself is still live until 12:05, so an Expired answer
+    // here would be the wrong refusal for the right reason.
+    foreach (['2026-09-07T12:02:00+00:00', '2026-09-07T12:02:01+00:00'] as $lapsed) {
+        try {
+            $signer->verify($token, DELEGATION_AUDIENCE, new DateTimeImmutable($lapsed));
+            test()->fail("A token signed with the retired secret was accepted at {$lapsed}.");
+        } catch (DelegatedAuthorityException $refused) {
+            expect($refused->refusal)->toBe(DelegatedAuthorityRefusal::Unsigned);
+        }
+    }
+});
+
+test('a previous delegation secret with no expiry, an unreadable expiry or one already past is never consulted', function (): void {
+    $previous = str_repeat('a', 64);
+    config()->set('people-connector.delegation.secret', $previous);
+    $signer = app(DelegatedAuthoritySigner::class);
+    $token = $signer->sign(delegationAuthority([
+        'issuedAt' => new DateTimeImmutable('2026-09-07T12:00:00+00:00'),
+        'expiresAt' => new DateTimeImmutable('2026-09-07T12:05:00+00:00'),
+    ]));
+    config()->set('people-connector.delegation.secret', str_repeat('b', 64));
+    config()->set('people-connector.delegation.previous_secret', $previous);
+
+    // An old key with no end date is a key nobody retired, and a window that
+    // has closed is not a window. Neither is a reason to trust a signature.
+    foreach ([null, '', 'whenever', '2026-09-07T11:59:59+00:00'] as $expiry) {
+        config()->set('people-connector.delegation.previous_secret_expires_at', $expiry);
+        try {
+            $signer->verify($token, DELEGATION_AUDIENCE, new DateTimeImmutable('2026-09-07T12:01:00+00:00'));
+            test()->fail('A retired secret with expiry ['.var_export($expiry, true).'] was consulted.');
+        } catch (DelegatedAuthorityException $refused) {
+            expect($refused->refusal)->toBe(DelegatedAuthorityRefusal::Unsigned);
+        }
+    }
+
+    // A key too weak to sign with is too weak to accept. sign() will not use a
+    // short key either, so this signature is minted by hand: without it the
+    // case would pass because the payload was signed by something else.
+    $short = str_repeat('s', 16);
+    $payload = explode('.', $token, 2)[0];
+    $forged = $payload.'.'.rtrim(strtr(base64_encode(hash_hmac('sha256', $payload, $short, true)), '+/', '-_'), '=');
+    config()->set('people-connector.delegation.previous_secret', $short);
+    config()->set('people-connector.delegation.previous_secret_expires_at', '2026-09-07T12:02:00+00:00');
+
+    expect(fn () => $signer->verify($forged, DELEGATION_AUDIENCE, new DateTimeImmutable('2026-09-07T12:01:00+00:00')))
+        ->toThrow(DelegatedAuthorityException::class);
+});
+
+test('a token signed with a secret that is neither current nor previous is refused inside the overlap', function (): void {
+    config()->set('people-connector.delegation.secret', str_repeat('c', 64));
+    $signer = app(DelegatedAuthoritySigner::class);
+    $token = $signer->sign(delegationAuthority([
+        'issuedAt' => new DateTimeImmutable('2026-09-07T12:00:00+00:00'),
+        'expiresAt' => new DateTimeImmutable('2026-09-07T12:05:00+00:00'),
+    ]));
+
+    config()->set('people-connector.delegation.secret', str_repeat('b', 64));
+    config()->set('people-connector.delegation.previous_secret', str_repeat('a', 64));
+    config()->set('people-connector.delegation.previous_secret_expires_at', '2026-09-07T12:02:00+00:00');
+
+    // An open window admits one named key, not any key.
+    try {
+        $signer->verify($token, DELEGATION_AUDIENCE, new DateTimeImmutable('2026-09-07T12:01:00+00:00'));
+        test()->fail('A token signed with an unknown secret was accepted during the overlap.');
+    } catch (DelegatedAuthorityException $refused) {
+        expect($refused->refusal)->toBe(DelegatedAuthorityRefusal::Unsigned);
+    }
+});
+
+test('a token signed under the previous secret for another audience is still refused as a wrong audience', function (): void {
+    $previous = str_repeat('a', 64);
+    config()->set('people-connector.delegation.secret', $previous);
+    $signer = app(DelegatedAuthoritySigner::class);
+    $token = $signer->sign(delegationAuthority([
+        'audience' => 'people-connector.somewhere-else',
+        'issuedAt' => new DateTimeImmutable('2026-09-07T12:00:00+00:00'),
+        'expiresAt' => new DateTimeImmutable('2026-09-07T12:05:00+00:00'),
+    ]));
+
+    config()->set('people-connector.delegation.secret', str_repeat('b', 64));
+    config()->set('people-connector.delegation.previous_secret', $previous);
+    config()->set('people-connector.delegation.previous_secret_expires_at', '2026-09-07T12:02:00+00:00');
+
+    // The overlap moves one check, not the rest of them: a token the old key
+    // vouches for still has to be addressed here.
+    try {
+        $signer->verify($token, DELEGATION_AUDIENCE, new DateTimeImmutable('2026-09-07T12:01:00+00:00'));
+        test()->fail('An authority for another audience was accepted under the previous secret.');
+    } catch (DelegatedAuthorityException $refused) {
+        expect($refused->refusal)->toBe(DelegatedAuthorityRefusal::WrongAudience);
+    }
+});
+
+test('a refusal after the overlap has closed repeats neither the current nor the retired secret', function (): void {
+    $previous = str_repeat('a', 64);
+    $current = str_repeat('b', 64);
+    config()->set('people-connector.delegation.secret', $previous);
+    $signer = app(DelegatedAuthoritySigner::class);
+    $token = $signer->sign(delegationAuthority([
+        'issuedAt' => new DateTimeImmutable('2026-09-07T12:00:00+00:00'),
+        'expiresAt' => new DateTimeImmutable('2026-09-07T12:05:00+00:00'),
+    ]));
+
+    config()->set('people-connector.delegation.secret', $current);
+    config()->set('people-connector.delegation.previous_secret', $previous);
+    config()->set('people-connector.delegation.previous_secret_expires_at', '2026-09-07T12:02:00+00:00');
+
+    try {
+        $signer->verify($token, DELEGATION_AUDIENCE, new DateTimeImmutable('2026-09-07T12:03:00+00:00'));
+        test()->fail('A token signed with the retired secret was accepted after the overlap.');
+    } catch (DelegatedAuthorityException $refused) {
+        // A rotated-away key must not be recoverable from what the refusal
+        // says: docs/contracts/diagnostic-privacy.md. One needle per negated
+        // assertion, because not->toContain(a, b) only fails on both.
+        expect($refused->getMessage())->not->toContain($previous);
+        expect($refused->getMessage())->not->toContain($current);
+        expect($refused->refusal)->toBe(DelegatedAuthorityRefusal::Unsigned);
+    }
 });
 
 test('an authority for another tenant is refused by the backend recheck', function (): void {
@@ -164,8 +313,12 @@ function delegationBothPaths(DelegatedAuthority $authority, string $audience, st
         $inProcess = false;
     }
 
+    // Same claims, its own jti: the in-process spend above consumed the
+    // first token, and a replay refusal here would be the ledger talking,
+    // not the transport under comparison (#185).
+    $twin = DelegatedAuthority::fromClaims([...$authority->claims(), 'jti' => $authority->id.'-http']);
     $request = Request::create('/delegated', 'POST');
-    $request->headers->set(DelegatedCommandController::AUTHORITY_HEADER, $signer->sign($authority));
+    $request->headers->set(DelegatedCommandController::AUTHORITY_HEADER, $signer->sign($twin));
     $response = app(DelegatedCommandController::class)($request, $audience, $operation);
 
     return ['inProcess' => $inProcess, 'http' => $response->getStatusCode() === 200];

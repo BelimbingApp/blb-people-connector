@@ -1,5 +1,7 @@
 <?php
 
+use App\Base\Authz\DTO\Actor;
+use App\Base\Authz\Enums\PrincipalType;
 use App\Base\Database\DTO\DataShare\DataShareExportResult;
 use App\Base\Database\DTO\DataShare\DataSharePackageExpectation;
 use App\Base\Database\DTO\DataShare\DataShareTransferOfferBundle;
@@ -16,6 +18,7 @@ use App\Base\Settings\Contracts\SettingsService;
 use App\Base\Tenancy\Contracts\TenantContext;
 use App\Domains\PeopleConnector\Connector\Data\ExternalReference;
 use App\Domains\PeopleConnector\Connector\Data\ProviderAuthenticationRequest;
+use App\Domains\PeopleConnector\Connector\Data\ProviderFile;
 use App\Domains\PeopleConnector\Connector\Data\ProviderScope;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceEmployee;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceOrganizationUnit;
@@ -26,6 +29,7 @@ use App\Domains\PeopleConnector\Connector\Models\ProviderConnection;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceEmployeeProjection;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceOrganizationUnitProjection;
 use App\Domains\PeopleConnector\Connector\Models\WorkforcePositionProjection;
+use App\Domains\PeopleConnector\Connector\Services\FileExchangeLedger;
 use App\Domains\PeopleConnector\Connector\Services\ProviderConnectionStore;
 use App\Domains\PeopleConnector\Connector\Services\ProviderCredentialStore;
 use App\Domains\PeopleConnector\Connector\Services\WorkforceProjectionStore;
@@ -353,4 +357,43 @@ test('an operator can redact the credential reference on export, and the platfor
 
     $plan = app(DataShareImportPlanner::class)->plan(connectorShareReceive($bundle, $export));
     expect($plan->actions()->where('table_name', $table)->value('action'))->toBe('conflict');
+});
+
+test('the file exchange ledger leaves with the scope and comes back into the empty tenant with the same row count', function (): void {
+    $fixture = connectorShareFixture();
+    $connection = ProviderConnection::query()
+        ->where('tenant_id', $fixture->tenantId)
+        ->where('company_id', $fixture->alphaCompany->id)
+        ->firstOrFail();
+    $actor = new Actor(PrincipalType::USER, 9001, (int) $fixture->alphaCompany->id, tenantId: $fixture->tenantId);
+    $directory = sys_get_temp_dir().'/blb-share-file-exchange-'.getmypid();
+
+    if (! is_dir($directory)) {
+        mkdir($directory, 0700, true);
+    }
+
+    foreach (['share-a.csv' => "id,name\n1,A\n", 'share-b.csv' => "id,name\n2,B\n"] as $name => $bytes) {
+        file_put_contents($directory.'/'.$name, $bytes);
+        app(FileExchangeLedger::class)->record($connection, new ProviderFile($name, hash('sha256', $bytes), $directory.'/'.$name), 'import', 'workforce.import', $actor);
+    }
+
+    $table = 'people_connector_connector_file_exchange_records';
+    $before = DB::table($table)->count();
+    expect($before)->toBe(2)
+        ->and(array_column(app(DataShareScopeCatalog::class)->scope(PEOPLE_CONNECTOR_SHARE_SCOPE)->tables, 'table'))->toContain($table);
+
+    ['bundle' => $bundle, 'export' => $export] = connectorSharePublish(PEOPLE_CONNECTOR_SHARE_SCOPE);
+
+    // The model refuses delete; the query builder is the destination tenant
+    // being empty, not an application path.
+    DB::table($table)->delete();
+    expect(DB::table($table)->count())->toBe(0);
+
+    $receipt = connectorShareReceive($bundle, $export);
+    $plan = app(DataShareImportPlanner::class)->plan($receipt);
+    expect($plan->status)->toBe('ready')
+        ->and($plan->summary['counts']['insert'])->toBe($before);
+    app(DataSharePackageApplier::class)->apply($plan, $receipt->package_sha256, $plan->plan_hash, confirmed: true);
+
+    expect(DB::table($table)->count())->toBe($before);
 });

@@ -26,6 +26,7 @@ use App\Domains\PeopleConnector\Connector\Data\WorkforceUpsert;
 use App\Domains\PeopleConnector\Connector\Enums\OperatorAuditOperation;
 use App\Domains\PeopleConnector\Connector\Enums\PeopleCapability;
 use App\Domains\PeopleConnector\Connector\Exceptions\CompanyMoveRefusedException;
+use App\Domains\PeopleConnector\Connector\Exceptions\ConnectionMaintenanceException;
 use App\Domains\PeopleConnector\Connector\Exceptions\ConnectorRecordNotFoundException;
 use App\Domains\PeopleConnector\Connector\Exceptions\CorruptWorkforcePageException;
 use App\Domains\PeopleConnector\Connector\Exceptions\ExternalIdentityCollisionException;
@@ -438,7 +439,17 @@ final class WorkforceSyncRunner
                 $tally['reactivations']++;
             }
 
-            $this->projections->upsert($connectionId, $record, $provenance);
+            $projection = $this->projections->upsert($connectionId, $record, $provenance);
+
+            if ($projection->observed_at->greaterThan($record->observedAt)) {
+                // The store kept the newer facts it already had and wrote
+                // nothing (#273). Counting that as an upsert would have the
+                // report claim a change nobody can find; it is superseded.
+                $tally['superseded']++;
+
+                return;
+            }
+
             $tally[match (true) {
                 $record instanceof WorkforceCompany => 'companies',
                 $record instanceof WorkforceOrganizationUnit => 'organizationUnits',
@@ -523,6 +534,15 @@ final class WorkforceSyncRunner
             throw new WorkforceSyncException("Provider connection {$connectionId} is not active.");
         }
 
+        // A planned window (#264) holds every pass here, before a port is
+        // resolved or a page read, so a half-migrated provider is never
+        // consulted and no checkpoint or attempt counter moves.
+        if ($connection->inMaintenance()) {
+            throw new ConnectionMaintenanceException(
+                "Provider connection {$connectionId} is in maintenance until {$connection->maintenance_until->format(DATE_ATOM)}.",
+            );
+        }
+
         return $connection;
     }
 
@@ -602,7 +622,7 @@ final class WorkforceSyncRunner
     private function seen(array $tally): int
     {
         return $tally['companies'] + $tally['organizationUnits'] + $tally['positions'] + $tally['employees']
-            + $tally['deactivations'] + $tally['mergesQueued'] + $tally['conflicts'];
+            + $tally['deactivations'] + $tally['mergesQueued'] + $tally['conflicts'] + $tally['superseded'];
     }
 
     /**

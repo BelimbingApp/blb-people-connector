@@ -3,10 +3,7 @@
 namespace App\Domains\PeopleConnector\Connector\Services;
 
 use App\Domains\PeopleConnector\Connector\Exceptions\WebhookRefusal;
-use Closure;
 use DateTimeImmutable;
-use Illuminate\Support\Facades\Cache;
-use Throwable;
 
 /**
  * Authenticates a provider callback without interpreting its payload.
@@ -14,6 +11,8 @@ use Throwable;
  * The connection id, timestamp, delivery id and raw request bytes are signed.
  * Binding every routing and replay-control input to the signature keeps a valid
  * callback from being moved to another connection or replayed under a new id.
+ * Whether a delivery id was already accepted is the receipt ledger's question
+ * (WebhookReceiptLedger, #227), not this verifier's.
  */
 final class WorkforceWebhookVerifier
 {
@@ -53,22 +52,20 @@ final class WorkforceWebhookVerifier
             throw new WebhookRefusal('unconfigured', 'Webhook verification is not configured.');
         }
 
-        $deliveryTtl = config('people-connector.webhook.delivery_id_ttl_seconds', 86400);
-        if (! is_int($deliveryTtl) || $deliveryTtl < $tolerance) {
-            throw new WebhookRefusal('unconfigured', 'Webhook verification is not configured.');
-        }
-
         if (preg_match('/^[\x21-\x7E]{1,128}$/D', $deliveryId) !== 1) {
             throw new WebhookRefusal('malformed_delivery_id', 'The webhook delivery id is missing or malformed.');
         }
 
-        $now ??= new DateTimeImmutable;
+        $now ??= DateTimeImmutable::createFromInterface(now());
         if (abs($now->getTimestamp() - (int) $timestamp) > $tolerance) {
             throw new WebhookRefusal('stale_timestamp', 'The webhook timestamp is outside the allowed window.');
         }
 
-        $secret = config("people-connector.webhook.secrets.{$connectionId}");
-        if (! is_string($secret) || $secret === '') {
+        // One string or a rotation list (#247): every secret still inside its
+        // window is tried, so a provider switching secrets mid-overlap is
+        // accepted whichever one it signed with.
+        $secrets = WebhookSecrets::usable($connectionId, $now);
+        if ($secrets === []) {
             throw new WebhookRefusal('unconfigured', 'Webhook verification is not configured for this connection.');
         }
 
@@ -78,37 +75,15 @@ final class WorkforceWebhookVerifier
         }
 
         $message = $connectionId."\n".$timestamp."\n".$deliveryId."\n".$body;
-        $expected = hash_hmac('sha256', $message, $secret);
+        $matched = false;
+        foreach ($secrets as $secret) {
+            // Every candidate is compared, constant-time each, with no early
+            // exit: the number of secrets, not which one matched, sets the time.
+            $matched = hash_equals(hash_hmac('sha256', $message, $secret), strtolower($signature)) || $matched;
+        }
 
-        if (! hash_equals($expected, strtolower($signature))) {
+        if (! $matched) {
             throw new WebhookRefusal('invalid_signature', 'The webhook signature is invalid.');
-        }
-    }
-
-    /**
-     * Atomically reserves a verified delivery while its work is enqueued.
-     *
-     * A failed enqueue releases the reservation so the provider can retry.
-     */
-    public function enqueueOnce(int $connectionId, string $deliveryId, Closure $enqueue): void
-    {
-        $ttl = config('people-connector.webhook.delivery_id_ttl_seconds', 86400);
-        if (! is_int($ttl) || $ttl < 1) {
-            throw new WebhookRefusal('unconfigured', 'Webhook verification is not configured.');
-        }
-
-        $key = 'people-connector:webhook-delivery:'.$connectionId.':'.hash('sha256', $deliveryId);
-
-        if (! Cache::add($key, true, $ttl)) {
-            throw new WebhookRefusal('replayed_delivery', 'The webhook delivery has already been accepted.');
-        }
-
-        try {
-            $enqueue();
-        } catch (Throwable $failure) {
-            Cache::forget($key);
-
-            throw $failure;
         }
     }
 }

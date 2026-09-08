@@ -49,13 +49,23 @@ not silently inherit an earlier approval.
 
 ## Immutable exchange record
 
-Every received or produced file must be recorded against the provider
-connection, tenant and company before processing. The record binds the file
-name, lowercase SHA-256 of the exact bytes, approved schema version, operation
-and direction, receipt or production time, evidence-package reference and the
-responsible actor. The implementation must retain the permitted provenance and
-decision evidence for the approved retention period without putting credentials
-or raw sensitive payloads in logs or documentation.
+Every received or produced file is recorded by
+[`FileExchangeLedger`](../../Connector/Services/FileExchangeLedger.php) in
+`people_connector_connector_file_exchange_records` against the provider
+connection, tenant and company before processing. The record
+([`FileExchangeRecord`](../../Connector/Models/FileExchangeRecord.php)) binds
+the file name, lowercase SHA-256 of the exact bytes as hashed by the ledger
+itself, byte length, approved schema version, operation and direction, receipt
+or production time, evidence-package reference and the responsible actor. A
+`ProviderFile` whose declared hash is not the hash of its bytes is refused and
+nothing is written. Duplicate rule: the same bytes under the same connection
+and direction are one record — a second recording returns the first row and
+writes nothing — while the same bytes in the other direction are a second
+record. The row is immutable except for its status (`recorded`,
+`quarantined`, `archived`) and status reason; it is never deleted, is kept
+indefinitely (`people-connector.retention`), leaves with the connector's
+DataShare scope, and each write leaves an `OperatorAudit` row that carries the
+name and hash but never the path or the contents.
 
 The existing [`ProviderFile`](../../Connector/Data/ProviderFile.php) contract
 requires a name, path and lowercase SHA-256. Inspection returns the exact hash,
@@ -89,6 +99,45 @@ authoritative-writer and field allowlist permit the data. The sequence is:
    Do not treat a missing record in a partial file as a deactivation unless the
    verified contract explicitly supplies complete-snapshot and deactivation
    semantics.
+
+The dry run (`connector:hr2000:import:dry-run`, #161) is bounded (#301):
+`people-connector.file_exchange.max_bytes` (default 50 MiB,
+`PEOPLE_CONNECTOR_FILE_MAX_BYTES`) refuses a larger file with the file-level
+defect `file_too_large` before any byte is read, and `max_rows` (default
+100 000, `PEOPLE_CONNECTOR_FILE_MAX_ROWS`) stops at row `max_rows + 1` with
+`row_limit_exceeded`, reporting the rows read so far. Both refuse the whole
+file, so no record is typed. The SHA-256 is streamed off disk, so an over-limit
+file still has the digest the ledger keys on. Either defect is a reason code:
+the report never carries the path or the size.
+
+### Dry-run reconciliation vocabulary
+
+`connector:hr2000:import:dry-run --reconcile --connection=<id> --as=<user id>`
+(#298) classifies every typed record against the named connection's current
+employee projections, matched by `EmpNo` through the connection's active
+external identities, and writes nothing. The operator needs
+`people-connector.connection.manage` in the connection's tenant. Each class is
+reported as a count and a table of `EmpNo` values; `would_update` also names
+the fields that differ. No field value (name, email, department code) is
+printed or carried in `--json`.
+
+| Class | Meaning |
+|---|---|
+| `would_create` | No projection on this connection carries the `EmpNo`. |
+| `would_update` | A projection exists with the same active state and at least one compared field differs: `display_name`, `employee_number`, `email`, `company_reference`, `organization_reference`, `position_reference`, `manager_reference`, `effective_at`. A changed `Department` is `organization_reference`. |
+| `would_deactivate` | The row is `Status = R` and the projection is active. |
+| `would_reactivate` | The row is `Status = A` and the projection is inactive (a re-hire). |
+| `unchanged` | A projection exists with the same active state and every compared field equal. |
+| `missing_from_file` | An active projection on this connection whose `EmpNo` no accepted row carries. |
+
+`missing_from_file` is an observation, not a plan: no deactivation is implied
+until an approved import policy for this deployment supplies complete-snapshot
+and deactivation semantics (step 5 above). A partial export, a filtered report
+or a row rejected for a defect all produce it, because a defective row has no
+typed record and therefore no `EmpNo` to match. Rows with defects are excluded
+from the classification, still reported, and the file still exits non-zero.
+Projections of a sibling connection in the same tenant, and of any other
+tenant, are neither compared nor listed.
 
 A file-level rejection produces no authoritative import. An accepted file may
 contain row rejections only when its verified schema defines that behavior and
