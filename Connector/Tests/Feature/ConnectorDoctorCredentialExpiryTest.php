@@ -7,6 +7,7 @@ use App\Base\Authz\DTO\ResourceContext;
 use App\Base\Tenancy\Contracts\TenantContext;
 use App\Core\User\Models\User;
 use App\Domains\PeopleConnector\Connector\Data\ProviderScope;
+use App\Domains\PeopleConnector\Connector\Data\WorkforceChangePage;
 use App\Domains\PeopleConnector\Connector\Models\ConnectorDoctorAlert;
 use App\Domains\PeopleConnector\Connector\Models\ProviderConnection;
 use App\Domains\PeopleConnector\Connector\Models\ProviderCredentialRecord;
@@ -14,6 +15,8 @@ use App\Domains\PeopleConnector\Connector\Notifications\ConnectorDoctorAlertNoti
 use App\Domains\PeopleConnector\Connector\Services\ConnectorDoctor;
 use App\Domains\PeopleConnector\Connector\Services\ProviderConnectionStore;
 use App\Domains\PeopleConnector\Connector\Services\ProviderRegistry;
+use App\Domains\PeopleConnector\Connector\Services\SyncCheckpointStore;
+use App\Domains\PeopleConnector\Connector\Services\WorkforceFreshnessPolicy;
 use App\Domains\PeopleConnector\FirstPartyPeople\FirstPartyPeopleAdapter;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
@@ -53,6 +56,22 @@ afterEach(function (): void {
 });
 
 /** @return array{tenantId: int, companyId: int, operator: User, connection: ProviderConnection} */
+/**
+ * A completed checkpoint, so this connection's workforce_freshness row (#284)
+ * is green and only the expiry row under test moves a count or an exit code.
+ */
+function credExpCheckpoint(int $connectionId): void
+{
+    $asOf = new DateTimeImmutable;
+    app(SyncCheckpointStore::class)->advanceCompletedPage(
+        $connectionId,
+        WorkforceFreshnessPolicy::stream(),
+        new WorkforceChangePage([], $asOf, resumeCursor: 'cursor-0', complete: true),
+        0,
+        $asOf,
+    );
+}
+
 function credExpTenant(string $name): array
 {
     [$tenant, $company] = createTenantWithCompany(['name' => $name]);
@@ -63,6 +82,7 @@ function credExpTenant(string $name): array
     }
     $store = app(ProviderConnectionStore::class);
     $connection = $store->activate((int) $store->configure(ProviderScope::company((int) $company->id), FirstPartyPeopleAdapter::ID)->id);
+    credExpCheckpoint((int) $connection->id);
 
     return ['tenantId' => $tenantId, 'companyId' => (int) $company->id, 'operator' => User::factory()->create(['company_id' => $company->id]), 'connection' => $connection];
 }
