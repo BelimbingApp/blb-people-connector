@@ -2,11 +2,11 @@
 
 namespace App\Domains\PeopleConnector\Connector\Services;
 
+use App\Domains\PeopleConnector\Connector\Data\ProviderAuthenticationRequest;
 use App\Domains\PeopleConnector\Connector\Data\ProviderHealth;
 use App\Domains\PeopleConnector\Connector\Enums\ProviderConnectionMode;
 use App\Domains\PeopleConnector\Connector\Enums\ProviderHealthState;
 use App\Domains\PeopleConnector\Connector\Models\ProviderConnection;
-use App\Domains\PeopleConnector\Connector\Data\ProviderAuthenticationRequest;
 use DateTimeImmutable;
 use Illuminate\Support\Facades\Http;
 use Throwable;

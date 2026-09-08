@@ -35,11 +35,12 @@ use App\Domains\PeopleConnector\Connector\Services\ConnectionHealthChecker;
 use App\Domains\PeopleConnector\Connector\Services\ConnectorDoctor;
 use App\Domains\PeopleConnector\Connector\Services\ProviderConnectionStore;
 use App\Domains\PeopleConnector\Connector\Services\ProviderRegistry;
+use App\Domains\PeopleConnector\Connector\Services\RemoteProviderHealthProbe;
 use App\Domains\PeopleConnector\Connector\Services\SchedulerPrincipal;
 use App\Domains\PeopleConnector\Connector\Services\WorkforceSyncRunner;
+use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
-use Illuminate\Http\Client\ConnectionException;
 use Illuminate\Support\Facades\Http;
 
 /*
@@ -271,7 +272,7 @@ test('a remote host answering a different contract major is degraded and names b
     $connection = remoteNativeConnection($f);
     Http::fake(['*' => Http::response(['contract_major' => 2], 200)]);
 
-    $health = app(App\Domains\PeopleConnector\Connector\Services\RemoteProviderHealthProbe::class)->probe($connection->refresh());
+    $health = app(RemoteProviderHealthProbe::class)->probe($connection->refresh());
 
     expect($health->state)->toBe(ProviderHealthState::Degraded);
     // Both majors, so the operator knows which way the mismatch runs. One
@@ -286,7 +287,7 @@ test('a healthy remote host is reported healthy and the probe carries the connec
     $connection = remoteNativeConnection($f);
     Http::fake(['*' => Http::response(['contract_major' => 1], 200)]);
 
-    $health = app(App\Domains\PeopleConnector\Connector\Services\RemoteProviderHealthProbe::class)->probe($connection->refresh());
+    $health = app(RemoteProviderHealthProbe::class)->probe($connection->refresh());
 
     expect($health->state)->toBe(ProviderHealthState::Healthy);
     Http::assertSentCount(1);
