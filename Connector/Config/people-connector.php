@@ -129,9 +129,10 @@ return [
     ],
 
     'retention' => [
-        // Progress logs: how far a sync got is operationally useful for a
-        // while, and of no interest a year later.
-        'people_connector_connector_sync_checkpoint_events' => ['days' => 365, 'column' => 'created_at'],
+        // Cursor history is append-only evidence of every accepted advance.
+        // A finite window would bypass the model's refusal through the purge
+        // query builder, so checkpoint events are retained indefinitely.
+        'people_connector_connector_sync_checkpoint_events' => ['days' => null],
 
         // Webhook deliveries (#223): the trigger ledger an operator replays a
         // failed delivery from. A year-old delivery is not worth re-sending;
