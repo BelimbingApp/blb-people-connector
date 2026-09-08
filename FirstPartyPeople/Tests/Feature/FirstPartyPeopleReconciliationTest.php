@@ -206,6 +206,35 @@ test('a sibling tenant connection is refused before any People read', function (
         ->and($calls['company'])->toBe([]);
 });
 
+test('reconciliation is refused when another provider now holds the active connection for the scope', function (): void {
+    $f = fpReconcileFixture();
+    app(WorkforceSyncRunner::class)->bootstrap($f['actor'], fpReconcileAdapter(), $f['connectionId']);
+
+    $port = app(ProviderPortResolver::class)->read(
+        $f['actor'],
+        fpReconcileAdapter(),
+        PeopleCapability::EmployeeDirectory,
+        ReconcilesWorkforce::class,
+        ProviderScope::company($f['companyId']),
+    );
+
+    $real = app(ReadsWorkforceDirectory::class);
+    $calls = ['employees' => [], 'organizationUnits' => [], 'company' => []];
+    app()->instance(ReadsWorkforceDirectory::class, fpReconcileDirectorySpy($real, $calls));
+
+    // A different provider has taken the scope over since this port was
+    // resolved. Diffing People against projections that now belong to somebody
+    // else is what the provider check exists to stop.
+    $store = app(ProviderConnectionStore::class);
+    $store->activate((int) $store->configure(ProviderScope::company($f['companyId']), 'test.other-provider')->id);
+
+    expect(fn () => $port->reconcile())
+        ->toThrow(ProviderAuthorizationException::class)
+        ->and($calls['employees'])->toBe([])
+        ->and($calls['organizationUnits'])->toBe([])
+        ->and($calls['company'])->toBe([]);
+});
+
 test('authorization without provider directory read is refused and People is never invoked', function (): void {
     $f = fpReconcileFixture();
     app(WorkforceSyncRunner::class)->bootstrap($f['actor'], fpReconcileAdapter(), $f['connectionId']);
