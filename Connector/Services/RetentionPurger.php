@@ -24,6 +24,7 @@ final class RetentionPurger
         private readonly AuthorizationService $authorization,
         private readonly RetentionPolicy $retention,
         private readonly OperatorAuditLog $audit,
+        private readonly SupplementalTableRegister $supplemental,
     ) {}
 
     public function purge(
@@ -36,6 +37,17 @@ final class RetentionPurger
 
         if ($report->tenantId !== $tenantId) {
             throw new RetentionPolicyException('A retention purge can only execute a report for the current tenant.');
+        }
+
+        // Refused by name, before the transaction opens and whatever the
+        // config says: a report is an argument, and an argument naming a
+        // Skills or Training table is not a purge this service will run.
+        foreach ($report->tables as $table) {
+            if ($this->supplemental->isSupplemental($table->table)) {
+                throw new RetentionPolicyException(
+                    "[{$table->table}] is a supplemental Skills or Training table: never purged, retention indefinite. Nothing was deleted.",
+                );
+            }
         }
 
         return DB::transaction(function () use ($actor, $report, $tenantId, $executedAt): RetentionPurgeResult {

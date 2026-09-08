@@ -2,11 +2,15 @@
 
 namespace App\Domains\PeopleConnector\FirstPartyPeople;
 
+use App\Base\Tenancy\Contracts\TenantContext;
+use App\Domains\People\Provider\Contracts\ReadsWorkforceDirectory;
+use App\Domains\People\Provider\Contracts\ReadsWorkforcePositions;
 use App\Domains\People\Provider\Data\ExternalReference as PeopleExternalReference;
 use App\Domains\People\Provider\Data\WorkforceBootstrapPage;
 use App\Domains\PeopleConnector\Connector\Contracts\BootstrapsWorkforce;
 use App\Domains\PeopleConnector\Connector\Contracts\ProviderAdapter;
 use App\Domains\PeopleConnector\Connector\Contracts\ReadsWorkforceChanges;
+use App\Domains\PeopleConnector\Connector\Contracts\ReconcilesWorkforce;
 use App\Domains\PeopleConnector\Connector\Contracts\ResolvesProviderPorts;
 use App\Domains\PeopleConnector\Connector\Data\CapabilityChannel;
 use App\Domains\PeopleConnector\Connector\Data\CapabilityDeclaration;
@@ -17,25 +21,28 @@ use App\Domains\PeopleConnector\Connector\Data\ProviderPortAuthorization;
 use App\Domains\PeopleConnector\Connector\Enums\CapabilityDelivery;
 use App\Domains\PeopleConnector\Connector\Enums\PeopleCapability;
 use App\Domains\PeopleConnector\Connector\Enums\ProviderHealthState;
+use App\Domains\PeopleConnector\Connector\Services\ProviderConnectionStore;
 use App\Domains\PeopleConnector\FirstPartyPeople\Services\WorkforceBootstrapPort;
 use App\Domains\PeopleConnector\FirstPartyPeople\Services\WorkforceChangePort;
+use App\Domains\PeopleConnector\FirstPartyPeople\Services\WorkforceReconciliationPort;
 
 /**
  * The first-party People provider, seen from the connector side.
  *
  * It declares exactly what the People Provider module publishes today —
  * company, organization-unit, position and employee reads over the
- * co-located projection contracts — and nothing else. Merges, writes,
- * reconciliation, service authentication, SSO hand-off and every Skill
- * operation are absent here because People publishes no contract for them;
- * an adapter that declared them would resolve no port and turn a missing
- * contract into a runtime failure instead of an honest capability answer.
+ * co-located projection contracts, plus a read-only reconciliation port
+ * that diffs those directory contracts against the connection's
+ * projections. Merges, writes, service authentication, SSO hand-off and
+ * every Skill operation remain undeclared because People publishes no
+ * contract for them.
  *
  * Positions have no PeopleCapability case of their own: a position is a
  * node of the organization structure, so People's `ReadsWorkforcePositions`
  * travels under OrganizationDirectory, on the bootstrap page beside the
  * organization units (see WorkforceBootstrapPort). The capability register
  * (docs/providers/capability-register.json) records the same placement.
+ * Reconciliation also reads positions through that published contract.
  *
  * This adapter is co-located by construction: it calls People in-process
  * through the published contracts. Remote equivalence needs People-owned
@@ -55,6 +62,10 @@ final readonly class FirstPartyPeopleAdapter implements ProviderAdapter, Resolve
     public function __construct(
         private WorkforceBootstrapPort $bootstrapPort,
         private WorkforceChangePort $changePort,
+        private ReadsWorkforceDirectory $directory,
+        private ReadsWorkforcePositions $positions,
+        private TenantContext $tenantContext,
+        private ProviderConnectionStore $connections,
     ) {}
 
     public function descriptor(): ProviderDescriptor
@@ -73,6 +84,7 @@ final readonly class FirstPartyPeopleAdapter implements ProviderAdapter, Resolve
         $channels = [
             new CapabilityChannel(CapabilityDelivery::Synchronous, BootstrapsWorkforce::class),
             new CapabilityChannel(CapabilityDelivery::Synchronous, ReadsWorkforceChanges::class),
+            new CapabilityChannel(CapabilityDelivery::Synchronous, ReconcilesWorkforce::class),
         ];
 
         return new CapabilitySet([
@@ -102,6 +114,13 @@ final readonly class FirstPartyPeopleAdapter implements ProviderAdapter, Resolve
         return match ($contract) {
             BootstrapsWorkforce::class => $this->bootstrapPort,
             ReadsWorkforceChanges::class => $this->changePort,
+            ReconcilesWorkforce::class => new WorkforceReconciliationPort(
+                $this->directory,
+                $this->positions,
+                $this->tenantContext,
+                $this->connections,
+                $authorization,
+            ),
             default => null,
         };
     }

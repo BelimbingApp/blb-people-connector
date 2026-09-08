@@ -8,6 +8,7 @@ use App\Base\Tenancy\Contracts\TenantContext;
 use App\Core\User\Models\User;
 use App\Domains\PeopleConnector\Connector\Data\ExternalReference;
 use App\Domains\PeopleConnector\Connector\Data\ProviderScope;
+use App\Domains\PeopleConnector\Connector\Data\WorkforceChangePage;
 use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
 use App\Domains\PeopleConnector\Connector\Jobs\RunIncrementalWorkforceSync;
 use App\Domains\PeopleConnector\Connector\Models\ProviderCredentialRecord;
@@ -17,6 +18,8 @@ use App\Domains\PeopleConnector\Connector\Models\WorkforceEntity;
 use App\Domains\PeopleConnector\Connector\Services\ConnectorDoctor;
 use App\Domains\PeopleConnector\Connector\Services\ProviderConnectionStore;
 use App\Domains\PeopleConnector\Connector\Services\ProviderRegistry;
+use App\Domains\PeopleConnector\Connector\Services\SyncCheckpointStore;
+use App\Domains\PeopleConnector\Connector\Services\WorkforceFreshnessPolicy;
 use App\Domains\PeopleConnector\Connector\Services\WorkforceIdentityStore;
 use App\Domains\PeopleConnector\FirstPartyPeople\FirstPartyPeopleAdapter;
 use Illuminate\Support\Collection;
@@ -64,6 +67,22 @@ function doctorCheckNames(int $tenantId, User $operator): array
     return array_column(app(ConnectorDoctor::class)->inspect(Actor::forUser($operator))->checks, 'check');
 }
 
+/**
+ * A completed checkpoint, so the connection's workforce_freshness row (#284)
+ * is green and only the row under test moves the exit code.
+ */
+function doctorCheckpoint(int $connectionId): void
+{
+    $asOf = new DateTimeImmutable;
+    app(SyncCheckpointStore::class)->advanceCompletedPage(
+        $connectionId,
+        WorkforceFreshnessPolicy::stream(),
+        new WorkforceChangePage([], $asOf, resumeCursor: 'cursor-0', complete: true),
+        0,
+        $asOf,
+    );
+}
+
 /** A usable credential far from expiry, so the connection's expiry row (#296) is green. */
 function doctorCredential(int $tenantId, int $connectionId, string $providerId): void
 {
@@ -92,6 +111,7 @@ test('connector doctor reports only this tenants stale webhook delivery and exit
     $targetConnection = $targetConnections->configure(ProviderScope::company($companyId), FirstPartyPeopleAdapter::ID);
     $targetConnections->activate((int) $targetConnection->id);
     doctorCredential($tenantId, (int) $targetConnection->id, FirstPartyPeopleAdapter::ID);
+    doctorCheckpoint((int) $targetConnection->id);
 
     app(TenantContext::class)->set($otherTenantId);
     $connections = app(ProviderConnectionStore::class);
@@ -180,6 +200,7 @@ test('connector doctor records every run and lists only this tenants latest snap
     $connection = $connections->configure(ProviderScope::company($companyId), FirstPartyPeopleAdapter::ID);
     $connections->activate((int) $connection->id);
     doctorCredential($tenantId, (int) $connection->id, FirstPartyPeopleAdapter::ID);
+    doctorCheckpoint((int) $connection->id);
 
     $this->travelTo('2026-09-06 10:00:00');
     expect(Artisan::call('connector:doctor', ['--tenant' => $tenantId, '--as' => $operator->id, '--record' => true]))->toBe(0);
@@ -219,7 +240,16 @@ test('connector doctor records every run and lists only this tenants latest snap
 });
 
 test('every check the doctor returns has a row in the operator doc', function (): void {
-    [$tenantId, , $operator] = doctorTenant('Doctor Doc Tenant');
+    [$tenantId, $companyId, $operator] = doctorTenant('Doctor Doc Tenant');
+    // An active connection, or the per-connection rows never appear and this
+    // guard cannot see the prefixes it exists to check (#284, #296).
+    app(TenantContext::class)->set($tenantId);
+    app(ProviderRegistry::class)->register(app(FirstPartyPeopleAdapter::class));
+    $connections = app(ProviderConnectionStore::class);
+    $connection = $connections->activate((int) $connections->configure(ProviderScope::company($companyId), FirstPartyPeopleAdapter::ID)->id);
+    doctorCredential($tenantId, (int) $connection->id, FirstPartyPeopleAdapter::ID);
+    doctorCheckpoint((int) $connection->id);
+
     $doc = file_get_contents(dirname(__DIR__, 3).'/docs/operators/connector-doctor.md');
     expect($doc)->toBeString();
 
@@ -227,7 +257,8 @@ test('every check the doctor returns has a row in the operator doc', function ()
     $keys = collect(doctorCheckNames($tenantId, $operator))
         ->map(fn (string $check): string => strstr($check, ':', true) ?: $check)
         ->unique();
-    expect($keys)->not->toBeEmpty();
+    expect($keys)->not->toBeEmpty()
+        ->and($keys)->toContain('provider_credential_expiry', 'workforce_freshness');
     $undocumented = $keys->reject(fn (string $key): bool => preg_match('/^\| `'.preg_quote($key, '/').'` \|/m', $doc) === 1)->values()->all();
     expect($undocumented)->toBe([]);
 });
@@ -240,6 +271,7 @@ test('recorded doctor snapshots must be one row per check: fewer or duplicate ro
     $connection = $connections->configure(ProviderScope::company($companyId), FirstPartyPeopleAdapter::ID);
     $connections->activate((int) $connection->id);
     doctorCredential($tenantId, (int) $connection->id, FirstPartyPeopleAdapter::ID);
+    doctorCheckpoint((int) $connection->id);
 
     expect(Artisan::call('connector:doctor', ['--tenant' => $tenantId, '--as' => $operator->id, '--record' => true]))->toBe(0);
     $checks = doctorCheckNames($tenantId, $operator);

@@ -8,6 +8,7 @@ use App\Base\Tenancy\Contracts\TenantContext;
 use App\Core\User\Models\User;
 use App\Domains\PeopleConnector\Connector\Data\ProviderScope;
 use App\Domains\PeopleConnector\Connector\Data\ReconciliationIssueDetails;
+use App\Domains\PeopleConnector\Connector\Data\WorkforceChangePage;
 use App\Domains\PeopleConnector\Connector\Enums\WebhookDeliveryFailure;
 use App\Domains\PeopleConnector\Connector\Enums\WorkforceResourceType;
 use App\Domains\PeopleConnector\Connector\Exceptions\CorruptWorkforcePageException;
@@ -20,6 +21,8 @@ use App\Domains\PeopleConnector\Connector\Services\DeadLetterService;
 use App\Domains\PeopleConnector\Connector\Services\ProviderConnectionStore;
 use App\Domains\PeopleConnector\Connector\Services\ProviderRegistry;
 use App\Domains\PeopleConnector\Connector\Services\ReconciliationIssueStore;
+use App\Domains\PeopleConnector\Connector\Services\SyncCheckpointStore;
+use App\Domains\PeopleConnector\Connector\Services\WorkforceFreshnessPolicy;
 use App\Domains\PeopleConnector\Connector\Services\WorkforceSyncRunner;
 use App\Domains\PeopleConnector\FirstPartyPeople\FirstPartyPeopleAdapter;
 use Illuminate\Support\Collection;
@@ -68,6 +71,16 @@ function doctorDlTenant(string $name): array
         'key_id' => 'fixture-key', 'secret_reference' => 'base-integration:fixture', 'audience' => 'provider',
         'scopes' => ['workforce:read'], 'issued_at' => '2020-01-01 00:00:00', 'expires_at' => '2099-01-01 00:00:00',
     ]);
+    // A fresh checkpoint, so the connection's workforce_freshness row (#284)
+    // is green and only the dead-letter rows under test move the exit code.
+    $asOf = new DateTimeImmutable;
+    app(SyncCheckpointStore::class)->advanceCompletedPage(
+        (int) $connection->id,
+        WorkforceFreshnessPolicy::stream(),
+        new WorkforceChangePage([], $asOf, resumeCursor: 'cursor-0', complete: true),
+        0,
+        $asOf,
+    );
 
     return ['tenantId' => (int) $tenant->id, 'operator' => User::factory()->create(['company_id' => $company->id]), 'connection' => $connection];
 }
