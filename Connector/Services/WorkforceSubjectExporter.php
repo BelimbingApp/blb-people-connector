@@ -8,6 +8,9 @@ use App\Base\Authz\DTO\ResourceContext;
 use App\Base\Database\Services\DataShare\CanonicalJson;
 use App\Base\Database\Services\DataShare\DataSharePrivateStorage;
 use App\Base\Tenancy\Contracts\TenantContext;
+use App\Domains\People\Provider\Data\WorkforceSubject;
+use App\Domains\People\Provider\Enums\WorkforceResourceType as SubjectResourceType;
+use App\Domains\PeopleConnector\Connector\Contracts\ExportsSupplementalSubjectRecords;
 use App\Domains\PeopleConnector\Connector\Data\WorkforceSubjectExportResult;
 use App\Domains\PeopleConnector\Connector\Enums\OperatorAuditOperation;
 use App\Domains\PeopleConnector\Connector\Exceptions\ProviderAuthorizationException;
@@ -22,10 +25,20 @@ use App\Domains\PeopleConnector\Connector\Models\WorkforceEntity;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceOrganizationUnitProjection;
 use App\Domains\PeopleConnector\Connector\Models\WorkforcePositionProjection;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceSnapshot;
+use Illuminate\Contracts\Container\Container;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
-/** Build a protected DataShare package for one data subject. */
+/**
+ * Build a protected DataShare package for one data subject.
+ *
+ * The connector tables are the package's own; what People's modules hold about
+ * the same subject comes from every ExportsSupplementalSubjectRecords tagged in
+ * the container (#308), and the package says so either way: `supplemental`
+ * carries one block per exporter, `supplemental_exporters` names them, and
+ * `supplemental_missing` is true when nothing contributed, so an operator
+ * handing the file over knows it is partial rather than assuming it is whole.
+ */
 final class WorkforceSubjectExporter
 {
     public const EXPORT_CAPABILITY = 'people-connector.identity.export';
@@ -55,6 +68,7 @@ final class WorkforceSubjectExporter
         private readonly AuthorizationService $authorization,
         private readonly DataSharePrivateStorage $storage,
         private readonly OperatorAuditLog $audits,
+        private readonly Container $container,
     ) {}
 
     public function export(Actor $actor, int $workforceEntityId): WorkforceSubjectExportResult
@@ -105,6 +119,8 @@ final class WorkforceSubjectExporter
         );
         $tables = array_map(fn (array $rows): array => array_map(fn (array $row): array => $this->redact($row), $rows), $tables);
         $counts = array_map('count', $tables);
+        $supplemental = $this->supplemental($entity, $tenantId, $workforceEntityId);
+        $exporterNames = array_keys($supplemental);
         $packageId = (string) Str::uuid();
         $package = [
             'format' => 'belimbing-data-share/people-connector-subject/v1',
@@ -120,6 +136,9 @@ final class WorkforceSubjectExporter
             'redactions' => ['credential_references', 'payload_hashes'],
             'counts' => $counts,
             'tables' => $tables,
+            'supplemental' => $supplemental,
+            'supplemental_exporters' => $exporterNames,
+            'supplemental_missing' => $supplemental === [],
         ];
         $contents = CanonicalJson::encode($package)."\n";
         $path = $this->storage->outgoingPath($packageId);
@@ -136,7 +155,13 @@ final class WorkforceSubjectExporter
                 null,
                 null,
                 [],
-                ['workforce_entity_id' => $workforceEntityId, 'package_id' => $packageId, 'rows' => array_sum($counts)],
+                [
+                    'workforce_entity_id' => $workforceEntityId,
+                    'package_id' => $packageId,
+                    'rows' => array_sum($counts),
+                    'supplemental_exporters' => $exporterNames,
+                    'supplemental_missing' => $supplemental === [],
+                ],
             );
         } catch (\Throwable $failure) {
             $this->storage->disk()->delete($path);
@@ -145,6 +170,71 @@ final class WorkforceSubjectExporter
         }
 
         return new WorkforceSubjectExportResult($packageId, $path, hash('sha256', $contents), strlen($contents), $counts);
+    }
+
+    /**
+     * One block per tagged exporter, keyed by its name, each block keyed by
+     * table. Runs after authorization on purpose: a refused operator must not
+     * cause a module to read a single row. The subject handed over is the
+     * connector's own vocabulary (entity id, owning company entity id), and the
+     * connector's redaction runs over the module's rows as well, on top of
+     * whatever the module already removed.
+     *
+     * @return array<string, array<string, list<array<string, mixed>>>>
+     */
+    private function supplemental(WorkforceEntity $entity, int $tenantId, int $workforceEntityId): array
+    {
+        $type = SubjectResourceType::tryFrom((string) $entity->resource_type);
+        $companyEntityId = $type === null ? null : $this->companyEntityId($type, $tenantId, $workforceEntityId);
+        if ($type === null || $companyEntityId === null) {
+            // A subject with no projection has no company axis to hand a module;
+            // the export says it is partial rather than asking modules to guess.
+            return [];
+        }
+
+        $subject = new WorkforceSubject($tenantId, $companyEntityId, $type, (string) $workforceEntityId);
+        $blocks = [];
+        foreach ($this->container->tagged(ExportsSupplementalSubjectRecords::class) as $exporter) {
+            $name = $exporter->name();
+            if ($name === '' || isset($blocks[$name])) {
+                throw new WorkforceSubjectExportException('A supplemental exporter must carry a unique, non-empty name.');
+            }
+
+            $sections = [];
+            foreach ($exporter->sections($subject, $tenantId, $companyEntityId) as $table => $rows) {
+                if (! is_string($table) || $table === '' || ! is_array($rows) || ! array_is_list($rows)) {
+                    throw new WorkforceSubjectExportException("Supplemental exporter [{$name}] returned a section that is not a table of rows.");
+                }
+                $sections[$table] = array_map(fn (array $row): array => $this->redact($row), $rows);
+            }
+            $blocks[$name] = $sections;
+        }
+        ksort($blocks);
+
+        return $blocks;
+    }
+
+    /** The owning workforce company entity of a projected subject; a company is its own. */
+    private function companyEntityId(SubjectResourceType $type, int $tenantId, int $workforceEntityId): ?int
+    {
+        $model = match ($type) {
+            SubjectResourceType::Company => WorkforceCompanyProjection::class,
+            SubjectResourceType::OrganizationUnit => WorkforceOrganizationUnitProjection::class,
+            SubjectResourceType::Position => WorkforcePositionProjection::class,
+            SubjectResourceType::Employee => WorkforceEmployeeProjection::class,
+            SubjectResourceType::User => null,
+        };
+        if ($model === null) {
+            return null;
+        }
+
+        $column = $type === SubjectResourceType::Company ? 'workforce_entity_id' : 'company_entity_id';
+        $value = DB::table((new $model)->getTable())
+            ->where('tenant_id', $tenantId)
+            ->where('workforce_entity_id', $workforceEntityId)
+            ->value($column);
+
+        return $value === null ? null : (int) $value;
     }
 
     /** @return list<array<string, mixed>> */

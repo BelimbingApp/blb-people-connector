@@ -2,6 +2,7 @@
 
 namespace App\Domains\PeopleConnector\Connector\Models;
 
+use App\Domains\PeopleConnector\Connector\Contracts\RefusesDeletion;
 use App\Domains\PeopleConnector\Connector\Enums\OperatorAuditOperation;
 use App\Domains\PeopleConnector\Connector\Exceptions\AppendOnlyRecordException;
 
@@ -9,7 +10,7 @@ use App\Domains\PeopleConnector\Connector\Exceptions\AppendOnlyRecordException;
  * One operator action on a connection, as recorded by OperatorAuditLog.
  * Append-only: an audit that can be edited is not one.
  */
-final class OperatorAudit extends TenantOwnedModel
+final class OperatorAudit extends TenantOwnedModel implements RefusesDeletion
 {
     public const UPDATED_AT = null;
 
