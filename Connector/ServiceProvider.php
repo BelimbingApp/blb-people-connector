@@ -10,6 +10,7 @@ use App\Domains\PeopleConnector\Connector\Console\Commands\ConnectionHealthCheck
 use App\Domains\PeopleConnector\Connector\Console\Commands\ConnectionMaintenanceCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\ConnectorDoctorCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\CutoverRehearsalCommand;
+use App\Domains\PeopleConnector\Connector\Console\Commands\EgressProbeCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\FileExchangeDiscoverCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\Hr2000ImportDryRunCommand;
 use App\Domains\PeopleConnector\Connector\Console\Commands\IdentityAuditTrailCommand;
@@ -87,6 +88,7 @@ class ServiceProvider extends BaseServiceProvider
                 ConnectionHealthCheckCommand::class,
                 ConnectionMaintenanceCommand::class,
                 ConnectorDoctorCommand::class,
+                EgressProbeCommand::class,
                 Hr2000ImportDryRunCommand::class,
                 MigrateDryRunCommand::class,
                 OperatorWhoamiCommand::class,
