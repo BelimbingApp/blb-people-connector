@@ -11,6 +11,7 @@ use App\Domains\PeopleConnector\Connector\Data\ProviderScope;
 use App\Domains\PeopleConnector\Connector\Enums\OperatorAuditOperation;
 use App\Domains\PeopleConnector\Connector\Exceptions\ProviderAuthorizationException;
 use App\Domains\PeopleConnector\Connector\Models\OperatorAudit;
+use App\Domains\PeopleConnector\Connector\Models\ProviderCredentialRecord;
 use App\Domains\PeopleConnector\Connector\Services\ProviderConnectionStore;
 use App\Domains\PeopleConnector\Connector\Services\ProviderRegistry;
 use App\Domains\PeopleConnector\FirstPartyPeople\FirstPartyPeopleAdapter;
@@ -137,6 +138,13 @@ test('an unauthorized operator gets the authorization failure and no rotation', 
 test('the doctor shows the overlap row yellow only while a previous secret is unexpired, and stays healthy', function (): void {
     config()->set('queue.default', 'database');
     $t = secretRotateTenant('Rotate Doctor Tenant');
+    // A usable credential keeps the connection's expiry row (#296) green, so
+    // the only non-green row here is the overlap under test.
+    ProviderCredentialRecord::query()->create([
+        'tenant_id' => $t['tenantId'], 'connection_id' => $t['connection'], 'provider_id' => FirstPartyPeopleAdapter::ID,
+        'key_id' => 'rotate-doctor', 'secret_reference' => 'base-integration:rotate-doctor', 'audience' => 'provider',
+        'scopes' => ['workforce:read'], 'issued_at' => '2020-01-01 00:00:00', 'expires_at' => '2099-01-01 00:00:00',
+    ]);
     $this->travelTo('2026-09-07 10:00:00');
     config()->set("people-connector.webhook.secrets.{$t['connection']}", [
         ['secret' => 'new-secret'],
@@ -152,3 +160,19 @@ test('the doctor shows the overlap row yellow only while a previous secret is un
     $rows = collect(json_decode(trim(Artisan::output()), true, flags: JSON_THROW_ON_ERROR)['checks']);
     expect($rows->firstWhere('check', 'webhook_secret_overlap'))->toBe(['check' => 'webhook_secret_overlap', 'status' => 'green', 'count' => 0, 'detail' => '0 overlapping']);
 });
+
+test('an overlap outside 0..43200 minutes is refused: no secret printed, config and the audit ledger unchanged', function (int $overlap): void {
+    $t = secretRotateTenant('Rotate Tenant');
+    $sibling = secretRotateTenant('Sibling Rotate Tenant');
+    config()->set("people-connector.webhook.secrets.{$t['connection']}", 'old-secret-value');
+    config()->set("people-connector.webhook.secrets.{$sibling['connection']}", 'sibling-secret-value');
+    // The sibling tenant's own rotation is the control row: it must survive untouched.
+    expect(secretRotateRun($sibling, $sibling['connection'], ['--overlap-minutes' => 60]))->toBe(0);
+    $before = [config('people-connector.webhook.secrets'), OperatorAudit::query()->count(), OperatorAudit::query()->forTenant($sibling['tenantId'])->count()];
+    expect($before[1])->toBe(1)->and($before[2])->toBe(1);
+
+    expect(secretRotateRun($t, $t['connection'], ['--overlap-minutes' => $overlap]))->toBe(1)
+        ->and(Artisan::output())->toContain('between 0 and 43200 minutes')
+        ->and(Artisan::output())->not->toMatch('/^[a-f0-9]{64}$/m');
+    expect([config('people-connector.webhook.secrets'), OperatorAudit::query()->count(), OperatorAudit::query()->forTenant($sibling['tenantId'])->count()])->toBe($before);
+})->with(['-1' => [-1], '43201' => [43201]]);

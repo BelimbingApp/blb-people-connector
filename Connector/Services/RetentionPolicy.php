@@ -5,6 +5,7 @@ namespace App\Domains\PeopleConnector\Connector\Services;
 use App\Base\Authz\Contracts\AuthorizationService;
 use App\Base\Authz\DTO\Actor;
 use App\Base\Tenancy\Contracts\TenantContext;
+use App\Domains\PeopleConnector\Connector\Contracts\RefusesDeletion;
 use App\Domains\PeopleConnector\Connector\Data\RetentionReport;
 use App\Domains\PeopleConnector\Connector\Data\RetentionTableReport;
 use App\Domains\PeopleConnector\Connector\Exceptions\ProviderAuthorizationException;
@@ -47,6 +48,7 @@ final class RetentionPolicy
 
         $reviewedAt = $now ?? \DateTimeImmutable::createFromInterface(now());
         $owned = self::ownedTables();
+        $deletionRefused = self::deletionRefusedTables();
         $tables = [];
 
         foreach (self::declaredPolicy() as $table => $rule) {
@@ -63,6 +65,12 @@ final class RetentionPolicy
             if (! in_array($table, $owned, true)) {
                 throw new RetentionPolicyException(
                     "Retention can only be declared for connector-owned tables; [{$table}] is not one.",
+                );
+            }
+
+            if ($rule['days'] !== null && in_array($table, $deletionRefused, true)) {
+                throw new RetentionPolicyException(
+                    "Retention for [{$table}] cannot be finite because its model declares the table append-only.",
                 );
             }
 
@@ -161,6 +169,15 @@ final class RetentionPolicy
         return array_values(array_unique(array_map(
             static fn (string $model): string => (new $model)->getTable(),
             array_filter(DomainModels::all(), static fn (string $model): bool => is_subclass_of($model, Model::class)),
+        )));
+    }
+
+    /** @return list<string> */
+    private static function deletionRefusedTables(): array
+    {
+        return array_values(array_unique(array_map(
+            static fn (string $model): string => (new $model)->getTable(),
+            array_filter(DomainModels::all(), static fn (string $model): bool => is_subclass_of($model, RefusesDeletion::class)),
         )));
     }
 }

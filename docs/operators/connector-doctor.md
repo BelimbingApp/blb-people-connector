@@ -36,6 +36,24 @@ informational line, never an error. The exit code is still the doctor's own.
 Sent alerts live in `people_connector_connector_doctor_alerts`, purged with
 the snapshots after 30 days.
 
+Every row the doctor returns, by `check` key (or prefix for per-connection
+rows). A test fails when a check is added without a row here (#320 / #300):
+
+| check | red when | notes |
+|---|---|---|
+| `adapter_conformance` | a configured provider has no active connection or fails a conformance probe | count is violations across configured providers |
+| `webhook_deliveries` | a queued webhook-triggered sync is older than one hour | red on an opaque queue backend rather than guessed healthy |
+| `reconciliation_drift` | any reconciliation issue is open | |
+| `identity_mappings` | an active identity no longer joins to a compatible current entity and connection | |
+| `webhook_stuck_reservations` | a receipt older than five minutes has no delivery behind it (#227) | |
+| `webhook_duplicates` | never | informational: deliveries acknowledged as duplicates in seven days |
+| `webhook_secret_overlap` | never | yellow while a connection's previous signing secret is inside its rotation overlap (#247) |
+| `delegation_secret_overlap` | a previous delegation secret lapsed or has no usable expiry (#262) | yellow while the previous secret is still accepted |
+| `webhook_dead_letters` | a dead-lettered delivery has no replay pointing at it yet (#271) | count is unreplayed dead letters, detail names the oldest `failed_at` |
+| `sync_dead_letters` | an open reconciliation issue of kind `sync_dead_letter` parks a feed page (#271) | subset of `reconciliation_drift` that means a stuck feed |
+| `connection_maintenance` | never | yellow with the count of connections inside a planned maintenance window (#264) |
+| `provider_credential_expiry` | no usable provider credential, or (yellow) inside the warning window (#296) | one row per active connection as `provider_credential_expiry:<id>` |
+
 The table reports adapter conformance for every configured provider, queued
 webhook-triggered syncs older than one hour, open reconciliation drift,
 active identity mappings that no longer join to a compatible current entity
@@ -75,6 +93,21 @@ operator re-queues it from the reconciliation page, which goes through
 inside a planned maintenance window and the latest `maintenance_until`, green
 with count 0 otherwise, never red: the pause is an operator's decision, see
 [connection-maintenance.md](connection-maintenance.md).
+
+Credential expiry (#296) is one row per **active** connection,
+`provider_credential_expiry:<connection id>`: red when no usable provider
+credential exists for the connection right now (expired, revoked, or never
+issued), yellow when the latest usable one expires inside
+`people-connector.doctor.credential_warning_days`
+(`PEOPLE_CONNECTOR_DOCTOR_CREDENTIAL_WARNING_DAYS`, default 14), green
+otherwise. The detail names the credential id, key id and expiry and never the
+secret reference. Inactive and retired connections have no row. The action for
+red or yellow is to issue a replacement through the credential store's
+`ProviderCredentialStore::rotate()` path (which revokes the previous
+credential as it issues the new one); `connector:webhook:secret:rotate` is the
+webhook signing secret, not this. Because `--record` writes one snapshot per
+row, `--alert` covers expiry with no further configuration, keyed by the same
+`provider_credential_expiry:<id>` name.
 Yellow does not fail the doctor; only red does. A provider without an active connection is red because its
 ports cannot be exercised. Any red row makes the command exit non-zero. Use
 `--json` for automation.

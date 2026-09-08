@@ -1,6 +1,6 @@
 # HR2000 file-exchange protocol
 
-**Status:** required protocol, not an enabled integration — 2026-09-06.  
+**Status:** candidate-1 CSV inspection enabled; projection import/export disabled — 2026-09-08.
 **Scope:** the SBG deployment profile, adapter ID `hr2000.sbg`.  
 **Governing evidence:** [HR2000 capability evidence register](hr2000-capability-evidence.md).  
 **Governing plan:** [People 0001](https://github.com/BelimbingApp/blb-people/blob/main/docs/plans/0001-people-architecture-and-provider-boundaries.md).  
@@ -8,17 +8,15 @@
 
 ## Current boundary
 
-No HR2000 file format is approved for this deployment. The current adapter
-declares zero capabilities and returns no port contracts. No SBG-specific
-schema, sample, licensed operation, processing approval or transport
-implementation has been supplied. Generic product literature is a discovery
-lead only; it does not approve a format or establish that an operation is
-available to SBG.
+The candidate-1 HR2000 employee CSV layout is approved for dry-run inspection
+against the anonymised [fixture](../../Connector/Tests/Fixtures/hr2000-employee-sample.csv)
+and parser proof delivered by #161/#277. The adapter therefore declares one
+read-only `employee_directory` file-exchange channel and resolves its inspection
+port. Applying inspected rows to projections and every export or provider-write
+operation remain disabled; the port refuses `inspectAndImport()` explicitly.
 
-Accordingly, every HR2000 import and export operation remains disabled. This
-document defines the protocol that a later file-exchange implementation must
-meet after the evidence register verifies the operation. It does not add a
-capability, implement a transport, authorize direct database access or make
+This document defines the protocol a later projection-import implementation
+must meet. The verified parser does not authorize direct database access or make
 HR2000 an authority for Skills, Training or Progression workflows.
 
 ## What makes a format approved
@@ -41,9 +39,10 @@ direction before the adapter may publish a file port. The package must identify:
 - the data owner, integration owner and deployment owner responsible for the
   approval and operation.
 
-The approved-format list is therefore empty today. A similarly named HR2000
-product, a manually produced spreadsheet or a successful ad hoc upload is not
-format evidence. Changing a schema, mapping, encoding, timezone, operation,
+The approved-format list contains only
+`hr2000.sbg.employee-csv.candidate-1`, and only for dry-run inspection. A
+similarly named HR2000 product, a manually produced spreadsheet or a successful
+ad hoc upload is not format evidence. Changing a schema, mapping, encoding, timezone, operation,
 direction or company scope requires a newly reviewed evidence package; it must
 not silently inherit an earlier approval.
 
@@ -89,7 +88,7 @@ authoritative-writer and field allowlist permit the data. The sequence is:
    approver. The approval binds the exact SHA-256, schema version, operation,
    tenant/company scope, mapping version and inspection result. Approval of one
    file never approves changed bytes or a replacement file.
-4. At execution, use the
+4. At execution, a later projection-import implementation must use the
    [`ImportsWorkforceFiles`](../../Connector/Contracts/ImportsWorkforceFiles.php)
    boundary to atomically re-inspect the exact file and import only an accepted
    inspection with the same hash. A changed or newly rejected file returns to
@@ -109,6 +108,35 @@ defect `file_too_large` before any byte is read, and `max_rows` (default
 file, so no record is typed. The SHA-256 is streamed off disk, so an over-limit
 file still has the digest the ledger keys on. Either defect is a reason code:
 the report never carries the path or the size.
+
+### Dry-run reconciliation vocabulary
+
+`connector:hr2000:import:dry-run --reconcile --connection=<id> --as=<user id>`
+(#298) classifies every typed record against the named connection's current
+employee projections, matched by `EmpNo` through the connection's active
+external identities, and writes nothing. The operator needs
+`people-connector.connection.manage` in the connection's tenant. Each class is
+reported as a count and a table of `EmpNo` values; `would_update` also names
+the fields that differ. No field value (name, email, department code) is
+printed or carried in `--json`.
+
+| Class | Meaning |
+|---|---|
+| `would_create` | No projection on this connection carries the `EmpNo`. |
+| `would_update` | A projection exists with the same active state and at least one compared field differs: `display_name`, `employee_number`, `email`, `company_reference`, `organization_reference`, `position_reference`, `manager_reference`, `effective_at`. A changed `Department` is `organization_reference`. |
+| `would_deactivate` | The row is `Status = R` and the projection is active. |
+| `would_reactivate` | The row is `Status = A` and the projection is inactive (a re-hire). |
+| `unchanged` | A projection exists with the same active state and every compared field equal. |
+| `missing_from_file` | An active projection on this connection whose `EmpNo` no accepted row carries. |
+
+`missing_from_file` is an observation, not a plan: no deactivation is implied
+until an approved import policy for this deployment supplies complete-snapshot
+and deactivation semantics (step 5 above). A partial export, a filtered report
+or a row rejected for a defect all produce it, because a defective row has no
+typed record and therefore no `EmpNo` to match. Rows with defects are excluded
+from the classification, still reported, and the file still exits non-zero.
+Projections of a sibling connection in the same tenant, and of any other
+tenant, are neither compared nor listed.
 
 A file-level rejection produces no authoritative import. An accepted file may
 contain row rejections only when its verified schema defines that behavior and
@@ -177,5 +205,6 @@ Before enabling any HR2000 file operation, all of the following must be true:
 - unsupported operations remain undeclared and are rejected at the execution
   boundary.
 
-Until then, the current zero-capability adapter is the correct fail-closed
-behavior.
+Until projection application is implemented and proved, the current
+inspection-only capability and explicit import refusal are the correct
+fail-closed behavior.
