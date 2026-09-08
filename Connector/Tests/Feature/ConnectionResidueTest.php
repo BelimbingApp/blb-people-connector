@@ -6,6 +6,7 @@ use App\Base\Authz\DTO\AuthorizationDecision;
 use App\Base\Authz\DTO\ResourceContext;
 use App\Base\Authz\Enums\AuthorizationReasonCode;
 use App\Base\Authz\Enums\PrincipalType;
+use App\Base\Authz\Exceptions\AuthorizationDeniedException;
 use App\Base\Tenancy\Contracts\TenantContext;
 use App\Core\User\Models\User;
 use App\Domains\PeopleConnector\Connector\Data\ExternalReference;
@@ -73,7 +74,7 @@ function residueAuthz(bool $allow): void
             if (! $this->allow) {
                 // Match the platform AuthorizationEngine path: deny throws
                 // AuthorizationDeniedException, not a connector-local type.
-                throw new \App\Base\Authz\Exceptions\AuthorizationDeniedException(
+                throw new AuthorizationDeniedException(
                     AuthorizationDecision::deny(AuthorizationReasonCode::DENIED_MISSING_CAPABILITY),
                 );
             }
@@ -408,7 +409,7 @@ test('an operator without the capability is refused before the audit row', funct
     $auditsBefore = OperatorAudit::query()->count();
 
     expect(fn () => app(ConnectionResidueReporter::class)->for($f['actor'], $f['connectionId']))
-        ->toThrow(\App\Base\Authz\Exceptions\AuthorizationDeniedException::class)
+        ->toThrow(AuthorizationDeniedException::class)
         ->and(OperatorAudit::query()->count())->toBe($auditsBefore);
 });
 
