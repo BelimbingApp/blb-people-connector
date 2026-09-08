@@ -34,7 +34,16 @@ final class PrivacyDeletionService
 {
     private const REDACTED_LABEL = '[redacted]';
 
-    public const ERASE_CAPABILITY = 'people-connector.identity.erase';
+    /**
+     * The action segment is `purge`, not `erase`: CapabilityCatalog accepts
+     * only the platform's verb vocabulary, which has no `erase`, so the key
+     * this constant used to hold was pruned and every erasure was denied with
+     * DENIED_UNKNOWN_CAPABILITY (#325). `purge` is the vocabulary's word for
+     * irreversible removal and is already what the connector uses for
+     * RetentionPurger. Nothing could hold the old key -- an undeclared
+     * capability cannot be granted -- so renaming it strands no grant.
+     */
+    public const ERASE_CAPABILITY = 'people-connector.identity.purge';
 
     public function __construct(
         private readonly TenantContext $tenantContext,
