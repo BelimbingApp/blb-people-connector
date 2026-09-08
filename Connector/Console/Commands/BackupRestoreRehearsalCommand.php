@@ -9,6 +9,7 @@ use App\Core\User\Models\User;
 use App\Domains\PeopleConnector\Connector\Exceptions\BackupRestoreRehearsalException;
 use App\Domains\PeopleConnector\Connector\Exceptions\ProviderAuthorizationException;
 use App\Domains\PeopleConnector\Connector\Services\BackupRestoreRehearsal;
+use Throwable;
 
 final class BackupRestoreRehearsalCommand extends TenantScopedCommand
 {
@@ -29,6 +30,10 @@ final class BackupRestoreRehearsalCommand extends TenantScopedCommand
             $report = $rehearsal->run(Actor::forUser($operator));
         } catch (AuthorizationDeniedException|ProviderAuthorizationException|BackupRestoreRehearsalException $exception) {
             $this->error($exception->getMessage());
+
+            return self::FAILURE;
+        } catch (Throwable) {
+            $this->error('The backup restore rehearsal could not complete safely.');
 
             return self::FAILURE;
         }
