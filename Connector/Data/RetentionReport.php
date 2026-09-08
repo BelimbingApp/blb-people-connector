@@ -11,11 +11,16 @@ namespace App\Domains\PeopleConnector\Connector\Data;
  */
 final readonly class RetentionReport
 {
-    /** @param array<string, RetentionTableReport> $tables keyed by table name */
+    /**
+     * @param  array<string, RetentionTableReport>  $tables  connector-owned, keyed by table name
+     * @param  array<string, SupplementalTableReport>  $supplemental  Skills and Training tables the
+     *                                                                connector never purges, keyed by table name
+     */
     public function __construct(
         public int $tenantId,
         public \DateTimeImmutable $reviewedAt,
         public array $tables,
+        public array $supplemental = [],
     ) {}
 
     public function expiredFor(string $table): int
