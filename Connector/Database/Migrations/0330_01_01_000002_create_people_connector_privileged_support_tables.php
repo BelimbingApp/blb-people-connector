@@ -85,7 +85,7 @@ return new class extends Migration
 
         if ($driver === 'pgsql') {
             DB::unprepared(<<<'SQL'
-                CREATE FUNCTION people_connector_support_action_immutable() RETURNS trigger
+                CREATE OR REPLACE FUNCTION people_connector_support_action_immutable() RETURNS trigger
                 LANGUAGE plpgsql
                 AS $function$
                 BEGIN
