@@ -97,6 +97,30 @@ test('revoke still succeeds and appends the grant_revoked action', function (): 
         ->toBe($beforeActions + 1);
 });
 
+test('the revoke carve-out refuses an id change on a still-active grant', function (): void {
+    // desktop-luna's [P1] on #332. The carve-out compared every column except
+    // the primary key, so an update could rewrite the grant identity as long as
+    // it also set revoked_at. Asserting that after a revoke proves nothing: the
+    // OLD.revoked_at IS NULL arm has already failed, so the trigger refuses
+    // whatever id is passed. The grant here must still be active, and the
+    // assertion below says so out loud rather than relying on statement order --
+    // that is what stopped the original case from being a real control.
+    $f = grantImmutabilityFixture('Grant Trigger Identity Tenant');
+    $table = 'people_connector_connector_privileged_support_grants';
+    $id = (int) $f['grant']->id;
+
+    expect(DB::table($table)->where('id', $id)->value('revoked_at'))->toBeNull();
+
+    expect(fn () => DB::transaction(fn () => DB::table($table)->where('id', $id)->update([
+        'revoked_at' => now(),
+        'id' => $id + 1000,
+        'updated_at' => now(),
+    ])))->toThrow(QueryException::class, 'append-only');
+
+    expect(DB::table($table)->where('id', $id)->exists())->toBeTrue();
+    expect(DB::table($table)->where('id', $id + 1000)->exists())->toBeFalse();
+});
+
 test('raw query-builder writes hit the DB immutability trigger, not only the model guard', function (): void {
     $f = grantImmutabilityFixture('Grant Trigger Layer Tenant');
     $table = 'people_connector_connector_privileged_support_grants';

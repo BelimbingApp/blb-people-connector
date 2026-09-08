@@ -111,7 +111,10 @@ return new class extends Migration
     }
 
     /**
-     * Grants refuse every mutation except the first write of revoked_at.
+     * Grants refuse every mutation except the first write of revoked_at, and
+     * that carve-out compares the primary key too: without it an update could
+     * rewrite the grant identity so long as it also revoked the grant, which is
+     * the one field a break-glass record cannot afford to lose (#332 review).
      * A finite retention window would otherwise contradict the config claim
      * that both break-glass tables refuse update and delete (#326).
      */
@@ -128,6 +131,7 @@ return new class extends Migration
                     IF TG_OP = 'UPDATE'
                         AND OLD.revoked_at IS NULL
                         AND NEW.revoked_at IS NOT NULL
+                        AND NEW.id IS NOT DISTINCT FROM OLD.id
                         AND NEW.tenant_id IS NOT DISTINCT FROM OLD.tenant_id
                         AND NEW.company_id IS NOT DISTINCT FROM OLD.company_id
                         AND NEW.requested_by_user_id IS NOT DISTINCT FROM OLD.requested_by_user_id
@@ -163,6 +167,7 @@ return new class extends Migration
             WHEN NOT (
                 OLD.revoked_at IS NULL
                 AND NEW.revoked_at IS NOT NULL
+                AND NEW.id IS OLD.id
                 AND NEW.tenant_id IS OLD.tenant_id
                 AND NEW.company_id IS OLD.company_id
                 AND NEW.requested_by_user_id IS OLD.requested_by_user_id
