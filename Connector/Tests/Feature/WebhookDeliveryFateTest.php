@@ -79,7 +79,7 @@ test('a completed pass marks its delivery delivered', function (): void {
 
 test('a pass that throws marks its delivery failed with a reason code and class, never the message, and rethrows', function (): void {
     $f = fateFixture();
-    ProviderConnection::query()->whereKey($f['connection']->id)->update(['status' => ProviderConnection::STATUS_RETIRED]);
+    ProviderConnection::query()->whereKey($f['connection']->id)->update(['status' => ProviderConnection::STATUS_RETIRED, 'active_scope_key' => null]);
 
     expect(fn () => app()->call([new RunIncrementalWorkforceSync($f['tenantId'], (int) $f['connection']->id, (int) $f['delivery']->id), 'handle']))
         ->toThrow(WorkforceSyncException::class, 'is not active');
@@ -109,8 +109,11 @@ test('a job never marks another tenant\'s delivery row, even by id', function ()
 
 test('a job without a recorded delivery touches no ledger row', function (): void {
     $f = fateFixture();
+    $job = new RunIncrementalWorkforceSync($f['tenantId'], (int) $f['connection']->id);
 
-    app()->call([new RunIncrementalWorkforceSync($f['tenantId'], (int) $f['connection']->id), 'handle']);
+    app()->call([$job, 'handle']);
 
-    expect($f['delivery']->fresh()->status)->toBe(WebhookDelivery::STATUS_ACCEPTED);
+    expect($f['delivery']->fresh()->status)->toBe(WebhookDelivery::STATUS_ACCEPTED)
+        ->and($job->tries)->toBe(1)
+        ->and($job->backoff())->toBe([]);
 });

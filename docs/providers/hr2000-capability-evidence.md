@@ -26,6 +26,10 @@ not customer entitlement, interface conformance or processing approval.
 
 ## Capability register
 
+The machine-readable form of this table is
+[capability-register.json](capability-register.json) (`hr2000.sbg` verifies
+nothing); `connector:health:check` compares adapter declarations with it.
+
 All rows inherit the current adapter evidence above. The proposed evidence
 packages must identify the installed product/version and licensed operation,
 not just a similarly named product. A supplied document does not by itself

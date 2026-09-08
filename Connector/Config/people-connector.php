@@ -47,9 +47,24 @@ return [
     'webhook' => [
         'enabled' => env('PEOPLE_CONNECTOR_WEBHOOK_ENABLED', false),
         'timestamp_tolerance_seconds' => (int) env('PEOPLE_CONNECTOR_WEBHOOK_TOLERANCE_SECONDS', 300),
-        'delivery_id_ttl_seconds' => (int) env('PEOPLE_CONNECTOR_WEBHOOK_DELIVERY_TTL_SECONDS', 86400),
         'max_payload_bytes' => (int) env('PEOPLE_CONNECTOR_WEBHOOK_MAX_PAYLOAD_BYTES', 1048576),
         'secrets' => json_decode((string) env('PEOPLE_CONNECTOR_WEBHOOK_SECRETS', '{}'), true) ?: [],
+        'delivery_policy' => [
+            'max_attempts' => 3,
+            'backoff_seconds' => [60, 300],
+        ],
+    ],
+
+    /*
+     * File exchange bounds (#301). An import is refused before its bytes are
+     * read when the file exceeds max_bytes (defect file_too_large) and at the
+     * row after max_rows (defect row_limit_exceeded): an oversized drop is a
+     * reported defect, never a memory fatal. The SHA-256 is streamed, so an
+     * over-limit file still hashes for the ledger.
+     */
+    'file_exchange' => [
+        'max_bytes' => (int) env('PEOPLE_CONNECTOR_FILE_MAX_BYTES', 52428800),
+        'max_rows' => (int) env('PEOPLE_CONNECTOR_FILE_MAX_ROWS', 100000),
     ],
 
     /*
@@ -71,7 +86,46 @@ return [
      */
     'delegation' => [
         'secret' => env('PEOPLE_CONNECTOR_DELEGATION_SECRET'),
+        // The outgoing secret of a rotation in progress, and the instant it
+        // stops being accepted (ISO-8601). Both null is the steady state and
+        // is byte-for-byte today's behaviour: only the current secret
+        // verifies. docs/security/delegated-authority.md holds the procedure.
+        'previous_secret' => env('PEOPLE_CONNECTOR_DELEGATION_PREVIOUS_SECRET'),
+        'previous_secret_expires_at' => env('PEOPLE_CONNECTOR_DELEGATION_PREVIOUS_SECRET_EXPIRES_AT'),
         'max_lifetime_seconds' => 300,
+        // The name this service answers to. The wire checks the audience a
+        // route was addressed on; the in-process port checks this (#185).
+        'audience' => env('PEOPLE_CONNECTOR_DELEGATION_AUDIENCE', 'people-connector.first-party'),
+        // Tolerance, in seconds, for the issuer's clock disagreeing with ours
+        // at either end of the lifetime. Zero makes the bounds exact.
+        'clock_skew_seconds' => 30,
+    ],
+
+    /*
+     * Machine-readable capability evidence register (#209): which
+     * PeopleCapability values each provider has deployment evidence for.
+     * connector:health:check reports adapter declarations that drift from it.
+     */
+    'capability_register' => env('PEOPLE_CONNECTOR_CAPABILITY_REGISTER', __DIR__.'/../../docs/providers/capability-register.json'),
+
+    'doctor' => [
+        // Laravel notification channel connector:doctor --alert sends through
+        // (#257), e.g. database or mail. Null disables alerting: the command
+        // says so and carries on.
+        'alert_channel' => env('PEOPLE_CONNECTOR_DOCTOR_ALERT_CHANNEL'),
+
+        // Days before a connection's latest usable provider credential expires
+        // at which connector:doctor turns its provider_credential_expiry row
+        // yellow (#296). Red needs no window: no usable credential is red now.
+        'credential_warning_days' => (int) env('PEOPLE_CONNECTOR_DOCTOR_CREDENTIAL_WARNING_DAYS', 14),
+    ],
+
+    'file_exchange' => [
+        // Discovery root (#297): connector:file-exchange:discover walks the
+        // subdirectory named after each connection id under it and records
+        // every regular file in the exchange ledger. Null disables discovery;
+        // a path that resolves outside the root is refused, never walked.
+        'inbound_root' => env('PEOPLE_CONNECTOR_FILE_INBOUND_ROOT'),
     ],
 
     'retention' => [
@@ -84,9 +138,21 @@ return [
         // the replay itself is on the operator audit, which is kept.
         'people_connector_connector_webhook_deliveries' => ['days' => 365, 'column' => 'received_at'],
 
+        // Inbound idempotency ledger (#227): a delivery id is a duplicate for
+        // seven days; after that the provider would not resend it anyway.
+        'people_connector_connector_webhook_receipts' => ['days' => 7, 'column' => 'first_seen_at'],
+
+        // Delegated-authority spends (#185): a token is replayable only until
+        // it expires, so a spend row past its expiry by a day is dead weight.
+        'people_connector_connector_delegated_spends' => ['days' => 1, 'column' => 'expires_at'],
+
         // Scheduled operator health is deliberately short-lived. It is trend
         // context, not an audit log; durable operator actions live elsewhere.
         'people_connector_connector_doctor_snapshots' => ['days' => 30, 'column' => 'measured_at'],
+
+        // Doctor alerts (#257): the sent ledger that keeps an incident from
+        // alerting twice. Kept as long as the snapshots it is derived from.
+        'people_connector_connector_doctor_alerts' => ['days' => 30, 'column' => 'sent_at'],
 
         // Reconciliation issues age out from when they were resolved, so an
         // issue still open is never past retention however old it is.
@@ -121,5 +187,11 @@ return [
         // so purge audit rows are themselves never purged.
         'people_connector_connector_retention_purge_audits' => ['days' => null],
         'people_connector_connector_operator_audits' => ['days' => null],
+
+        // File exchange ledger (#263): which bytes each connection received or
+        // produced, and whether they were accepted. Provenance is kept with
+        // the connection; the model refuses delete, so a finite window here
+        // would be a policy no purge could carry out.
+        'people_connector_connector_file_exchange_records' => ['days' => null],
     ],
 ];

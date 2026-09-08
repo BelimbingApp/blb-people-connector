@@ -6,6 +6,7 @@ use App\Base\Tenancy\Contracts\TenantContext;
 use App\Core\Company\Models\Company;
 use App\Domains\PeopleConnector\Connector\Data\ProviderConnectionMetadata;
 use App\Domains\PeopleConnector\Connector\Data\ProviderScope;
+use App\Domains\PeopleConnector\Connector\Data\WebhookDeliveryPolicy;
 use App\Domains\PeopleConnector\Connector\Exceptions\InvalidProviderConfigurationException;
 use App\Domains\PeopleConnector\Connector\Models\ProviderConnection;
 use Illuminate\Support\Facades\DB;
@@ -58,11 +59,14 @@ final class ProviderConnectionStore
             // label or versions would edit history that retirement froze.
             ConnectionRetirementService::assertWritable($connection);
 
+            $metadata = $publicMetadata?->toArray() ?? [];
+            $metadata['webhook_delivery_policy'] ??= WebhookDeliveryPolicy::defaults()->toArray();
+
             $connection->fill([
                 'label' => $label,
                 'adapter_version' => $adapterVersion,
                 'contract_version' => $contractVersion,
-                'public_metadata' => $publicMetadata?->toArray(),
+                'public_metadata' => $metadata,
             ]);
             $connection->save();
 

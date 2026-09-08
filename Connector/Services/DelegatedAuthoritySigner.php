@@ -16,7 +16,7 @@ use App\Domains\PeopleConnector\Connector\Exceptions\DelegatedAuthorityException
  */
 final class DelegatedAuthoritySigner
 {
-    private const MINIMUM_SECRET_BYTES = 32;
+    public const MINIMUM_SECRET_BYTES = 32;
 
     public function sign(DelegatedAuthority $authority): string
     {
@@ -52,7 +52,8 @@ final class DelegatedAuthoritySigner
 
         // hash_equals, not ===: a timing-variable comparison here leaks the
         // signature a byte at a time.
-        if (! hash_equals(self::signature($payload, $secret), $signature)) {
+        if (! hash_equals(self::signature($payload, $secret), $signature)
+            && ! self::signedByPreviousSecret($payload, $signature, $now)) {
             throw new DelegatedAuthorityException('This delegated authority was not signed by this connector.', DelegatedAuthorityRefusal::Unsigned);
         }
 
@@ -79,11 +80,41 @@ final class DelegatedAuthoritySigner
             );
         }
 
-        if ($now > $authority->expiresAt) {
+        $skew = DelegationPolicy::clockSkewSeconds();
+
+        // A token from the future is either a badly skewed issuer or a token
+        // being pre-positioned; past the tolerance both are refused alike.
+        if ($authority->issuedAt > $now->modify("+{$skew} seconds")) {
+            throw new DelegatedAuthorityException('This authority is not valid yet.', DelegatedAuthorityRefusal::NotYetValid);
+        }
+
+        if ($now > $authority->expiresAt->modify("+{$skew} seconds")) {
             throw new DelegatedAuthorityException('This authority has expired.', DelegatedAuthorityRefusal::Expired);
         }
 
         return $authority;
+    }
+
+    /**
+     * Rotating the signing secret would otherwise refuse every token already
+     * in flight at the instant of the change (#262). The outgoing secret is
+     * accepted for the length of the configured overlap and not a moment
+     * longer: no expiry, or an expiry already past, means the rotation is
+     * finished or was never started, and the old key is never consulted.
+     *
+     * The refusal stays Unsigned either way. A caller cannot act differently
+     * on "signed by a key we retired" than on "signed by nothing we know",
+     * and telling the two apart is a fact about our keys, not about them.
+     */
+    private static function signedByPreviousSecret(string $payload, string $signature, \DateTimeImmutable $now): bool
+    {
+        $previous = DelegationPolicy::previousSecret();
+
+        if ($previous === null || ! DelegationPolicy::previousSecretAcceptedAt($now)) {
+            return false;
+        }
+
+        return hash_equals(self::signature($payload, $previous), $signature);
     }
 
     /** @param array<string, int|string|null> $claims */

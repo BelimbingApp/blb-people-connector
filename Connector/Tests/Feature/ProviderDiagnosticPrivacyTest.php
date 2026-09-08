@@ -12,6 +12,7 @@ use App\Domains\PeopleConnector\Connector\Enums\ProviderHealthState;
 use App\Domains\PeopleConnector\Connector\Exceptions\InvalidProviderConfigurationException;
 use App\Domains\PeopleConnector\Connector\Exceptions\InvalidReconciliationIssueException;
 use App\Domains\PeopleConnector\Connector\Models\ProviderCredentialRecord;
+use App\Domains\PeopleConnector\Connector\Services\ConnectorDoctor;
 use App\Domains\PeopleConnector\Connector\Services\ProviderConnectionStore;
 use App\Domains\PeopleConnector\Connector\Services\ProviderHealthMonitor;
 use App\Domains\PeopleConnector\Connector\Services\ProviderHealthStore;
@@ -134,4 +135,26 @@ test('legacy cached adapter messages cannot survive the diagnostic boundary chan
     expect($health->state)->toBe(ProviderHealthState::Unknown)
         ->and($health->checkedAt)->toBeNull()
         ->and($health->message)->toBe('Health has not been checked yet.');
+});
+
+test('the doctor credential expiry row names the credential and key and never the secret reference', function (): void {
+    [$tenant, $company] = createTenantWithCompany(['name' => 'Doctor Credential Privacy']);
+    app(TenantContext::class)->set((int) $tenant->id);
+    $store = app(ProviderConnectionStore::class);
+    $connection = $store->configure(ProviderScope::company((int) $company->id), 'privacy.provider');
+    $store->activate((int) $connection->id);
+    ProviderCredentialRecord::query()->create([
+        'tenant_id' => (int) $tenant->id, 'connection_id' => (int) $connection->id, 'provider_id' => 'privacy.provider',
+        'credential_id' => 'pcred_privacy', 'key_id' => 'rotation-2026', 'secret_reference' => 'base-integration:private-reference',
+        'audience' => 'provider', 'scopes' => ['workforce:read'], 'issued_at' => now()->subDay(), 'expires_at' => now()->addYear(),
+    ]);
+
+    $rows = app(ConnectorDoctor::class)->credentialExpiry((int) $tenant->id);
+
+    expect($rows)->toHaveCount(1)
+        ->and($rows[0]['check'])->toBe('provider_credential_expiry:'.$connection->id)
+        ->and($rows[0]['status'])->toBe('green')
+        ->and($rows[0]['detail'])->toContain('pcred_privacy')
+        ->and($rows[0]['detail'])->toContain('rotation-2026')
+        ->and(json_encode($rows, JSON_THROW_ON_ERROR))->not->toContain('private-reference');
 });

@@ -3,6 +3,7 @@
 namespace App\Domains\PeopleConnector\Connector\Jobs;
 
 use App\Base\Tenancy\Contracts\TenantContext;
+use App\Domains\PeopleConnector\Connector\Data\WebhookDeliveryPolicy;
 use App\Domains\PeopleConnector\Connector\Exceptions\WorkforceSyncException;
 use App\Domains\PeopleConnector\Connector\Models\ProviderConnection;
 use App\Domains\PeopleConnector\Connector\Models\WebhookDelivery;
@@ -35,12 +36,45 @@ final class RunIncrementalWorkforceSync implements ShouldQueue
 
     public const QUEUE = 'people-connector-sync';
 
+    public int $tries;
+
+    /** @var list<int> */
+    private array $backoffSeconds;
+
     public function __construct(
         public readonly int $tenantId,
         public readonly int $connectionId,
         public readonly ?int $deliveryId = null,
+        ?WebhookDeliveryPolicy $deliveryPolicy = null,
     ) {
+        if ($deliveryId === null) {
+            $this->tries = 1;
+            $this->backoffSeconds = [];
+            $this->onQueue(self::QUEUE);
+
+            return;
+        }
+
+        $deliveryPolicy ??= WebhookDeliveryPolicy::defaults();
+        $this->tries = $deliveryPolicy->maxAttempts;
+        $this->backoffSeconds = $deliveryPolicy->backoffSeconds;
         $this->onQueue(self::QUEUE);
+    }
+
+    public static function forDelivery(ProviderConnection $connection, int $deliveryId): self
+    {
+        return new self(
+            (int) $connection->tenant_id,
+            (int) $connection->id,
+            $deliveryId,
+            WebhookDeliveryPolicy::forConnection($connection),
+        );
+    }
+
+    /** @return list<int> */
+    public function backoff(): array
+    {
+        return $this->backoffSeconds;
     }
 
     public function handle(
@@ -54,6 +88,14 @@ final class RunIncrementalWorkforceSync implements ShouldQueue
 
         try {
             $connection = $connections->get($this->connectionId);
+            // A maintenance window (#264) is not a failure: the delivery is
+            // held, no attempt is spent, and connector:webhook:replay sends it
+            // again once the window is over.
+            if ($connection->inMaintenance()) {
+                $this->delivery()?->markDeferred();
+
+                return;
+            }
             if ($connection->status !== ProviderConnection::STATUS_ACTIVE) {
                 throw new WorkforceSyncException("Provider connection {$this->connectionId} is not active.");
             }
@@ -68,7 +110,15 @@ final class RunIncrementalWorkforceSync implements ShouldQueue
             );
             $this->delivery()?->markDelivered();
         } catch (Throwable $failure) {
-            $this->delivery()?->markFailed($failure);
+            $delivery = $this->delivery();
+            $deadLettered = $delivery !== null && $this->attempts() >= $this->tries;
+            $delivery?->markFailed($failure, $deadLettered);
+
+            if ($deadLettered) {
+                $this->fail($failure);
+
+                return;
+            }
 
             throw $failure;
         } finally {

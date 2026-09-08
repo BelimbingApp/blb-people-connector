@@ -23,6 +23,7 @@ return [
         'people-connector.connection.list',
         'people-connector.connection.manage',
         'people-connector.identity.manage',
+        'people-connector.identity.audit',
         'people-connector.identity.export',
         'people-connector.identity.import',
         'people-connector.retention.review',

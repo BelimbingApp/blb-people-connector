@@ -16,7 +16,7 @@ use App\Domains\PeopleConnector\Connector\Models\WebhookDelivery;
 use Illuminate\Support\Facades\DB;
 
 /**
- * Re-sends one failed webhook delivery for the acting operator's tenant (#223).
+ * Re-sends one failed or dead-lettered delivery for the operator tenant (#223).
  *
  * The queue retries a failing pass on its own; this is for the case after a
  * fix, when an operator wants that specific delivery run again and wants the
@@ -53,14 +53,17 @@ final class WebhookDeliveryReplayer
         $original = WebhookDelivery::query()->forTenant($tenantId)->find($deliveryId)
             ?? throw new ConnectorRecordNotFoundException('The webhook delivery was not found in the current tenant.');
 
-        if ($original->status !== WebhookDelivery::STATUS_FAILED) {
-            throw new WebhookRefusal('not_replayable', "Webhook delivery {$original->id} is {$original->status}; only a failed delivery can be replayed.");
+        if (! in_array($original->status, WebhookDelivery::replayableStatuses(), true)) {
+            throw new WebhookRefusal('not_replayable', "Webhook delivery {$original->id} is {$original->status}; only a failed, dead-lettered or deferred delivery can be replayed.");
         }
 
         $connection = $this->connections->get((int) $original->connection_id);
 
         if ($connection->status !== ProviderConnection::STATUS_ACTIVE) {
             throw new WebhookRefusal('inactive_connection', "Provider connection {$connection->id} is not active; a replay would only fail again.");
+        }
+        if ($connection->inMaintenance()) {
+            throw new WebhookRefusal('in_maintenance', "Provider connection {$connection->id} is in maintenance until {$connection->maintenance_until->format(DATE_ATOM)}; a replay would only be deferred again.");
         }
 
         return new WebhookReplayPlan($original, $tenantId, (int) $connection->id);
@@ -91,7 +94,8 @@ final class WebhookDeliveryReplayer
                 ['delivery' => $replay->id, 'status' => $replay->status, 'queue' => RunIncrementalWorkforceSync::QUEUE],
             );
 
-            RunIncrementalWorkforceSync::dispatch($plan->tenantId, $plan->connectionId, (int) $replay->id);
+            $connection = $this->connections->get($plan->connectionId);
+            dispatch(RunIncrementalWorkforceSync::forDelivery($connection, (int) $replay->id));
 
             return $replay;
         });
