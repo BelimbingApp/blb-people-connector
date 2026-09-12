@@ -20,11 +20,14 @@ use App\Domains\PeopleConnector\Connector\Models\ExternalIdentity;
 use App\Domains\PeopleConnector\Connector\Models\OperatorAudit;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceEntity;
 use App\Domains\PeopleConnector\Connector\Models\WorkforceSnapshot;
+use App\Domains\PeopleConnector\Connector\Services\OperatorAuditLog;
 use App\Domains\PeopleConnector\Connector\Services\ProviderConnectionStore;
+use App\Domains\PeopleConnector\Connector\Services\TenantConnectionLocator;
 use App\Domains\PeopleConnector\Connector\Services\WorkforceProjectionStore;
 use App\Domains\PeopleConnector\Connector\Services\WorkforceSubjectExporter;
 use App\Domains\PeopleConnector\Connector\Services\WorkforceSubjectImporter;
 use App\Domains\PeopleConnector\Connector\Testing\SyntheticSupplementalExporter;
+use Illuminate\Container\Container;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
@@ -33,6 +36,9 @@ use Illuminate\Support\Facades\Storage;
 beforeEach(function (): void {
     Storage::fake('local');
     supplementalExportAuthz(true);
+    // Built up front so "with no exporter registered" really means none, rather
+    // than "none of mine, plus whatever the platform tagged".
+    supplementalExportRegistry();
 });
 
 afterEach(fn () => app(TenantContext::class)->clear());
@@ -62,10 +68,53 @@ function supplementalExportAuthz(bool $allow): void
     });
 }
 
+/**
+ * The tagged registry these tests control, isolated from the application's.
+ *
+ * app()->tag() appends, so tagging the synthetic exporter on the app container
+ * left the real People exporters -- performance, positions, skills, training --
+ * in the same set. That made "no exporter is registered" an unreachable state
+ * and turned every exact-list expectation here into an assertion about which
+ * modules the platform happens to ship, which is not what this file is for.
+ * These are mechanism tests: the loop over tagged exporters, the partial flag,
+ * the not_restored path. They need a registry whose contents they decide.
+ *
+ * WorkforceSubjectExporter and WorkforceSubjectImporter each take a Container
+ * and use it for exactly one thing -- tagged(ExportsSupplementalSubjectRecords)
+ * -- so handing them an empty one is the seam, not a workaround.
+ */
+function supplementalExportRegistry(): Container
+{
+    if (! app()->bound('tests.supplemental.registry')) {
+        $registry = new Container;
+        app()->instance('tests.supplemental.registry', $registry);
+
+        app()->bind(WorkforceSubjectExporter::class, fn ($app): WorkforceSubjectExporter => new WorkforceSubjectExporter(
+            $app->make(TenantContext::class),
+            $app->make(AuthorizationService::class),
+            $app->make(DataSharePrivateStorage::class),
+            $app->make(OperatorAuditLog::class),
+            $registry,
+        ));
+
+        app()->bind(WorkforceSubjectImporter::class, fn ($app): WorkforceSubjectImporter => new WorkforceSubjectImporter(
+            $app->make(TenantContext::class),
+            $app->make(AuthorizationService::class),
+            $app->make(DataSharePrivateStorage::class),
+            $app->make(TenantConnectionLocator::class),
+            $app->make(OperatorAuditLog::class),
+            $registry,
+        ));
+    }
+
+    return app('tests.supplemental.registry');
+}
+
 function supplementalExportRegister(SyntheticSupplementalExporter $exporter): SyntheticSupplementalExporter
 {
-    app()->instance(SyntheticSupplementalExporter::class, $exporter);
-    app()->tag([SyntheticSupplementalExporter::class], ExportsSupplementalSubjectRecords::class);
+    $registry = supplementalExportRegistry();
+    $registry->instance(SyntheticSupplementalExporter::class, $exporter);
+    $registry->tag([SyntheticSupplementalExporter::class], ExportsSupplementalSubjectRecords::class);
 
     return $exporter;
 }

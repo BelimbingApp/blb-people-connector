@@ -4,6 +4,7 @@ namespace App\Domains\PeopleConnector\Connector\Livewire\Reconciliation;
 
 use App\Base\Authz\Contracts\AuthorizationService;
 use App\Base\Authz\DTO\Actor;
+use App\Base\Authz\Exceptions\AuthorizationDeniedException;
 use App\Base\Foundation\Contracts\SemanticActionRecorder;
 use App\Base\Foundation\Livewire\Concerns\InteractsWithNotifications;
 use App\Core\User\Models\User;
@@ -201,10 +202,18 @@ final class Index extends Component
         $user = Auth::user();
         abort_unless($user instanceof User, 403);
 
-        app(AuthorizationService::class)->authorize(
-            Actor::forUser($user),
-            'people-connector.identity.manage',
-        );
+        // A denial is an AuthorizationDeniedException, not an HTTP abort. The
+        // surrounding guards here already speak in abort(403), and every People
+        // Livewire component converts at the guard rather than leaving it to the
+        // global renderer, so do the same and keep one refusal shape per screen.
+        try {
+            app(AuthorizationService::class)->authorize(
+                Actor::forUser($user),
+                'people-connector.identity.manage',
+            );
+        } catch (AuthorizationDeniedException) {
+            abort(403);
+        }
 
         abort_unless(app(CompanyAttribution::class)->mayActForConnection($user, $this->connection()), 403);
     }

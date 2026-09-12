@@ -5,6 +5,7 @@ use App\Base\Authz\DTO\Actor;
 use App\Base\Authz\DTO\AuthorizationDecision;
 use App\Base\Authz\DTO\ResourceContext;
 use App\Base\Authz\Enums\AuthorizationReasonCode;
+use App\Base\Authz\Exceptions\AuthorizationDeniedException;
 use App\Base\Foundation\Contracts\SemanticActionRecorder;
 use App\Base\Tenancy\Contracts\TenantContext;
 use App\Core\User\Models\User;
@@ -52,7 +53,14 @@ function unknownOutcomeDenyingAuthz(): void
 
         public function authorize(Actor $actor, string $capability, ?ResourceContext $resource = null, array $context = []): void
         {
-            abort(403);
+            // Mirror AuditingAuthorizationService: a denial is an
+            // AuthorizationDeniedException, which bootstrap/app.php renders as
+            // 403. Aborting here instead produces an HttpException, which every
+            // caller that treats denial as a *predicate* -- SkillAudience::
+            // mayAccess() and friends, which catch AuthorizationDeniedException
+            // to decide whether to offer a menu entry -- fails to catch, so the
+            // 403 escapes a boolean and takes down the whole render.
+            throw new AuthorizationDeniedException($this->can($actor, $capability, $resource, $context));
         }
 
         public function filterAllowed(Actor $actor, string $capability, iterable $resources, array $context = []): Collection

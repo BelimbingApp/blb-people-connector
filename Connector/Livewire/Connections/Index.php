@@ -4,6 +4,7 @@ namespace App\Domains\PeopleConnector\Connector\Livewire\Connections;
 
 use App\Base\Authz\Contracts\AuthorizationService;
 use App\Base\Authz\DTO\Actor;
+use App\Base\Authz\Exceptions\AuthorizationDeniedException;
 use App\Base\Tenancy\Contracts\TenantContext;
 use App\Core\User\Models\User;
 use App\Domains\PeopleConnector\Connector\Contracts\ProviderAdapter;
@@ -26,7 +27,15 @@ class Index extends Component
         $user = Auth::user();
         $tenantId = app(TenantContext::class)->currentTenantId();
         abort_unless($user instanceof User && $tenantId !== null && $user->tenant_id === $tenantId, 403);
-        app(AuthorizationService::class)->authorize(Actor::forUser($user), 'people-connector.connection.list');
+        // A denial is an AuthorizationDeniedException, not an HTTP abort. The
+        // surrounding guards here already speak in abort(403), and every People
+        // Livewire component converts at the guard rather than leaving it to the
+        // global renderer, so do the same and keep one refusal shape per screen.
+        try {
+            app(AuthorizationService::class)->authorize(Actor::forUser($user), 'people-connector.connection.list');
+        } catch (AuthorizationDeniedException) {
+            abort(403);
+        }
 
         $provider = $registry->find($providerId);
 
