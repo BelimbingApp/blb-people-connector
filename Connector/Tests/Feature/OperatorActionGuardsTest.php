@@ -5,6 +5,7 @@ use App\Base\Authz\DTO\Actor;
 use App\Base\Authz\DTO\AuthorizationDecision;
 use App\Base\Authz\DTO\ResourceContext;
 use App\Base\Authz\Enums\AuthorizationReasonCode;
+use App\Base\Authz\Exceptions\AuthorizationDeniedException;
 use App\Base\Tenancy\Contracts\TenantContext;
 use App\Core\User\Models\User;
 use App\Domains\PeopleConnector\Connector\Contracts\ProviderAdapter;
@@ -44,7 +45,19 @@ function operatorActionAuthorization(): AuthorizationService
         public function authorize(Actor $actor, string $capability, ?ResourceContext $resource = null, array $context = []): void
         {
             $this->calls[] = [$actor->id, $capability];
-            abort_unless($this->allowed, 403);
+
+            // Mirror AuditingAuthorizationService: a denial is an
+            // AuthorizationDeniedException, which bootstrap/app.php renders as
+            // 403. Aborting here instead produces an HttpException, which every
+            // caller that treats denial as a *predicate* -- SkillAudience::
+            // mayAccess() and friends, which catch AuthorizationDeniedException
+            // to decide whether to offer a menu entry -- fails to catch, so the
+            // 403 escapes a boolean and takes down the whole render.
+            if (! $this->allowed) {
+                throw new AuthorizationDeniedException(
+                    AuthorizationDecision::deny(AuthorizationReasonCode::DENIED_MISSING_CAPABILITY),
+                );
+            }
         }
 
         public function filterAllowed(Actor $actor, string $capability, iterable $resources, array $context = []): Collection
